@@ -23,6 +23,7 @@ from app.schemas import (
     ReprocessRequest,
 )
 from app.services import intake, storage, thumbnails
+from app.services.app_state import PROCESSING_PAUSED, get_flag, set_flag
 from app.services.intake import ACCEPTED_SUFFIXES
 from app.services.tag_tree import with_ancestors
 
@@ -188,7 +189,18 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         + counts.get(DocumentStatus.PROCESSING, 0),
         "flagged": counts.get(DocumentStatus.FLAGGED, 0),
         "recent": [{"id": str(r[0]), "title": r[1]} for r in recent_added],
+        "paused": await get_flag(db, PROCESSING_PAUSED),
     }
+
+
+@router.post("/processing")
+async def set_processing(body: dict, user: CurrentUser, db: DB) -> dict:
+    """Pause/resume the worker queue. Pausing lets the current file finish
+    and stops new claims and watch-folder sweeps — safe to restart the
+    server or the Mac (Apple OCR host) without losing work or quality."""
+    paused = bool(body.get("paused"))
+    await set_flag(db, PROCESSING_PAUSED, paused)
+    return {"paused": paused}
 
 
 async def _get_owned(doc_id: uuid.UUID, user, db) -> Document:

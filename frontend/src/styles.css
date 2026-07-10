@@ -184,6 +184,17 @@ select {
   font-variant-numeric: tabular-nums;
 }
 
+.pause-toggle {
+  margin-top: 0.35rem;
+  border-top: 1px dashed var(--border);
+  padding-top: 0.5rem;
+  color: var(--accent);
+}
+
+.pause-toggle.is-paused {
+  color: var(--error);
+}
+
 .side-bottom {
   margin-top: auto;
   border-top: 1px solid var(--border);

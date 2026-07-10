@@ -266,6 +266,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-10 (bulk actions):** Library gains selection mode (Select button → click cards/rows to toggle, Select-all-filtered) with a bulk bar: **Re-OCR** (skip mode — retry/upgrade), **Tag** / **Untag** (tag menu; add applies ancestors per hierarchy semantics, remove removes exactly the chosen tag), **Delete** (confirm; shares the single-delete blob-cleanup path). One endpoint: `POST /api/documents/bulk` `{ids, action, mode?, tag_ids?}`, ≤500 ids, foreign/unknown ids skipped and reported. Verified: UI select→tag→untag round-trip, bulk reprocess upgraded two tesseract-era docs to apple.
 
+- **2026-07-10 (pause/resume):** Processing queue can be paused: the in-flight job always finishes; new job claims AND watch-folder sweeps hold until resume. Flag lives in Postgres (`app_settings` key-value, migration 0008) so **pausing survives restarts** — the intended workflow for rebooting the NAS or the Mac (Apple OCR host) mid-batch without losing work or silently degrading scans to Tesseract. API: `POST /api/documents/processing {paused}`; state rides `/documents/stats`. Sidebar shows ⏸ Pause / ▶ Resume whenever the queue is active or paused (hidden when idle). Verified: paused mid-batch → current 150pp finished, queued doc held; worker restart while paused → came back paused; resume → processed.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

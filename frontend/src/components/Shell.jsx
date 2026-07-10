@@ -110,6 +110,32 @@ export default function Shell({ children }) {
               {s.count != null && <span className="side-count">{s.count}</span>}
             </Link>
           ))}
+          {(stats?.paused || stats?.processing > 0) && (
+            <button
+              className={`side-link side-button pause-toggle ${
+                stats?.paused ? 'is-paused' : ''
+              }`}
+              onClick={async () => {
+                try {
+                  await apiJson('/api/documents/processing', {
+                    method: 'POST',
+                    body: JSON.stringify({ paused: !stats.paused }),
+                  })
+                  window.dispatchEvent(new Event('library-changed'))
+                } catch {
+                  /* next poll corrects the display */
+                }
+              }}
+              title={
+                stats?.paused
+                  ? 'Processing is paused — new work waits until you resume'
+                  : 'Finish the current file, then hold new work (safe to restart the server or Mac)'
+              }
+            >
+              <span>{stats?.paused ? '▶ Resume processing' : '⏸ Pause processing'}</span>
+              {stats?.paused && <span className="side-count">paused</span>}
+            </button>
+          )}
         </nav>
 
         {tags.length > 0 && (

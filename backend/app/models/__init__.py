@@ -1,3 +1,4 @@
+from app.models.app_setting import AppSetting
 from app.models.blob import Blob
 from app.models.device import DeviceToken
 from app.models.document import Document, DocumentStatus, document_tags
@@ -8,6 +9,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 
 __all__ = [
+    "AppSetting",
     "Blob",
     "DeviceToken",
     "Document",

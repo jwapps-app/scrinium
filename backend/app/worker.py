@@ -13,6 +13,7 @@ from sqlalchemy import select, text
 from app.config import settings
 from app.database import SessionLocal, engine
 from app.models import Job, JobStatus
+from app.services.app_state import PROCESSING_PAUSED, get_flag
 from app.services.ingest import process_job
 from app.services.watch import scan_once
 
@@ -67,8 +68,23 @@ async def main() -> None:
         settings.watch_dir or "disabled",
     )
     last_watch_scan = 0.0
+    was_paused = False
     try:
         while True:
+            # Pause gates NEW work only — an in-flight job always finishes.
+            # DB-backed, so pausing survives restarts until resumed.
+            try:
+                async with SessionLocal() as session:
+                    paused = await get_flag(session, PROCESSING_PAUSED)
+            except Exception:
+                paused = False
+            if paused != was_paused:
+                logger.info("processing %s", "paused" if paused else "resumed")
+                was_paused = paused
+            if paused:
+                await asyncio.sleep(settings.worker_poll_seconds)
+                continue
+
             try:
                 worked = await claim_and_run()
             except Exception:
