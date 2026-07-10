@@ -75,6 +75,7 @@ async def sidecar_setup(user: CurrentUser) -> dict:
         "port": port,
         "configured": bool(settings.apple_ocr_url),
         "build_commands": (
+            "# run from wherever you cloned the repo — e.g. cd ~/development/scrinium\n"
             "cd sidecar\n"
             "swift build -c release\n"
             f"sudo cp .build/release/scrinium-ocr-helper {HELPER_BIN}"
@@ -84,6 +85,7 @@ async def sidecar_setup(user: CurrentUser) -> dict:
         ),
         "plist_path": plist_path,
         "load_commands": (
+            f"mv ~/Downloads/{HELPER_LABEL}.plist ~/Library/LaunchAgents/\n"
             f"launchctl load {plist_path}\n"
             f"curl http://localhost:{port}/health"
         ),
