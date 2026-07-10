@@ -8,13 +8,34 @@ import asyncio
 import logging
 import time
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.config import settings
 from app.database import SessionLocal, engine
 from app.models import Job, JobStatus
 from app.services.ingest import process_job
 from app.services.watch import scan_once
+
+# Advisory lock so only one worker replica sweeps the watch folder at a
+# time; the job queue itself is already replica-safe (SKIP LOCKED).
+WATCH_LOCK_KEY = 815551
+
+
+async def scan_watch_exclusively() -> None:
+    async with engine.connect() as conn:
+        locked = (
+            await conn.execute(
+                text("SELECT pg_try_advisory_lock(:key)"), {"key": WATCH_LOCK_KEY}
+            )
+        ).scalar()
+        if not locked:
+            return  # another replica is sweeping
+        try:
+            await scan_once()
+        finally:
+            await conn.execute(
+                text("SELECT pg_advisory_unlock(:key)"), {"key": WATCH_LOCK_KEY}
+            )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("worker")
@@ -57,7 +78,7 @@ async def main() -> None:
             if time.monotonic() - last_watch_scan >= settings.watch_poll_seconds:
                 last_watch_scan = time.monotonic()
                 try:
-                    await scan_once()
+                    await scan_watch_exclusively()
                 except Exception:
                     logger.exception("watch sweep crashed; continuing")
 

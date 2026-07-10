@@ -85,9 +85,17 @@ async def scan_once() -> int:
     if not watch.is_dir():
         return 0
 
-    candidates = _candidates(watch)
+    candidates = [
+        path
+        for path in _candidates(watch)
+        if time.time() - path.stat().st_mtime >= SETTLE_SECONDS
+    ]
     if not candidates:
         return 0
+    # Cap per sweep: with a huge dump (tens of thousands of files), ingesting
+    # everything in one pass would starve OCR jobs for hours. Batching lets
+    # intake and processing interleave; the rest is picked up next sweep.
+    candidates = candidates[: settings.watch_batch_size]
 
     consumed = 0
     async with SessionLocal() as session:
@@ -98,8 +106,6 @@ async def scan_once() -> int:
             return 0  # nobody has set up yet; leave files in place
 
         for path in candidates:
-            if time.time() - path.stat().st_mtime < SETTLE_SECONDS:
-                continue
             folder_names = list(path.relative_to(watch).parts[:-1])
             try:
                 tags = (

@@ -42,6 +42,10 @@ services:
   worker:
     image: ghcr.io/jwapps-app/scrinium-api:latest
     command: ["worker"]
+    # Scale for bulk ingests (WORKER_REPLICAS=2 or 3): replicas share the job
+    # queue safely; only one runs the watch-folder sweep at a time.
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
     environment:
       ENVIRONMENT: production
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-app}
@@ -51,6 +55,7 @@ services:
       OCR_LANGUAGES: ${OCR_LANGUAGES:-eng}
       APPLE_OCR_URL: ${APPLE_OCR_URL:-}
       WATCH_DIR: /data/watch
+      WATCH_BATCH_SIZE: ${WATCH_BATCH_SIZE:-25}
       PUSH_RELAY_URL: ${PUSH_RELAY_URL:-}
       PUSH_RELAY_API_KEY: ${PUSH_RELAY_API_KEY:-}
     volumes:

@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Watched-folder ingest (empty = disabled)
     watch_dir: str = ""
     watch_poll_seconds: float = 5.0
+    # Max files ingested per sweep, so a huge folder dump can't starve OCR
+    # jobs — intake and processing interleave.
+    watch_batch_size: int = 25
 
     # Push via the shared push-relay (all three set = enabled)
     push_relay_url: str = ""      # e.g. http://192.168.1.10:8088
