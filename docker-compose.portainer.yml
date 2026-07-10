@@ -1,5 +1,7 @@
-# NAS stack for Portainer. Image-only — the NAS never builds; CI publishes to
-# GHCR and Portainer pulls. Env vars are supplied in Portainer's UI.
+# Production stack (Portainer or plain compose). Image-only — the host never
+# builds; CI publishes to GHCR and the host pulls. Env vars via Portainer UI
+# or an .env file. Host paths live under DATA_ROOT (default suits a Synology;
+# set your own, e.g. DATA_ROOT=/srv/scrinium).
 services:
   postgres:
     image: postgres:16
@@ -8,7 +10,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in Portainer}
       POSTGRES_DB: ${POSTGRES_DB:-app}
     volumes:
-      - /volume1/docker/scrinium/postgres:/var/lib/postgresql/data
+      - ${DATA_ROOT:-/volume1/docker/scrinium}/postgres:/var/lib/postgresql/data
     mem_limit: 1g
     restart: unless-stopped
     healthcheck:
@@ -30,7 +32,7 @@ services:
       OCR_LANGUAGES: ${OCR_LANGUAGES:-eng}
       APPLE_OCR_URL: ${APPLE_OCR_URL:-}
     volumes:
-      - /volume1/docker/scrinium/data:/data
+      - ${DATA_ROOT:-/volume1/docker/scrinium}/data:/data
     mem_limit: 1g
     restart: unless-stopped
     depends_on:
@@ -52,7 +54,7 @@ services:
       PUSH_RELAY_URL: ${PUSH_RELAY_URL:-}
       PUSH_RELAY_API_KEY: ${PUSH_RELAY_API_KEY:-}
     volumes:
-      - /volume1/docker/scrinium/data:/data
+      - ${DATA_ROOT:-/volume1/docker/scrinium}/data:/data
     mem_limit: 2g
     restart: unless-stopped
     depends_on:
@@ -80,7 +82,7 @@ services:
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - /volume1/docker/scrinium/backups:/backups
+      - ${DATA_ROOT:-/volume1/docker/scrinium}/backups:/backups
     mem_limit: 256m
     restart: unless-stopped
     depends_on:
