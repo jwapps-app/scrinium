@@ -62,6 +62,11 @@ export default function SidecarSetup({ connected }) {
       {open && setup && (
         <ol className="setup-steps">
           <Step number={1} done={connected} title="Build and install the helper (on the Mac)">
+            <p className="settings-help">
+              Open Terminal <strong>in your clone of the repository</strong>{' '}
+              (the folder containing <code>sidecar/</code>) before running
+              these — e.g. <code>cd ~/development/scrinium</code> first.
+            </p>
             <Commands text={setup.build_commands} />
           </Step>
           <Step number={2} done={connected} title="Start it on login">
