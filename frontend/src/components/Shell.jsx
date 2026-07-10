@@ -110,7 +110,7 @@ export default function Shell({ children }) {
               {s.count != null && <span className="side-count">{s.count}</span>}
             </Link>
           ))}
-          {(stats?.paused || stats?.processing > 0) && (
+          {stats && (
             <button
               className={`side-link side-button pause-toggle ${
                 stats?.paused ? 'is-paused' : ''
