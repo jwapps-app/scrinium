@@ -1,0 +1,88 @@
+# NAS stack for Portainer. Image-only — the NAS never builds; CI publishes to
+# GHCR and Portainer pulls. Env vars are supplied in Portainer's UI.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in Portainer}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+    volumes:
+      - /volume1/docker/scrinium/postgres:/var/lib/postgresql/data
+    mem_limit: 1g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: ghcr.io/jwapps-app/scrinium-api:latest
+    environment:
+      ENVIRONMENT: production
+      APP_NAME: ${APP_NAME:-Scrinium}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-app}
+      SECRET_KEY: ${SECRET_KEY:?set in Portainer}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://scrinium.example.com}
+      DATA_DIR: /data
+      OCR_ENGINE: ${OCR_ENGINE:-tesseract}
+      OCR_LANGUAGES: ${OCR_LANGUAGES:-eng}
+      APPLE_OCR_URL: ${APPLE_OCR_URL:-}
+    volumes:
+      - /volume1/docker/scrinium/data:/data
+    mem_limit: 1g
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    image: ghcr.io/jwapps-app/scrinium-api:latest
+    command: ["worker"]
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-app}
+      SECRET_KEY: ${SECRET_KEY}
+      DATA_DIR: /data
+      OCR_ENGINE: ${OCR_ENGINE:-tesseract}
+      OCR_LANGUAGES: ${OCR_LANGUAGES:-eng}
+      APPLE_OCR_URL: ${APPLE_OCR_URL:-}
+      WATCH_DIR: /data/watch
+      PUSH_RELAY_URL: ${PUSH_RELAY_URL:-}
+      PUSH_RELAY_API_KEY: ${PUSH_RELAY_API_KEY:-}
+    volumes:
+      - /volume1/docker/scrinium/data:/data
+    mem_limit: 2g
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    image: ghcr.io/jwapps-app/scrinium-web:latest
+    ports:
+      - "${APP_PORT:-8210}:80"
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      - api
+
+  backup:
+    image: postgres:16
+    entrypoint: >
+      /bin/sh -c 'while true; do
+        pg_dump -h postgres -U ${POSTGRES_USER:-app} -Fc ${POSTGRES_DB:-app} |
+          gzip > /backups/$$(date +%Y%m%d-%H%M%S).dump.gz &&
+          find /backups -name "*.dump.gz" -mtime +${BACKUP_RETENTION_DAYS:-14} -delete;
+        sleep 86400;
+      done'
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - /volume1/docker/scrinium/backups:/backups
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy

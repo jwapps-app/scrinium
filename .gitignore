@@ -1,0 +1,17 @@
+.DS_Store
+.env
+CLAUDE.md
+.claude/
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/
+node_modules/
+dist/
+*.log
+ios/Scrinium.xcodeproj/
+ios/**/*.entitlements
+ios/App/Info.plist
+ios/ShareExtension/Info.plist
+.build/

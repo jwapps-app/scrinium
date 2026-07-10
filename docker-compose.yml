@@ -1,0 +1,57 @@
+# Local/dev stack. Frontend runs separately via `npm run dev` (proxies /api).
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./backend
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+asyncpg://app:app@postgres:5432/app
+      SECRET_KEY: dev-secret-change-me
+      ALLOWED_ORIGINS: http://localhost:5173
+      DATA_DIR: /data
+      OCR_ENGINE: ${OCR_ENGINE:-tesseract}
+      APPLE_OCR_URL: ${APPLE_OCR_URL:-}
+    ports:
+      - "8010:8000"
+    volumes:
+      - ./data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: ./backend
+    command: ["worker"]
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+asyncpg://app:app@postgres:5432/app
+      SECRET_KEY: dev-secret-change-me
+      DATA_DIR: /data
+      OCR_ENGINE: ${OCR_ENGINE:-tesseract}
+      APPLE_OCR_URL: ${APPLE_OCR_URL:-}
+      WATCH_DIR: /data/watch
+      PUSH_RELAY_URL: ${PUSH_RELAY_URL:-}
+      PUSH_RELAY_API_KEY: ${PUSH_RELAY_API_KEY:-}
+    volumes:
+      - ./data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

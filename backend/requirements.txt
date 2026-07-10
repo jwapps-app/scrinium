@@ -1,0 +1,16 @@
+fastapi==0.115.*
+uvicorn[standard]==0.34.*
+sqlalchemy[asyncio]==2.0.*
+asyncpg==0.30.*
+alembic==1.15.*
+psycopg2-binary==2.9.*
+pydantic-settings==2.*
+email-validator==2.*
+bcrypt==4.*
+PyJWT==2.*
+python-multipart==0.0.*
+ocrmypdf==16.*
+pypdf==5.*
+Pillow==11.*
+aiofiles==24.*
+httpx==0.28.*
