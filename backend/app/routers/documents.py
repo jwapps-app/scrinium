@@ -22,6 +22,7 @@ from app.schemas import (
 )
 from app.services import intake, storage, thumbnails
 from app.services.intake import ACCEPTED_SUFFIXES
+from app.services.tag_tree import with_ancestors
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -335,7 +336,8 @@ async def update_document(
                 )
             )
         ).scalars().all()
-        doc.tags = list(tags)
+        # A tag implies its ancestors (hierarchy semantics).
+        doc.tags = await with_ancestors(db, list(tags))
     await db.flush()
     await db.refresh(doc)
     return doc_out(doc)

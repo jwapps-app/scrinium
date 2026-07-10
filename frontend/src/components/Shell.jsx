@@ -3,6 +3,27 @@ import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { apiJson, setTokens } from '../api'
 import { APP_NAME } from '../constants/branding'
 
+// Order tags as a tree: parents first, children indented beneath them.
+export function flattenTagTree(tags) {
+  const byParent = new Map()
+  const ids = new Set(tags.map((t) => t.id))
+  for (const tag of tags) {
+    // Treat tags with a missing parent (filtered out, race) as roots.
+    const key = tag.parent_id && ids.has(tag.parent_id) ? tag.parent_id : 'root'
+    if (!byParent.has(key)) byParent.set(key, [])
+    byParent.get(key).push(tag)
+  }
+  const out = []
+  const walk = (key, depth) => {
+    for (const tag of byParent.get(key) || []) {
+      out.push({ ...tag, depth })
+      walk(tag.id, depth + 1)
+    }
+  }
+  walk('root', 0)
+  return out
+}
+
 export default function Shell({ children }) {
   const [stats, setStats] = useState(null)
   const [tags, setTags] = useState([])
@@ -94,13 +115,17 @@ export default function Shell({ children }) {
         {tags.length > 0 && (
           <div className="side-group">
             <div className="side-title">Tags</div>
-            {tags.map((t) => (
+            {flattenTagTree(tags).map((t) => (
               <Link
                 key={t.id}
                 to={`/?tag=${t.id}`}
                 className={`side-link ${activeTag === t.id ? 'active' : ''}`}
+                style={t.depth ? { paddingLeft: `${0.5 + t.depth * 0.85}rem` } : undefined}
               >
-                <span>{t.name}</span>
+                <span className="side-tag-name">
+                  {t.depth > 0 && <span className="tree-tick">└</span>}
+                  {t.name}
+                </span>
                 <span className="side-count">{t.count}</span>
               </Link>
             ))}

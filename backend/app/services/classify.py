@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Document, Rule, Tag
+from app.services.tag_tree import with_ancestors
 
 
 @dataclass
@@ -61,9 +62,12 @@ async def classify_document(
         if rule.tag_id is not None and rule.tag_id not in existing_tag_ids:
             tag = await session.get(Tag, rule.tag_id)
             if tag is not None:
-                document.tags.append(tag)
-                existing_tag_ids.add(tag.id)
-                outcome.added_tags.append(tag.name)
+                # A tag implies its ancestors (hierarchy semantics).
+                for applied in await with_ancestors(session, [tag]):
+                    if applied.id not in existing_tag_ids:
+                        document.tags.append(applied)
+                        existing_tag_ids.add(applied.id)
+                        outcome.added_tags.append(applied.name)
         if rule.set_title and title_candidate is None:
             title_candidate = rule.set_title
 

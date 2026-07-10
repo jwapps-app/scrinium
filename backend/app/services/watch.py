@@ -26,7 +26,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import SessionLocal
 from app.models import Tenant
-from app.services import intake
+from app.services import intake, tag_tree
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,9 @@ async def scan_once() -> int:
             folder_names = list(path.relative_to(watch).parts[:-1])
             try:
                 tags = (
-                    await intake.get_or_create_tags(session, tenant_id, folder_names)
+                    await tag_tree.get_or_create_tag_path(
+                        session, tenant_id, folder_names
+                    )
                     if folder_names
                     else None
                 )

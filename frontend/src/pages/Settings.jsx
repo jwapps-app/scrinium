@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { apiJson } from '../api'
 import { APP_NAME } from '../constants/branding'
 import RulesSection from '../components/RulesSection'
+import TagsSection from '../components/TagsSection'
 import Shell from '../components/Shell'
 import SidecarSetup from '../components/SidecarSetup'
 
@@ -71,6 +72,8 @@ export default function Settings() {
         </p>
         <SidecarSetup connected={sidecar?.healthy === true} />
         </section>
+
+        <TagsSection />
 
         <RulesSection />
       </div>

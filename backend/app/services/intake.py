@@ -14,25 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Blob, Document, DocumentStatus, Job, Tag
 from app.services import storage
 from app.services.classify import classify_document
+from app.services.tag_tree import with_ancestors
 
 
-async def get_or_create_tags(
-    session: AsyncSession, tenant_id: uuid.UUID, names: list[str]
-) -> list[Tag]:
-    """Resolve tag names to Tag rows, creating any that don't exist yet."""
-    tags: list[Tag] = []
-    for name in names:
-        tag = (
-            await session.execute(
-                select(Tag).where(Tag.tenant_id == tenant_id, Tag.name == name)
-            )
-        ).scalar_one_or_none()
-        if tag is None:
-            tag = Tag(tenant_id=tenant_id, name=name)
-            session.add(tag)
-            await session.flush()
-        tags.append(tag)
-    return tags
 
 ACCEPTED_SUFFIXES = {
     ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp",
@@ -91,7 +75,7 @@ async def ingest_file(
         doc.ocr_engine = ocr_engine or "apple"
         doc.page_count = page_count
     if tags:
-        doc.tags = list(tags)
+        doc.tags = await with_ancestors(session, list(tags))
     session.add(doc)
     await session.flush()
     if not captured:

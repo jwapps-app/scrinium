@@ -6,9 +6,21 @@ from sqlalchemy import func, select
 from app.deps import DB, CurrentUser
 from app.models import Tag
 from app.models.document import document_tags
-from app.schemas import TagCreate, TagOut
+from app.schemas import TagCreate, TagOut, TagUpdate
+from app.services.tag_tree import is_descendant
 
 router = APIRouter(prefix="/tags", tags=["tags"])
+
+
+def _tag_out(tag: Tag, count: int = 0) -> TagOut:
+    return TagOut(id=tag.id, name=tag.name, parent_id=tag.parent_id, count=count)
+
+
+async def _get_owned(tag_id: uuid.UUID, user, db) -> Tag:
+    tag = await db.get(Tag, tag_id)
+    if tag is None or tag.tenant_id != user.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tag not found")
+    return tag
 
 
 @router.get("", response_model=list[TagOut])
@@ -22,9 +34,7 @@ async def list_tags(user: CurrentUser, db: DB) -> list[TagOut]:
             .order_by(Tag.name)
         )
     ).all()
-    return [
-        TagOut(id=tag.id, name=tag.name, count=count) for tag, count in rows
-    ]
+    return [_tag_out(tag, count) for tag, count in rows]
 
 
 @router.post("", response_model=TagOut, status_code=status.HTTP_201_CREATED)
@@ -35,16 +45,40 @@ async def create_tag(body: TagCreate, user: CurrentUser, db: DB) -> TagOut:
         )
     ).scalar_one_or_none()
     if existing is not None:
-        return TagOut.model_validate(existing)
-    tag = Tag(tenant_id=user.tenant_id, name=body.name)
+        return _tag_out(existing)
+    if body.parent_id is not None:
+        await _get_owned(body.parent_id, user, db)
+    tag = Tag(tenant_id=user.tenant_id, name=body.name, parent_id=body.parent_id)
     db.add(tag)
     await db.flush()
-    return TagOut.model_validate(tag)
+    return _tag_out(tag)
+
+
+@router.patch("/{tag_id}", response_model=TagOut)
+async def update_tag(
+    tag_id: uuid.UUID, body: TagUpdate, user: CurrentUser, db: DB
+) -> TagOut:
+    tag = await _get_owned(tag_id, user, db)
+    if body.name is not None:
+        tag.name = body.name
+    if body.clear_parent:
+        tag.parent_id = None
+    elif body.parent_id is not None:
+        if body.parent_id == tag.id or await is_descendant(
+            db, body.parent_id, tag.id
+        ):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "That would make the tag its own ancestor",
+            )
+        await _get_owned(body.parent_id, user, db)
+        tag.parent_id = body.parent_id
+    await db.flush()
+    return _tag_out(tag)
 
 
 @router.delete("/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_tag(tag_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
-    tag = await db.get(Tag, tag_id)
-    if tag is None or tag.tenant_id != user.tenant_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tag not found")
+    """Delete a tag; its children are promoted to the root (parent SET NULL)."""
+    tag = await _get_owned(tag_id, user, db)
     await db.delete(tag)

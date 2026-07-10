@@ -33,11 +33,19 @@ class TagOut(BaseModel):
 
     id: uuid.UUID
     name: str
+    parent_id: uuid.UUID | None = None
     count: int = 0
 
 
 class TagCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
+    parent_id: uuid.UUID | None = None
+
+
+class TagUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    parent_id: uuid.UUID | None = None
+    clear_parent: bool = False  # set true to move a tag to the root
 
 
 class DocumentOut(BaseModel):

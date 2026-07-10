@@ -258,6 +258,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-10 (folder tags):** Watched folder now recurses into subfolders and each folder level becomes a tag (Paperless's subdirs-as-tags): `watch/Taxes/2023/x.pdf` → tags "Taxes", "2023" (created or reused per tenant). Consumed/duplicate/failed files keep their relative folder structure inside the filing dirs; emptied drop folders are pruned after each sweep. Verified: nested drop → tagged, OCR'd, filed, pruned.
 
+- **2026-07-10 (tag hierarchy):** Tags can nest (`tags.parent_id`, migration 0007), Paperless semantics per decision: **applying a tag materializes its whole ancestor chain on the document** (all assignment routes — manual PATCH, rules, folder drops — via `services/tag_tree.with_ancestors`), so filters/counts need no recursive queries. Folder drops build the tree (`get_or_create_tag_path`; existing tags never re-parented by drops). Tags API: parent_id on create, PATCH rename/re-parent with cycle rejection, delete promotes children to root. Sidebar renders the indented tree; Settings gains a Tags manager (rename inline, re-parent dropdown, delete, add-with-parent). Verified: folder drop built Construction└Architecture with doc carrying both; tagging with only "Auto" also applied "Insurance"; cycle re-parent rejected 422. Known behavior: re-parenting later doesn't retroactively re-tag existing docs.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

@@ -165,6 +165,19 @@ select {
   color: var(--muted);
 }
 
+.side-tag-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-tick {
+  color: var(--muted);
+  margin-right: 0.3rem;
+  font-size: 0.75em;
+}
+
 .side-count {
   font-size: 0.72rem;
   color: var(--muted);
