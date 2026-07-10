@@ -64,7 +64,7 @@ services:
   web:
     image: ghcr.io/jwapps-app/scrinium-web:latest
     ports:
-      - "${APP_PORT:-8210}:80"
+      - "${APP_PORT:-8220}:80"
     mem_limit: 256m
     restart: unless-stopped
     depends_on:

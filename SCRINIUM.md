@@ -214,8 +214,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 ### Deployment
 - Two compose files: `docker-compose.yml` (dev, `build:`) and `docker-compose.portainer.yml` (NAS, image-only, `mem_limit`, env via Portainer UI).
 - CI (GitHub Actions) builds and publishes private images to `ghcr.io/jwapps-app/scrinium-api` / `scrinium-web` (`:latest`, `:sha-<short>`, `:vX.Y.Z` on tags). The NAS never builds — Portainer pulls.
-- Host: Synology DS1621+ (`192.168.1.10`). Web container publishes `${APP_PORT:-8210}` (8088/3300/8095 and DSM/Portainer ports are taken).
-- Public access via the shared Cloudflare Tunnel: `scrinium.example.com` → `192.168.1.10:8210`. No exposed ports.
+- Host: Synology DS1621+ (`192.168.1.10`). Web container publishes `${APP_PORT:-8220}` (8088/3300/8095/8210 and DSM/Portainer ports are taken).
+- Public access via the shared Cloudflare Tunnel: `scrinium.example.com` → `192.168.1.10:8220`. No exposed ports.
 - Nightly `pg_dump` sidecar (Fc/gzip, N-day retention); bind mounts under `/volume1/docker/scrinium/`.
 
 ### Push (deferred to iOS-app phase)
