@@ -5,6 +5,7 @@ surfaced on the row for the UI) and the pipeline moves on.
 """
 
 import asyncio
+import json
 import logging
 import tempfile
 import uuid
@@ -78,19 +79,23 @@ async def _run_with_progress(
     task = asyncio.create_task(
         asyncio.to_thread(_run_ocr, original, suffix, job.mode, workdir)
     )
-    last: tuple[int, int] | None = None
+    last: tuple[str, int, int] | None = None
     while True:
         done, _ = await asyncio.wait({task}, timeout=1.5)
         if done:
             break
         try:
-            parts = progress_file.read_text().split()
-            snapshot = (int(float(parts[0])), int(float(parts[1])))
-        except (OSError, ValueError, IndexError):
+            report = json.loads(progress_file.read_text())
+            snapshot = (
+                str(report["phase"]),
+                int(float(report["done"])),
+                int(float(report["total"])),
+            )
+        except (OSError, ValueError, KeyError, TypeError):
             continue
-        if snapshot != last and snapshot[1] > 0:
+        if snapshot != last and snapshot[2] > 0:
             last = snapshot
-            job.pages_done, job.pages_total = snapshot
+            job.phase, job.pages_done, job.pages_total = snapshot
             await session.commit()
     return task.result()
 

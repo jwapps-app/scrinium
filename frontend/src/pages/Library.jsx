@@ -277,7 +277,7 @@ export default function Library() {
                         {d.page_count ? `${d.page_count} pp · ` : ''}
                         {new Date(d.created_at).toLocaleDateString()}
                       </span>
-                      <StatusChip status={d.status} progress={d.progress} />
+                      <StatusChip status={d.status} progress={d.progress} phase={d.phase} />
                       {d.status === 'processing' && d.progress != null && (
                         <ProgressBar value={d.progress} />
                       )}
@@ -304,7 +304,7 @@ export default function Library() {
                       {d.status === 'processing' && d.progress != null && (
                         <ProgressBar value={d.progress} />
                       )}
-                      <StatusChip status={d.status} progress={d.progress} />
+                      <StatusChip status={d.status} progress={d.progress} phase={d.phase} />
                     </Link>
                     {d.status === 'flagged' && d.error && (
                       <p className="error small">{d.error}</p>

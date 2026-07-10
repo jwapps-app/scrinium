@@ -87,7 +87,7 @@ async def sidecar_setup(user: CurrentUser) -> dict:
         "load_commands": (
             f"mv ~/Downloads/{HELPER_LABEL}.plist ~/Library/LaunchAgents/\n"
             f"launchctl load {plist_path}\n"
-            f"curl http://localhost:{port}/health"
+            f"sleep 2 && curl http://localhost:{port}/health"
         ),
         "server_env": (
             "OCR_ENGINE=apple\n"

@@ -5,10 +5,16 @@ const LABELS = {
   flagged: 'Needs attention',
 }
 
-export default function StatusChip({ status, progress = null }) {
+const PHASE_LABELS = {
+  preparing: 'Preparing',
+  ocr: 'Processing',
+  finishing: 'Finishing',
+}
+
+export default function StatusChip({ status, progress = null, phase = null }) {
   let label = LABELS[status] || status
   if (status === 'processing' && progress != null) {
-    label = `${label} ${Math.round(progress * 100)}%`
+    label = `${PHASE_LABELS[phase] || 'Processing'} ${Math.round(progress * 100)}%`
   }
   return <span className={`chip chip-${status}`}>{label}</span>
 }

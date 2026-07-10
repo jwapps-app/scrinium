@@ -211,7 +211,7 @@ export default function DocumentView() {
             {doc.title}
           </h1>
         )}
-        <StatusChip status={doc.status} progress={doc.progress} />
+        <StatusChip status={doc.status} progress={doc.progress} phase={doc.phase} />
         <form className="findbar" onSubmit={submitFind}>
           <input
             type="search"

@@ -53,6 +53,7 @@ class DocumentOut(BaseModel):
     has_archive: bool = False
     has_thumbnail: bool = False
     progress: float | None = None  # 0..1 while OCR is running
+    phase: str | None = None  # preparing | ocr | finishing, while running
     tags: list[TagOut] = []
     created_at: datetime
     updated_at: datetime

@@ -26,28 +26,33 @@ from app.services.intake import ACCEPTED_SUFFIXES
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
-def doc_out(doc: Document, progress: float | None = None) -> DocumentOut:
+def doc_out(
+    doc: Document, progress: tuple[float, str | None] | None = None
+) -> DocumentOut:
     out = DocumentOut.model_validate(doc)
     out.has_archive = doc.archive_blob_id is not None
     out.has_thumbnail = doc.thumbnail_blob_id is not None
-    out.progress = progress
+    if progress is not None:
+        out.progress, out.phase = progress
     return out
 
 
-async def _progress_map(db, doc_ids: list[uuid.UUID]) -> dict[uuid.UUID, float]:
-    """document_id -> fraction complete, for currently running OCR jobs."""
+async def _progress_map(
+    db, doc_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, tuple[float, str | None]]:
+    """document_id -> (fraction complete, phase) for running OCR jobs."""
     if not doc_ids:
         return {}
     rows = (
         await db.execute(
-            select(Job.document_id, Job.pages_done, Job.pages_total).where(
-                Job.document_id.in_(doc_ids), Job.status == JobStatus.RUNNING
-            )
+            select(
+                Job.document_id, Job.pages_done, Job.pages_total, Job.phase
+            ).where(Job.document_id.in_(doc_ids), Job.status == JobStatus.RUNNING)
         )
     ).all()
     return {
-        doc_id: min(done / total, 1.0)
-        for doc_id, done, total in rows
+        doc_id: (min(done / total, 1.0), phase)
+        for doc_id, done, total, phase in rows
         if done is not None and total
     }
 
