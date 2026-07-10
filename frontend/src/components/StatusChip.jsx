@@ -1,7 +1,7 @@
 const LABELS = {
   pending: 'Queued',
   processing: 'Processing',
-  ready: 'Ready',
+  ready: 'Completed',
   flagged: 'Needs attention',
 }
 
@@ -12,6 +12,8 @@ const PHASE_LABELS = {
 }
 
 export default function StatusChip({ status, progress = null, phase = null }) {
+  // Completed is the normal state — only exceptions deserve a badge.
+  if (status === 'ready') return null
   let label = LABELS[status] || status
   if (status === 'processing' && progress != null) {
     label = `${PHASE_LABELS[phase] || 'Processing'} ${Math.round(progress * 100)}%`

@@ -262,6 +262,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-10 (bulk-ingest scale):** Two changes for very large folder dumps (tested at 250GB scale in design, 6-file/2-batch/2-worker in practice). Sweeps are **batch-capped** (`WATCH_BATCH_SIZE`, default 25) so intake interleaves with OCR instead of starving it for hours. Workers are **horizontally scalable** (`WORKER_REPLICAS` in the Portainer stack, or `--scale worker=N` dev): job claims were already replica-safe (SKIP LOCKED); the watch sweep now takes a Postgres advisory lock so exactly one replica sweeps. Verified: 6 files consumed as 3 sweeps of 2 with both workers pulling jobs and zero duplicate ingestion. Bulk-run guidance: ~3× corpus disk headroom (originals + archives; clear `.consumed/` as you go), stage-then-`mv` into the watch dir for multi-hour copies.
 
+- **2026-07-10 (PDF/A remedy chain + status polish):** Some born-digital PDFs use print-industry color (DeviceN/spot, overprint) that Ghostscript can't carry into strict PDF/A ("inappropriate alternate" → exit 1). ocrmypdf runs now use a remedy chain: strict PDF/A → retry `--color-conversion-strategy RGB` (still PDF/A) → retry `--output-type pdf` (plain searchable PDF; archival format sacrificed for that document, search kept). Fallbacks trigger only on Ghostscript/PDF-A-shaped stderr, so corrupt inputs still fail once, fast; fallback use is logged. Status wording: "ready" renamed to **Completed** in UI, and completed documents show **no status chip at all** (web + iOS) — only pending/processing/flagged badge; sidebar bucket renamed.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

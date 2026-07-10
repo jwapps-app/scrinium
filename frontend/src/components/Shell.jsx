@@ -68,7 +68,7 @@ export default function Shell({ children }) {
 
   const statusLinks = [
     { label: 'All documents', to: '/', key: null, count: stats?.total },
-    { label: 'Ready', to: '/?status=ready', key: 'ready', count: stats?.ready },
+    { label: 'Completed', to: '/?status=ready', key: 'ready', count: stats?.ready },
     {
       label: 'Processing',
       to: '/?status=processing',

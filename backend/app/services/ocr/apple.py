@@ -22,7 +22,7 @@ from app.services.ocr.tesseract import (
     PROGRESS_PLUGIN,
     OCRError,
     extract_text,
-    progress_env,
+    run_ocrmypdf,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,18 +73,7 @@ class AppleVisionProvider:
             cmd += ["--image-dpi", "300"]
         cmd += [str(original), str(archive)]
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=7200,
-            env=progress_env(workdir),
-        )
-        if result.returncode != 0:
-            raise OCRError(
-                f"ocrmypdf (apple engine) exited {result.returncode}: "
-                f"{result.stderr.strip()[:2000]}"
-            )
+        run_ocrmypdf(cmd, workdir)
 
         return OCRResult(
             archive_path=archive,
