@@ -264,6 +264,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-10 (PDF/A remedy chain + status polish):** Some born-digital PDFs use print-industry color (DeviceN/spot, overprint) that Ghostscript can't carry into strict PDF/A ("inappropriate alternate" → exit 1). ocrmypdf runs now use a remedy chain: strict PDF/A → retry `--color-conversion-strategy RGB` (still PDF/A) → retry `--output-type pdf` (plain searchable PDF; archival format sacrificed for that document, search kept). Fallbacks trigger only on Ghostscript/PDF-A-shaped stderr, so corrupt inputs still fail once, fast; fallback use is logged. Status wording: "ready" renamed to **Completed** in UI, and completed documents show **no status chip at all** (web + iOS) — only pending/processing/flagged badge; sidebar bucket renamed.
 
+- **2026-07-10 (bulk actions):** Library gains selection mode (Select button → click cards/rows to toggle, Select-all-filtered) with a bulk bar: **Re-OCR** (skip mode — retry/upgrade), **Tag** / **Untag** (tag menu; add applies ancestors per hierarchy semantics, remove removes exactly the chosen tag), **Delete** (confirm; shares the single-delete blob-cleanup path). One endpoint: `POST /api/documents/bulk` `{ids, action, mode?, tag_ids?}`, ≤500 ids, foreign/unknown ids skipped and reported. Verified: UI select→tag→untag round-trip, bulk reprocess upgraded two tesseract-era docs to apple.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

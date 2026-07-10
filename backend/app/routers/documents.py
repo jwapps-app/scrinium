@@ -15,6 +15,8 @@ from sqlalchemy import func, select, text
 from app.deps import DB, CurrentUser
 from app.models import Blob, Document, DocumentStatus, Job, JobStatus, Tag
 from app.schemas import (
+    BulkActionRequest,
+    BulkActionResult,
     DocumentList,
     DocumentOut,
     DocumentUpdate,
@@ -356,9 +358,7 @@ async def reprocess(
     return doc_out(doc)
 
 
-@router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
-    doc = await _get_owned(doc_id, user, db)
+async def _delete_document_and_blobs(db, doc: Document) -> None:
     blob_ids = [doc.original_blob_id]
     if doc.archive_blob_id is not None:
         blob_ids.append(doc.archive_blob_id)
@@ -372,3 +372,54 @@ async def delete_document(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
             await db.delete(blob)
         storage.delete_blob(blob_id)
     await db.flush()
+
+
+@router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
+    doc = await _get_owned(doc_id, user, db)
+    await _delete_document_and_blobs(db, doc)
+
+
+@router.post("/bulk", response_model=BulkActionResult)
+async def bulk_action(
+    body: BulkActionRequest, user: CurrentUser, db: DB
+) -> BulkActionResult:
+    """Apply one action to many documents. Unknown/foreign ids are skipped."""
+    docs = (
+        await db.execute(
+            select(Document).where(
+                Document.tenant_id == user.tenant_id, Document.id.in_(body.ids)
+            )
+        )
+    ).scalars().all()
+
+    tags: list[Tag] = []
+    if body.action in ("add_tags", "remove_tags") and body.tag_ids:
+        tags = (
+            await db.execute(
+                select(Tag).where(
+                    Tag.tenant_id == user.tenant_id, Tag.id.in_(body.tag_ids)
+                )
+            )
+        ).scalars().all()
+
+    processed = 0
+    for doc in docs:
+        if body.action == "reprocess":
+            doc.status = DocumentStatus.PENDING
+            doc.error = None
+            db.add(Job(document_id=doc.id, kind="ingest", mode=body.mode))
+        elif body.action == "delete":
+            await _delete_document_and_blobs(db, doc)
+        elif body.action == "add_tags":
+            expanded = await with_ancestors(db, tags)
+            existing = {t.id for t in doc.tags}
+            for tag in expanded:
+                if tag.id not in existing:
+                    doc.tags.append(tag)
+        elif body.action == "remove_tags":
+            remove = {t.id for t in tags}
+            doc.tags = [t for t in doc.tags if t.id not in remove]
+        processed += 1
+    await db.flush()
+    return BulkActionResult(processed=processed, skipped=len(body.ids) - processed)

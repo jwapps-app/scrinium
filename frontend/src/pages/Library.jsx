@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { apiFetch, apiJson } from '../api'
+import Menu from '../components/Menu'
 import ProgressBar from '../components/ProgressBar'
 import Shell from '../components/Shell'
 import StatusChip from '../components/StatusChip'
@@ -34,6 +35,8 @@ export default function Library() {
   const [query, setQuery] = useState(params.get('q') || '')
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState(() => new Set())
   const fileInput = useRef(null)
 
   const status = params.get('status')
@@ -130,6 +133,49 @@ export default function Library() {
   const tagName = tag ? tags.find((t) => t.id === tag)?.name : null
   const hasFilters = status || tag || engine || from || to
 
+  function toggleSelected(id) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function exitSelection() {
+    setSelecting(false)
+    setSelected(new Set())
+  }
+
+  async function bulk(action, extra = {}) {
+    if (selected.size === 0) return
+    if (
+      action === 'delete' &&
+      !window.confirm(`Delete ${selected.size} document(s) and their files?`)
+    )
+      return
+    setError('')
+    try {
+      const result = await apiJson('/api/documents/bulk', {
+        method: 'POST',
+        body: JSON.stringify({ ids: [...selected], action, ...extra }),
+      })
+      exitSelection()
+      load()
+      window.dispatchEvent(new Event('library-changed'))
+      if (result.skipped > 0) setError(`${result.skipped} document(s) were skipped.`)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  // In selection mode, card/row clicks toggle instead of navigating.
+  function selectionClick(e, id) {
+    if (!selecting) return
+    e.preventDefault()
+    toggleSelected(id)
+  }
+
   return (
     <Shell>
       <div
@@ -206,6 +252,12 @@ export default function Library() {
             </button>
           </div>
 
+          <button
+            className="ghost"
+            onClick={() => (selecting ? exitSelection() : setSelecting(true))}
+          >
+            {selecting ? 'Cancel' : 'Select'}
+          </button>
           <button onClick={() => fileInput.current?.click()} disabled={uploading}>
             {uploading ? 'Uploading…' : 'Upload'}
           </button>
@@ -223,6 +275,49 @@ export default function Library() {
         </div>
 
         {error && <p className="error">{error}</p>}
+
+        {selecting && (
+          <div className="bulk-bar">
+            <strong>{selected.size} selected</strong>
+            <button
+              className="ghost"
+              onClick={() => setSelected(new Set(docs.map((d) => d.id)))}
+            >
+              Select all {docs.length}
+            </button>
+            <span className="bulk-spacer" />
+            <button
+              className="ghost"
+              disabled={selected.size === 0}
+              onClick={() => bulk('reprocess', { mode: 'skip' })}
+            >
+              Re-OCR
+            </button>
+            <Menu
+              label="Tag"
+              className="ghost"
+              items={tags.map((t) => ({
+                label: t.name,
+                onClick: () => bulk('add_tags', { tag_ids: [t.id] }),
+              }))}
+            />
+            <Menu
+              label="Untag"
+              className="ghost"
+              items={tags.map((t) => ({
+                label: t.name,
+                onClick: () => bulk('remove_tags', { tag_ids: [t.id] }),
+              }))}
+            />
+            <button
+              className="ghost danger"
+              disabled={selected.size === 0}
+              onClick={() => bulk('delete')}
+            >
+              Delete
+            </button>
+          </div>
+        )}
 
         {results !== null ? (
           <section>
@@ -269,7 +364,19 @@ export default function Library() {
             {view === 'grid' ? (
               <div className="card-grid">
                 {docs.map((d) => (
-                  <Link to={`/doc/${d.id}`} key={d.id} className="card">
+                  <Link
+                    to={`/doc/${d.id}`}
+                    key={d.id}
+                    className={`card ${selected.has(d.id) ? 'selected' : ''}`}
+                    onClick={(e) => selectionClick(e, d.id)}
+                  >
+                    {selecting && (
+                      <span
+                        className={`pick ${selected.has(d.id) ? 'picked' : ''}`}
+                      >
+                        {selected.has(d.id) ? '✓' : ''}
+                      </span>
+                    )}
                     <Thumb id={d.id} className="thumb-card" />
                     <div className="card-body">
                       <span className="card-title">{d.title}</span>
@@ -289,7 +396,18 @@ export default function Library() {
               <ul className="doc-list">
                 {docs.map((d) => (
                   <li key={d.id}>
-                    <Link to={`/doc/${d.id}`} className="doc-row">
+                    <Link
+                      to={`/doc/${d.id}`}
+                      className={`doc-row ${selected.has(d.id) ? 'selected' : ''}`}
+                      onClick={(e) => selectionClick(e, d.id)}
+                    >
+                      {selecting && (
+                        <span
+                          className={`pick ${selected.has(d.id) ? 'picked' : ''}`}
+                        >
+                          {selected.has(d.id) ? '✓' : ''}
+                        </span>
+                      )}
                       <Thumb id={d.id} className="thumb-row" />
                       <span className="doc-title">{d.title}</span>
                       {d.tags.map((t) => (

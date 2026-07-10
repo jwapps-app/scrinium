@@ -81,6 +81,18 @@ class ReprocessRequest(BaseModel):
     mode: str = Field(default="redo", pattern="^(skip|redo|force)$")
 
 
+class BulkActionRequest(BaseModel):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    action: str = Field(pattern="^(reprocess|delete|add_tags|remove_tags)$")
+    mode: str = Field(default="skip", pattern="^(skip|redo|force)$")
+    tag_ids: list[uuid.UUID] = []
+
+
+class BulkActionResult(BaseModel):
+    processed: int
+    skipped: int
+
+
 class DeviceRegister(BaseModel):
     token: str = Field(min_length=8, max_length=255)
     platform: str = Field(default="ios", max_length=16)

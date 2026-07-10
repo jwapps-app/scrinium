@@ -287,6 +287,61 @@ select {
   letter-spacing: normal;
 }
 
+/* Bulk selection */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.bulk-spacer {
+  flex: 1;
+}
+
+.pick {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  background: var(--surface);
+  color: var(--accent-text);
+  display: grid;
+  place-items: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.pick.picked {
+  background: var(--accent);
+}
+
+.doc-row .pick {
+  position: static;
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+
+.card {
+  position: relative;
+}
+
+.card.selected,
+.doc-row.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
 /* Card grid */
 .card-grid {
   display: grid;
