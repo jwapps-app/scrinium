@@ -1,18 +1,23 @@
 """Watched-folder consumer.
 
-The worker polls WATCH_DIR for PDFs/images. Files are ingested through the
-same intake path as uploads and then moved into dot-subfolders so nothing is
-ever silently deleted:
+The worker polls WATCH_DIR for PDFs/images, including inside subfolders —
+and each folder level becomes a tag: dropping `Taxes/2023/return.pdf` into
+the watch dir ingests it tagged "Taxes" and "2023" (tags are created if
+they don't exist, reused if they do). Files go through the same intake path
+as uploads and are then moved into dot-subfolders, keeping their relative
+folder structure, so nothing is ever silently deleted:
 
     .consumed/    ingested successfully (original also lives in the blob store)
     .duplicates/  content hash already in the library
     .failed/      intake crashed; kept for inspection
 
-Fail-soft by design: one bad file never stops the sweep, and the consumer
-simply idles until Scrinium's first user/tenant exists.
+Emptied drop folders are pruned after each sweep. Fail-soft by design: one
+bad file never stops the sweep, and the consumer simply idles until
+Scrinium's first user/tenant exists.
 """
 
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -28,13 +33,48 @@ logger = logging.getLogger(__name__)
 # A file modified this recently may still be mid-copy; pick it up next sweep.
 SETTLE_SECONDS = 3
 
+FILING_DIRS = (".consumed", ".duplicates", ".failed")
 
-def _move_into(path: Path, folder: Path) -> None:
-    folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / path.name
+
+def _candidates(watch: Path) -> list[Path]:
+    found = []
+    for path in sorted(watch.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(watch)
+        # Skip our filing dirs and anything hidden at any level.
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        if path.suffix.lower() not in intake.ACCEPTED_SUFFIXES:
+            continue
+        found.append(path)
+    return found
+
+
+def _file_into(watch: Path, path: Path, folder_name: str) -> None:
+    """Move a processed file under watch/<folder_name>/, keeping its
+    relative folder structure."""
+    rel = path.relative_to(watch)
+    dest = watch / folder_name / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
-        dest = folder / f"{int(time.time())}-{path.name}"
+        dest = dest.with_name(f"{int(time.time())}-{dest.name}")
     path.rename(dest)
+
+
+def _prune_empty_dirs(watch: Path) -> None:
+    """Remove drop folders that emptied out during the sweep."""
+    for dirpath, _dirnames, _filenames in os.walk(watch, topdown=False):
+        directory = Path(dirpath)
+        if directory == watch:
+            continue
+        rel = directory.relative_to(watch)
+        if rel.parts[0].startswith("."):
+            continue
+        try:
+            directory.rmdir()  # fails harmlessly unless empty
+        except OSError:
+            pass
 
 
 async def scan_once() -> int:
@@ -45,13 +85,7 @@ async def scan_once() -> int:
     if not watch.is_dir():
         return 0
 
-    candidates = [
-        p
-        for p in watch.iterdir()
-        if p.is_file()
-        and not p.name.startswith(".")
-        and p.suffix.lower() in intake.ACCEPTED_SUFFIXES
-    ]
+    candidates = _candidates(watch)
     if not candidates:
         return 0
 
@@ -63,21 +97,36 @@ async def scan_once() -> int:
         if tenant_id is None:
             return 0  # nobody has set up yet; leave files in place
 
-        for path in sorted(candidates):
+        for path in candidates:
             if time.time() - path.stat().st_mtime < SETTLE_SECONDS:
                 continue
+            folder_names = list(path.relative_to(watch).parts[:-1])
             try:
-                doc = await intake.ingest_file(session, tenant_id, path, path.name)
+                tags = (
+                    await intake.get_or_create_tags(session, tenant_id, folder_names)
+                    if folder_names
+                    else None
+                )
+                doc = await intake.ingest_file(
+                    session, tenant_id, path, path.name, tags=tags
+                )
                 await session.commit()
-                _move_into(path, watch / ".consumed")
+                _file_into(watch, path, ".consumed")
                 consumed += 1
-                logger.info("consumed %s as document %s", path.name, doc.id)
+                logger.info(
+                    "consumed %s as document %s%s",
+                    path.name,
+                    doc.id,
+                    f" (tags: {', '.join(folder_names)})" if folder_names else "",
+                )
             except intake.DuplicateDocument as exc:
                 await session.rollback()
-                _move_into(path, watch / ".duplicates")
+                _file_into(watch, path, ".duplicates")
                 logger.info("skipped duplicate %s (%s)", path.name, exc.existing_id)
             except Exception:
                 await session.rollback()
                 logger.exception("failed to consume %s", path.name)
-                _move_into(path, watch / ".failed")
+                _file_into(watch, path, ".failed")
+
+    _prune_empty_dirs(watch)
     return consumed

@@ -256,6 +256,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-10 (toolbar + auto-classify):** Viewer toolbar reworked per discussion. Single **Download** menu: Searchable (PDF/A) + Original, Original-only when no archive (captures/flagged) — note digital-native PDFs still get an archive (PDF/A conversion, text layer carried through; skip-mode only skips *recognition*). **Re-OCR is engine-aware**: shown only as "Re-OCR with Apple Vision" when server engine=apple AND sidecar healthy AND doc.ocr_engine != apple (a Tesseract-only user never sees it); flagged docs get "Retry OCR" regardless. **Classification now auto-runs after every successful OCR** (and on captured uploads) — deterministic + idempotent so safe; runs before the push so notifications carry rule-set titles; manual "Run classification" moved to the ⋯ overflow with Delete. Deferred: runtime engine toggle in Settings (needs DB-backed pref instead of env), iOS on-demand Re-OCR (phone as pull-based Vision engine for server docs; updates search text only, not the archive layer). PWA cannot use Apple Vision (no browser API) — that's the architectural reason for the native app + sidecar.
 
+- **2026-07-10 (folder tags):** Watched folder now recurses into subfolders and each folder level becomes a tag (Paperless's subdirs-as-tags): `watch/Taxes/2023/x.pdf` → tags "Taxes", "2023" (created or reused per tenant). Consumed/duplicate/failed files keep their relative folder structure inside the filing dirs; emptied drop folders are pruned after each sweep. Verified: nested drop → tagged, OCR'd, filed, pruned.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.
