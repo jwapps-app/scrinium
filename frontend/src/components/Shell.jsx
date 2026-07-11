@@ -193,7 +193,11 @@ export default function Shell({ children }) {
                   <div className="proc-line">
                     <span className="proc-title">{r.title}</span>
                     <span className="proc-eta">
-                      {formatEta(r.eta_seconds) || ''}
+                      {r.phase === 'preparing'
+                        ? 'preparing…'
+                        : r.phase === 'finishing'
+                          ? 'finishing…'
+                          : formatEta(r.eta_seconds) || ''}
                     </span>
                   </div>
                   <ProgressBar value={r.progress} />

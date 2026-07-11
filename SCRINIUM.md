@@ -303,6 +303,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-11 (Insights page):** `/insights` (sidebar link, above Settings): stat cards (documents, total pages, bytes on disk for originals+archives), added-per-month chart for the last 12 months, and top-8 bars for correspondents, document types, tags (tinted with their colors), and OCR-engine breakdown. Pure CSS bars, no chart library. One aggregate endpoint (`GET /api/insights`), all queries excluding trashed docs.
 
+- **2026-07-11 (ETA accuracy):** Field report from the 13k-doc import: queue ETA sat on "estimating…" and some per-file ETAs lied at the edges. Two causes, two fixes. Queue throughput window widened 5→30 min — book-sized docs (an hour each at concurrency 3) produced zero completions in 5 minutes, reading as rate 0. Per-file ETA is page math, so it's now computed **only during the `ocr` phase**; during `preparing`/`finishing` the sidebar shows the phase name instead of a number ("finishing…" beats a false "<1m" while Ghostscript assembles a 500-page PDF/A). Early-job wobble (extrapolating from the first few pages) is inherent and settles.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

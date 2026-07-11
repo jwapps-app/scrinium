@@ -350,7 +350,12 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
             else 0.0
         )
         eta = None
-        if job.started_at and job.pages_done and job.pages_total:
+        if (
+            job.phase == "ocr"
+            and job.started_at
+            and job.pages_done
+            and job.pages_total
+        ):
             elapsed = (now - job.started_at).total_seconds()
             per_page = elapsed / job.pages_done
             eta = int(max(0, (job.pages_total - job.pages_done) * per_page))
@@ -370,7 +375,9 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
 
     # Throughput-based queue ETA: measure documents actually completed in a
     # recent window, so parallelism and real per-doc cost are baked in.
-    window_min = 5
+    # 30 minutes: long enough that hour-long scanned books still register,
+    # short enough to track the current mix.
+    window_min = 30
     done_recent = (
         await db.execute(
             select(func.count(Job.id))
