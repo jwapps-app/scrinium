@@ -14,7 +14,7 @@ from app.config import settings
 from app.database import SessionLocal, engine
 from app.models import Document, DocumentStatus, Job, JobStatus
 from app.services.app_state import PROCESSING_PAUSED, get_flag
-from app.services.deletion import purge_expired
+from app.services.deletion import purge_expired, sweep_upload_sessions
 from app.services.ingest import process_job
 from app.services.mail import poll_once as poll_mail_once
 from app.services.watch import scan_once, sweep_retention
@@ -136,6 +136,7 @@ async def maintenance_loop() -> None:
             try:
                 async def _retention():
                     await asyncio.to_thread(sweep_retention)
+                    await asyncio.to_thread(sweep_upload_sessions)
                 await _with_advisory_lock(WATCH_LOCK_KEY, _retention)
             except Exception:
                 logger.exception("retention sweep crashed; continuing")

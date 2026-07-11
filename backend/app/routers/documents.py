@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated
 
 import aiofiles
-from fastapi import APIRouter, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select, text
 
@@ -81,6 +81,99 @@ SORTS = {
     "title": func.lower(Document.title).asc(),
     "updated": Document.updated_at.desc(),
 }
+
+
+# --- Chunked uploads -------------------------------------------------------
+# Reverse proxies/tunnels commonly cap request bodies (Cloudflare: 100 MB),
+# so big files arrive as a session of ~32 MB parts the client PUTs one by
+# one, then a complete call assembles and ingests. Stale sessions are swept
+# by the worker after a day.
+
+
+def _upload_session_dir(upload_id: uuid.UUID) -> Path:
+    return Path(app_settings.data_dir) / "upload-sessions" / upload_id.hex
+
+
+@router.post("/uploads")
+async def create_upload_session(user: CurrentUser) -> dict:
+    upload_id = uuid.uuid4()
+    session_dir = _upload_session_dir(upload_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "owner").write_text(str(user.tenant_id))
+    return {"upload_id": str(upload_id)}
+
+
+def _owned_session_dir(upload_id: uuid.UUID, user) -> Path:
+    session_dir = _upload_session_dir(upload_id)
+    owner = session_dir / "owner"
+    if not owner.exists() or owner.read_text() != str(user.tenant_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Upload session not found")
+    return session_dir
+
+
+@router.put("/uploads/{upload_id}/{index}")
+async def upload_chunk(
+    upload_id: uuid.UUID,
+    index: int,
+    request: Request,
+    user: CurrentUser,
+) -> dict:
+    if index < 0 or index > 10000:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Bad chunk index")
+    session_dir = _owned_session_dir(upload_id, user)
+    part = session_dir / f"part-{index:05d}"
+    async with aiofiles.open(part, "wb") as out:
+        async for chunk in request.stream():
+            await out.write(chunk)
+    return {"received": part.stat().st_size}
+
+
+@router.post(
+    "/uploads/{upload_id}/complete",
+    response_model=DocumentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def complete_upload(
+    upload_id: uuid.UUID, body: dict, user: CurrentUser, db: DB
+) -> DocumentOut:
+    session_dir = _owned_session_dir(upload_id, user)
+    filename = (body.get("filename") or "upload.pdf").strip() or "upload.pdf"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ACCEPTED_SUFFIXES:
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            f"Unsupported file type {suffix or '(none)'}",
+        )
+    parts = sorted(session_dir.glob("part-*"))
+    if not parts:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No chunks uploaded")
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        async with aiofiles.open(tmp_path, "wb") as out:
+            for part in parts:
+                async with aiofiles.open(part, "rb") as src:
+                    while chunk := await src.read(1024 * 1024):
+                        await out.write(chunk)
+        try:
+            doc = await intake.ingest_file(
+                db, user.tenant_id, tmp_path, filename
+            )
+        except intake.DuplicateDocument as exc:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Duplicate of existing document {exc.existing_id}",
+            ) from exc
+        return doc_out(doc)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+        for part in parts:
+            part.unlink(missing_ok=True)
+        (session_dir / "owner").unlink(missing_ok=True)
+        try:
+            session_dir.rmdir()
+        except OSError:
+            pass
 
 
 @router.post("", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)

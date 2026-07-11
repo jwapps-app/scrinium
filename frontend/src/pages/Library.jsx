@@ -41,6 +41,7 @@ export default function Library() {
   const [results, setResults] = useState(null)
   const [query, setQuery] = useState(params.get('q') || '')
   const [uploading, setUploading] = useState(false)
+  const [uploadNote, setUploadNote] = useState('')
   const [error, setError] = useState('')
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState(() => new Set())
@@ -132,23 +133,57 @@ export default function Library() {
       .catch((err) => setError(err.message))
   }, [q])
 
+  // Tunnels commonly cap request bodies (Cloudflare: 100 MB), so large
+  // files go up as a session of 32 MB chunks assembled server-side.
+  const CHUNK_THRESHOLD = 80 * 1024 * 1024
+  const CHUNK_SIZE = 32 * 1024 * 1024
+
+  async function uploadChunked(file) {
+    const { upload_id } = await apiJson('/api/documents/uploads', { method: 'POST' })
+    const total = Math.ceil(file.size / CHUNK_SIZE)
+    for (let i = 0; i < total; i++) {
+      const part = file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE)
+      const resp = await apiFetch(`/api/documents/uploads/${upload_id}/${i}`, {
+        method: 'PUT',
+        body: part,
+      })
+      if (!resp.ok) throw new Error(`Chunk ${i + 1}/${total} failed (${resp.status})`)
+      setUploadNote(`${file.name}: uploading ${Math.round(((i + 1) / total) * 100)}%`)
+    }
+    setUploadNote(`${file.name}: assembling…`)
+    const resp = await apiFetch(`/api/documents/uploads/${upload_id}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: file.name }),
+    })
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}))
+      throw new Error(body.detail || `Upload failed (${resp.status})`)
+    }
+  }
+
   async function uploadFiles(files) {
     setUploading(true)
     setError('')
     for (const file of files) {
-      const form = new FormData()
-      form.append('file', file)
       try {
-        const resp = await apiFetch('/api/documents', { method: 'POST', body: form })
-        if (!resp.ok) {
-          const body = await resp.json().catch(() => ({}))
-          throw new Error(body.detail || `Upload failed (${resp.status})`)
+        if (file.size > CHUNK_THRESHOLD) {
+          await uploadChunked(file)
+        } else {
+          const form = new FormData()
+          form.append('file', file)
+          const resp = await apiFetch('/api/documents', { method: 'POST', body: form })
+          if (!resp.ok) {
+            const body = await resp.json().catch(() => ({}))
+            throw new Error(body.detail || `Upload failed (${resp.status})`)
+          }
         }
       } catch (err) {
         setError(`${file.name}: ${err.message}`)
       }
     }
     setUploading(false)
+    setUploadNote('')
     load()
     window.dispatchEvent(new Event('library-changed'))
   }
@@ -376,6 +411,7 @@ export default function Library() {
         </div>
 
         {error && <p className="error">{error}</p>}
+      {uploadNote && <p className="notice">{uploadNote}</p>}
 
         {selecting && (
           <div className="bulk-bar">

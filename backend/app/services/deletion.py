@@ -7,6 +7,8 @@ removes blobs, disk files, and the consumed watch-folder copy.
 """
 
 import logging
+import shutil
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -77,3 +79,22 @@ async def purge_expired(db: AsyncSession, limit: int = 100) -> int:
         await db.commit()
         logger.info("purged %d expired document(s) from trash", len(expired))
     return len(expired)
+
+
+def sweep_upload_sessions(max_age_hours: int = 24) -> int:
+    """Remove chunked-upload sessions abandoned mid-transfer."""
+    root = Path(settings.data_dir) / "upload-sessions"
+    if not root.is_dir():
+        return 0
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    for session_dir in root.iterdir():
+        try:
+            if session_dir.is_dir() and session_dir.stat().st_mtime < cutoff:
+                shutil.rmtree(session_dir, ignore_errors=True)
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        logger.info("removed %d abandoned upload session(s)", removed)
+    return removed
