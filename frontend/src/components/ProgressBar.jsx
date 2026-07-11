@@ -5,8 +5,13 @@ export function formatEta(seconds) {
   const mins = Math.round(seconds / 60)
   if (mins < 60) return `~${mins}m`
   const hours = Math.floor(mins / 60)
-  const rem = mins % 60
-  return rem ? `~${hours}h ${rem}m` : `~${hours}h`
+  if (hours < 24) {
+    const rem = mins % 60
+    return rem ? `~${hours}h ${rem}m` : `~${hours}h`
+  }
+  const days = Math.floor(hours / 24)
+  const remHours = hours % 24
+  return remHours ? `~${days}d ${remHours}h` : `~${days}d`
 }
 
 export default function ProgressBar({ value, label = false }) {
