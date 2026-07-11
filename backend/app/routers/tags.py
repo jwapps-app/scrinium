@@ -77,6 +77,42 @@ async def update_tag(
     return _tag_out(tag)
 
 
+@router.delete("/unused")
+async def delete_unused_tags(user: CurrentUser, db: DB) -> dict:
+    """Delete every tag with zero documents. Runs repeatedly so emptied
+    parent chains collapse bottom-up. Returns how many were removed."""
+    removed = 0
+    while True:
+        unused = (
+            await db.execute(
+                select(Tag)
+                .outerjoin(document_tags, document_tags.c.tag_id == Tag.id)
+                .where(Tag.tenant_id == user.tenant_id)
+                .group_by(Tag.id)
+                .having(func.count(document_tags.c.document_id) == 0)
+            )
+        ).scalars().all()
+        # Only leaves: a tag with children sticks around until they're gone.
+        child_parents = {
+            row[0]
+            for row in (
+                await db.execute(
+                    select(Tag.parent_id).where(
+                        Tag.tenant_id == user.tenant_id, Tag.parent_id.is_not(None)
+                    )
+                )
+            ).all()
+        }
+        leaves = [t for t in unused if t.id not in child_parents]
+        if not leaves:
+            break
+        for tag in leaves:
+            await db.delete(tag)
+        removed += len(leaves)
+        await db.flush()
+    return {"removed": removed}
+
+
 @router.delete("/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_tag(tag_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
     """Delete a tag; its children are promoted to the root (parent SET NULL)."""

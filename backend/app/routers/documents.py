@@ -419,14 +419,44 @@ async def delete_document(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
 async def bulk_action(
     body: BulkActionRequest, user: CurrentUser, db: DB
 ) -> BulkActionResult:
-    """Apply one action to many documents. Unknown/foreign ids are skipped."""
-    docs = (
-        await db.execute(
-            select(Document).where(
-                Document.tenant_id == user.tenant_id, Document.id.in_(body.ids)
-            )
+    """Apply one action to many documents. Unknown/foreign ids are skipped.
+
+    With `filter_tag_id`, acts on every document carrying that tag, 500 per
+    call — the response's `remaining` says how many are left; call again
+    until it reaches zero."""
+    remaining = 0
+    if body.filter_tag_id is not None:
+        base = select(Document).where(
+            Document.tenant_id == user.tenant_id,
+            Document.tags.any(Tag.id == body.filter_tag_id),
         )
-    ).scalars().all()
+        if body.action == "delete":
+            # Deletes do file IO — chunk them; caller repeats while remaining.
+            docs = (await db.execute(base.limit(500))).scalars().all()
+            total = (
+                await db.execute(
+                    select(func.count(Document.id)).where(
+                        Document.tenant_id == user.tenant_id,
+                        Document.tags.any(Tag.id == body.filter_tag_id),
+                    )
+                )
+            ).scalar_one()
+            remaining = max(total - len(docs), 0)
+        else:
+            # Row-only actions are cheap; one pass over the whole filter.
+            docs = (await db.execute(base)).scalars().all()
+    elif body.ids:
+        docs = (
+            await db.execute(
+                select(Document).where(
+                    Document.tenant_id == user.tenant_id, Document.id.in_(body.ids)
+                )
+            )
+        ).scalars().all()
+    else:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide ids or filter_tag_id"
+        )
 
     tags: list[Tag] = []
     if body.action in ("add_tags", "remove_tags") and body.tag_ids:
@@ -457,4 +487,7 @@ async def bulk_action(
             doc.tags = [t for t in doc.tags if t.id not in remove]
         processed += 1
     await db.flush()
-    return BulkActionResult(processed=processed, skipped=len(body.ids) - processed)
+    skipped = len(body.ids) - processed if body.ids else 0
+    return BulkActionResult(
+        processed=processed, skipped=max(skipped, 0), remaining=remaining
+    )

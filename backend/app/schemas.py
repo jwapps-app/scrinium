@@ -82,7 +82,10 @@ class ReprocessRequest(BaseModel):
 
 
 class BulkActionRequest(BaseModel):
-    ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
+    # Alternative to ids: act on every document carrying this tag.
+    # Processed in chunks of 500; call again while `remaining` > 0.
+    filter_tag_id: uuid.UUID | None = None
     action: str = Field(pattern="^(reprocess|delete|add_tags|remove_tags)$")
     mode: str = Field(default="skip", pattern="^(skip|redo|force)$")
     tag_ids: list[uuid.UUID] = []
@@ -91,6 +94,7 @@ class BulkActionRequest(BaseModel):
 class BulkActionResult(BaseModel):
     processed: int
     skipped: int
+    remaining: int = 0
 
 
 class DeviceRegister(BaseModel):

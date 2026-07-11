@@ -148,6 +148,30 @@ export default function TagsSection() {
         </ul>
       )}
 
+      {tags.some((t) => t.count === 0) && (
+        <p>
+          <button
+            className="ghost"
+            onClick={async () => {
+              setError('')
+              try {
+                const result = await apiJson('/api/tags/unused', {
+                  method: 'DELETE',
+                })
+                load()
+                window.dispatchEvent(new Event('library-changed'))
+                if (result.removed === 0)
+                  setError('No unused tags to remove (tags with children stay until the children go).')
+              } catch (e) {
+                setError(e.message)
+              }
+            }}
+          >
+            Delete unused tags (0 documents)
+          </button>
+        </p>
+      )}
+
       <form className="rule-form" onSubmit={create}>
         <div className="rule-form-row">
           <input

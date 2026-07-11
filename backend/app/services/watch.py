@@ -36,14 +36,20 @@ SETTLE_SECONDS = 3
 FILING_DIRS = (".consumed", ".duplicates", ".failed")
 
 
+def _skip_part(part: str) -> bool:
+    # "."  — our filing dirs, hidden files, AppleDouble (._*)
+    # "@"  — Synology system dirs (@eaDir thumbnail metadata, @Recycle…)
+    # "#"  — Synology #recycle / #snapshot
+    return part.startswith((".", "@", "#"))
+
+
 def _candidates(watch: Path) -> list[Path]:
     found = []
     for path in sorted(watch.rglob("*")):
         if not path.is_file():
             continue
         rel = path.relative_to(watch)
-        # Skip our filing dirs and anything hidden at any level.
-        if any(part.startswith(".") for part in rel.parts):
+        if any(_skip_part(part) for part in rel.parts):
             continue
         if path.suffix.lower() not in intake.ACCEPTED_SUFFIXES:
             continue
@@ -70,7 +76,7 @@ def _prune_empty_dirs(watch: Path) -> None:
         if directory == watch:
             continue
         rel = directory.relative_to(watch)
-        if rel.parts[0].startswith("."):
+        if any(_skip_part(part) for part in rel.parts):
             continue
         try:
             directory.rmdir()  # fails harmlessly unless empty

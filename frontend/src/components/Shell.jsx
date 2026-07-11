@@ -116,14 +116,17 @@ export default function Shell({ children }) {
                 stats?.paused ? 'is-paused' : ''
               }`}
               onClick={async () => {
+                const next = !stats.paused
+                setStats({ ...stats, paused: next }) // optimistic; poll corrects
                 try {
                   await apiJson('/api/documents/processing', {
                     method: 'POST',
-                    body: JSON.stringify({ paused: !stats.paused }),
+                    body: JSON.stringify({ paused: next }),
                   })
                   window.dispatchEvent(new Event('library-changed'))
-                } catch {
-                  /* next poll corrects the display */
+                } catch (err) {
+                  setStats({ ...stats, paused: !next })
+                  window.alert(`Pause request failed: ${err.message}`)
                 }
               }}
               title={

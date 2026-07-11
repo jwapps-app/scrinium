@@ -37,6 +37,8 @@ export default function Library() {
   const [error, setError] = useState('')
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState(() => new Set())
+  const [wholeFilter, setWholeFilter] = useState(false)
+  const [bulkBusy, setBulkBusy] = useState(false)
   const fileInput = useRef(null)
 
   const status = params.get('status')
@@ -145,27 +147,48 @@ export default function Library() {
   function exitSelection() {
     setSelecting(false)
     setSelected(new Set())
+    setWholeFilter(false)
   }
 
   async function bulk(action, extra = {}) {
-    if (selected.size === 0) return
+    const count = wholeFilter ? total : selected.size
+    if (count === 0) return
     if (
       action === 'delete' &&
-      !window.confirm(`Delete ${selected.size} document(s) and their files?`)
+      !window.confirm(`Delete ${count} document(s) and their files?`)
     )
       return
     setError('')
+    setBulkBusy(true)
     try {
-      const result = await apiJson('/api/documents/bulk', {
-        method: 'POST',
-        body: JSON.stringify({ ids: [...selected], action, ...extra }),
-      })
+      if (wholeFilter && tag) {
+        // Server-side: acts on everything carrying the tag; deletes are
+        // chunked, so repeat until the server says nothing remains.
+        let done = 0
+        for (;;) {
+          const result = await apiJson('/api/documents/bulk', {
+            method: 'POST',
+            body: JSON.stringify({ filter_tag_id: tag, action, ...extra }),
+          })
+          done += result.processed
+          load()
+          window.dispatchEvent(new Event('library-changed'))
+          if (!result.remaining || result.processed === 0) break
+        }
+      } else {
+        const result = await apiJson('/api/documents/bulk', {
+          method: 'POST',
+          body: JSON.stringify({ ids: [...selected], action, ...extra }),
+        })
+        if (result.skipped > 0) setError(`${result.skipped} document(s) were skipped.`)
+      }
       exitSelection()
       load()
       window.dispatchEvent(new Event('library-changed'))
-      if (result.skipped > 0) setError(`${result.skipped} document(s) were skipped.`)
     } catch (err) {
       setError(err.message)
+    } finally {
+      setBulkBusy(false)
     }
   }
 
@@ -278,17 +301,32 @@ export default function Library() {
 
         {selecting && (
           <div className="bulk-bar">
-            <strong>{selected.size} selected</strong>
+            <strong>
+              {wholeFilter ? `all ${total} in filter` : `${selected.size} selected`}
+            </strong>
             <button
               className="ghost"
-              onClick={() => setSelected(new Set(docs.map((d) => d.id)))}
+              onClick={() => {
+                setWholeFilter(false)
+                setSelected(new Set(docs.map((d) => d.id)))
+              }}
             >
-              Select all {docs.length}
+              Select shown ({docs.length})
             </button>
+            {tag && total > 0 && (
+              <button
+                className={wholeFilter ? '' : 'ghost'}
+                onClick={() => setWholeFilter(!wholeFilter)}
+                title="Act on every document with this tag, not just the ones loaded"
+              >
+                Entire filter ({total})
+              </button>
+            )}
             <span className="bulk-spacer" />
+            {bulkBusy && <span className="doc-meta">working…</span>}
             <button
               className="ghost"
-              disabled={selected.size === 0}
+              disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
               onClick={() => bulk('reprocess', { mode: 'skip' })}
             >
               Re-OCR
@@ -311,7 +349,7 @@ export default function Library() {
             />
             <button
               className="ghost danger"
-              disabled={selected.size === 0}
+              disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
               onClick={() => bulk('delete')}
             >
               Delete

@@ -270,6 +270,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-10 (consumed-copy cleanup):** Documents ingested via the watch folder record where their filed copy went (`documents.source_path`, migration 0009, relative to WATCH_DIR). Deleting the document (single or bulk) now also removes that `.consumed/` copy and prunes emptied folders — path-checked to never reach outside the watch dir. The api service now gets WATCH_DIR in both compose files (deletion runs there). Pre-existing consumed copies (no source_path) still need manual clearing. `.duplicates/`/`.failed/` untouched by design.
 
+- **2026-07-10 (Synology junk + filter-wide cleanup):** The watcher now skips path parts starting with `.`, `@`, or `#` — covering Synology's `@eaDir` thumbnail-metadata dirs (whose SYNOFILE_THUMB_* images were being ingested as documents during a big NAS dump), `@Recycle`, `#recycle`/`#snapshot`, and AppleDouble files. Cleanup tooling: bulk endpoint accepts `filter_tag_id` to act on *every* document carrying a tag (deletes chunked at 500/request with `remaining`; row-only actions single-pass) — UI gains "Entire filter (N)" in the bulk bar when a tag filter is active; `DELETE /api/tags/unused` + Settings button removes all zero-document tags, collapsing emptied parent chains bottom-up. Pause button now shows an alert on request failure and toggles optimistically.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.
