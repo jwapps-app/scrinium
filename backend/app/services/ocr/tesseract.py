@@ -184,6 +184,7 @@ class TesseractProvider:
             *MODE_FLAGS.get(mode, MODE_FLAGS["skip"]),
             "--output-type", "pdfa",
             "--plugin", PROGRESS_PLUGIN,
+            "--jobs", str(settings.ocr_jobs),
             "--language", settings.ocr_languages,
             "--quiet",
         ]

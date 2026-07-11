@@ -183,6 +183,37 @@ select {
   font-size: 0.75em;
 }
 
+.side-tag-row {
+  display: flex;
+  align-items: center;
+}
+
+.side-tag-row .tag-link {
+  flex: 1;
+  min-width: 0;
+}
+
+.tag-caret {
+  flex: none;
+  width: 1.1rem;
+  padding: 0.32rem 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.7rem;
+  cursor: pointer;
+  text-align: center;
+}
+
+.tag-caret:hover {
+  color: var(--text);
+}
+
+.tag-caret-spacer {
+  flex: none;
+  width: 1.1rem;
+}
+
 .side-count {
   font-size: 0.72rem;
   color: var(--muted);
@@ -222,9 +253,20 @@ select {
   color: var(--text);
 }
 
+.proc-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.proc-overall-item {
+  margin-top: 0.15rem;
+  padding-top: 0.4rem;
+  border-top: 1px dashed var(--border);
+}
+
 .proc-overall {
   color: var(--muted);
-  margin-top: 0.15rem;
 }
 
 .proc-eta {

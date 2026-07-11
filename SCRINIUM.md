@@ -282,6 +282,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-11 (interrupted-job recovery):** Worker now requeues jobs left RUNNING by a killed container (redeploy / crash / NAS reboot) at startup — resets them to QUEUED and their docs to PENDING so nothing strands in "processing" forever; reprocessing is idempotent. Makes a mid-import redeploy safe even without waiting for the in-flight file. Safe for single-container (concurrency) setups; multiple worker *replicas* would need a heartbeat instead (noted in code). Verified: killed worker mid-OCR → orphaned RUNNING job → restart requeued and completed it.
 
+- **2026-07-11 (concurrency-safe: stacked bars, sidecar hardening):** Stats `running` is now a list (all in-flight jobs, ordered by start time so slots stay stable) with per-file progress/phase/ETA; sidebar stacks a bar per concurrent file plus the overall queue burndown + queue ETA. **Found and fixed a real sidecar wedge:** under concurrent load (multiple worker lanes × ocrmypdf `-j` fan-out) the Swift sidecar exhausted its dispatch thread pool and hung — even /health stopped answering, stalling all OCR at 0%. Fix: recognition runs on a dedicated concurrent queue gated by a semaphore (`OCR_HELPER_MAX_CONCURRENCY`, default 4); each connection gets its own I/O queue so the listener never starves. Client fan-out also bounded via `OCR_JOBS` (default 3). Verified: 3 lanes advancing in parallel (0→80%) with the sidecar responsive on every probe. **Requires reinstalling the sidecar** (swift build + sudo cp + launchctl kickstart) — the launchd binary is the old one until then.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

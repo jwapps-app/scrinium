@@ -222,9 +222,9 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
 
     now = datetime.now(timezone.utc)
 
-    # Currently-running job(s): surface the furthest-along one for a live
-    # per-file bar, with a per-file ETA from its own page rate.
-    running = (
+    # Every currently-running job → one live bar. Ordered by start time so
+    # the bars keep stable slots instead of reshuffling as progress changes.
+    running_rows = (
         await db.execute(
             select(Job, Document.title)
             .join(Document, Job.document_id == Document.id)
@@ -232,10 +232,11 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
                 Job.status == JobStatus.RUNNING,
                 Document.tenant_id == user.tenant_id,
             )
+            .order_by(Job.started_at)
         )
     ).all()
-    current = None
-    for job, title in running:
+    running = []
+    for job, title in running_rows:
         prog = (
             min(job.pages_done / job.pages_total, 1.0)
             if job.pages_done and job.pages_total
@@ -246,13 +247,15 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
             elapsed = (now - job.started_at).total_seconds()
             per_page = elapsed / job.pages_done
             eta = int(max(0, (job.pages_total - job.pages_done) * per_page))
-        if current is None or prog > current["progress"]:
-            current = {
+        running.append(
+            {
+                "id": str(job.document_id),
                 "title": title,
                 "progress": prog,
                 "phase": job.phase,
                 "eta_seconds": eta,
             }
+        )
 
     remaining = counts.get(DocumentStatus.PENDING, 0) + counts.get(
         DocumentStatus.PROCESSING, 0
@@ -285,7 +288,7 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         "trash": trash_count,
         "recent": [{"id": str(r[0]), "title": r[1]} for r in recent_added],
         "paused": await get_flag(db, PROCESSING_PAUSED),
-        "current": current,
+        "running": running,
         "running_count": len(running),
         "rate_per_min": round(rate_per_min, 2),
         "queue_eta_seconds": queue_eta,

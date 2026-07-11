@@ -5,7 +5,9 @@ import { APP_NAME } from '../constants/branding'
 import ProgressBar, { formatEta } from './ProgressBar'
 
 // Order tags as a tree: parents first, children indented beneath them.
-export function flattenTagTree(tags) {
+// `collapsed` (a Set of tag ids) prunes the descendants of collapsed nodes;
+// each item is flagged `hasChildren` so the UI can show a disclosure caret.
+export function flattenTagTree(tags, collapsed = null) {
   const byParent = new Map()
   const ids = new Set(tags.map((t) => t.id))
   for (const tag of tags) {
@@ -17,8 +19,11 @@ export function flattenTagTree(tags) {
   const out = []
   const walk = (key, depth) => {
     for (const tag of byParent.get(key) || []) {
-      out.push({ ...tag, depth })
-      walk(tag.id, depth + 1)
+      const hasChildren = byParent.has(tag.id)
+      out.push({ ...tag, depth, hasChildren })
+      if (hasChildren && !(collapsed && collapsed.has(tag.id))) {
+        walk(tag.id, depth + 1)
+      }
     }
   }
   walk('root', 0)
@@ -30,6 +35,23 @@ export default function Shell({ children }) {
   const [tags, setTags] = useState([])
   const [views, setViews] = useState([])
   const [correspondents, setCorrespondents] = useState([])
+  const [collapsedTags, setCollapsedTags] = useState(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem('collapsed_tags')) || [])
+    } catch {
+      return new Set()
+    }
+  })
+
+  function toggleTagCollapse(id) {
+    setCollapsedTags((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      localStorage.setItem('collapsed_tags', JSON.stringify([...next]))
+      return next
+    })
+  }
   const [open, setOpen] = useState(false)
   const location = useLocation()
   const [params] = useSearchParams()
@@ -51,7 +73,7 @@ export default function Shell({ children }) {
         setTags(t)
         setViews(v)
         setCorrespondents(c)
-        active = s.processing > 0 || !!s.current
+        active = s.processing > 0 || (s.running && s.running.length > 0)
       } catch {
         /* sidebar data is best-effort */
       }
@@ -164,30 +186,26 @@ export default function Shell({ children }) {
             </button>
           )}
 
-          {(stats?.current || remaining > 0) && (
+          {((stats?.running && stats.running.length > 0) || remaining > 0) && (
             <div className="proc-panel">
-              {stats?.current && (
-                <>
+              {stats?.running?.map((r) => (
+                <div key={r.id} className="proc-item">
                   <div className="proc-line">
-                    <span className="proc-title">{stats.current.title}</span>
+                    <span className="proc-title">{r.title}</span>
                     <span className="proc-eta">
-                      {formatEta(stats.current.eta_seconds) || ''}
+                      {formatEta(r.eta_seconds) || ''}
                     </span>
                   </div>
-                  <ProgressBar value={stats.current.progress} />
-                  {stats.running_count > 1 && (
-                    <div className="proc-sub">
-                      {stats.running_count} workers active
-                    </div>
-                  )}
-                </>
+                  <ProgressBar value={r.progress} />
+                </div>
+              ))}
+              {stats?.running_count > 1 && (
+                <div className="proc-sub">{stats.running_count} files at once</div>
               )}
               {remaining > 0 && (
-                <>
+                <div className="proc-item proc-overall-item">
                   <div className="proc-line proc-overall">
-                    <span>
-                      {remaining.toLocaleString()} in queue
-                    </span>
+                    <span>{remaining.toLocaleString()} in queue</span>
                     <span className="proc-eta">
                       {stats?.paused
                         ? 'paused'
@@ -195,7 +213,7 @@ export default function Shell({ children }) {
                     </span>
                   </div>
                   <ProgressBar value={burndown} />
-                </>
+                </div>
               )}
             </div>
           )}
@@ -243,19 +261,33 @@ export default function Shell({ children }) {
         {tags.length > 0 && (
           <div className="side-group">
             <div className="side-title">Tags</div>
-            {flattenTagTree(tags).map((t) => (
-              <Link
+            {flattenTagTree(tags, collapsedTags).map((t) => (
+              <div
                 key={t.id}
-                to={`/?tag=${t.id}`}
-                className={`side-link ${activeTag === t.id ? 'active' : ''}`}
-                style={t.depth ? { paddingLeft: `${0.5 + t.depth * 0.85}rem` } : undefined}
+                className="side-tag-row"
+                style={t.depth ? { marginLeft: `${t.depth * 0.85}rem` } : undefined}
               >
-                <span className="side-tag-name">
-                  {t.depth > 0 && <span className="tree-tick">└</span>}
-                  {t.name}
-                </span>
-                <span className="side-count">{t.count}</span>
-              </Link>
+                {t.hasChildren ? (
+                  <button
+                    className="tag-caret"
+                    onClick={() => toggleTagCollapse(t.id)}
+                    title={collapsedTags.has(t.id) ? 'Expand' : 'Collapse'}
+                  >
+                    {collapsedTags.has(t.id) ? '▸' : '▾'}
+                  </button>
+                ) : (
+                  <span className="tag-caret-spacer" />
+                )}
+                <Link
+                  to={`/?tag=${t.id}`}
+                  className={`side-link tag-link ${activeTag === t.id ? 'active' : ''}`}
+                >
+                  <span className="side-tag-name">{t.name}</span>
+                  <span className="side-count">
+                    {collapsedTags.has(t.id) ? `${t.count} ▸` : t.count}
+                  </span>
+                </Link>
+              </div>
             ))}
           </div>
         )}

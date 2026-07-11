@@ -19,7 +19,22 @@ OCR_HELPER_PORT=9876 .build/release/scrinium-ocr-helper
 ```
 
 Env vars: `OCR_HELPER_PORT` (default 9876), `OCR_HELPER_LANGUAGES`
-(comma-separated, e.g. `en-US,de-DE`; omit for automatic).
+(comma-separated, e.g. `en-US,de-DE`; omit for automatic),
+`OCR_HELPER_MAX_CONCURRENCY` (default 4) — how many Vision recognitions run
+at once. Requests beyond the limit queue instead of exhausting threads, so
+the server stays responsive under heavy concurrent load (multiple worker
+lanes). Raise it only if the Mac has spare cores and the helper is the
+bottleneck.
+
+**Reinstalling after an update:** rebuild, copy over the old binary, and
+restart the launchd job:
+
+```bash
+cd sidecar && swift build -c release
+sudo cp .build/release/scrinium-ocr-helper /usr/local/bin/scrinium-ocr-helper
+launchctl kickstart -k gui/$(id -u)/com.example.scrinium-ocr-helper
+curl http://localhost:9876/health
+```
 
 ## Point the app at it
 

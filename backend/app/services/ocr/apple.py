@@ -66,6 +66,7 @@ class AppleVisionProvider:
             "--pdf-renderer", "hocr",
             "--plugin", PLUGIN_MODULE,
             "--plugin", PROGRESS_PLUGIN,
+            "--jobs", str(settings.ocr_jobs),
             "--language", settings.ocr_languages,
             "--quiet",
         ]

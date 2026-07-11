@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     ocr_engine: str = "tesseract"  # "tesseract" | "apple"
     ocr_languages: str = "eng"
     apple_ocr_url: str = ""  # e.g. http://host.docker.internal:9876
+    # ocrmypdf parallel jobs per document. Kept modest so that, combined
+    # with WORKER_CONCURRENCY, total concurrent OCR fan-out (and load on the
+    # Vision sidecar) stays bounded rather than pages_per_doc × docs.
+    ocr_jobs: int = 3
 
     worker_poll_seconds: float = 2.0
     # Documents processed at once per worker container. Raise to fill the

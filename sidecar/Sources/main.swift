@@ -62,6 +62,24 @@ func recognize(imageData: Data) throws -> OCRResponse {
     return OCRResponse(width: image.width, height: image.height, blocks: blocks)
 }
 
+// MARK: - Bounded Vision executor
+//
+// Vision `perform` is synchronous and blocks its thread for the whole
+// recognition. If every connection ran it on the shared global pool, a burst
+// of concurrent requests (one OCR client fanning out × several documents at
+// once) would exhaust libdispatch's threads and wedge the listener — the
+// server would stop answering even /health. So all recognition goes through
+// a dedicated concurrent queue capped by a semaphore: at most VISION_LIMIT
+// run at once, the rest queue, and the listener's own queue stays free to
+// keep accepting and reading requests no matter how hard clients push.
+enum Vision {
+    static let limit = max(
+        1, Int(ProcessInfo.processInfo.environment["OCR_HELPER_MAX_CONCURRENCY"] ?? "4") ?? 4
+    )
+    static let queue = DispatchQueue(label: "ocr.vision", attributes: .concurrent)
+    static let slots = DispatchSemaphore(value: limit)
+}
+
 // MARK: - Minimal HTTP/1.1 handling
 
 final class HTTPConnection {
@@ -77,7 +95,10 @@ final class HTTPConnection {
     }
 
     func start() {
-        connection.start(queue: .global(qos: .userInitiated))
+        // Each connection gets its own serial queue for I/O, so connections
+        // never block one another; heavy Vision work is handed off to the
+        // bounded executor below.
+        connection.start(queue: DispatchQueue(label: "ocr.conn"))
         receive()
     }
 
@@ -134,11 +155,17 @@ final class HTTPConnection {
         case ("GET", "/health"):
             respond(status: "200 OK", json: HealthResponse(status: "ok", engine: "apple-vision"))
         case ("POST", "/ocr"):
-            do {
-                respond(status: "200 OK", json: try recognize(imageData: body))
-            } catch {
-                respond(status: "422 Unprocessable Entity",
-                        json: ["error": error.localizedDescription])
+            // Off the connection's I/O queue and onto the bounded Vision
+            // executor, so recognition load can never starve the listener.
+            Vision.queue.async {
+                Vision.slots.wait()
+                defer { Vision.slots.signal() }
+                do {
+                    self.respond(status: "200 OK", json: try recognize(imageData: body))
+                } catch {
+                    self.respond(status: "422 Unprocessable Entity",
+                                 json: ["error": error.localizedDescription])
+                }
             }
         default:
             respond(status: "404 Not Found", json: ["error": "not found"])
