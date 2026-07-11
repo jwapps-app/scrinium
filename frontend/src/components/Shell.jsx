@@ -310,6 +310,12 @@ export default function Shell({ children }) {
 
         <div className="side-group side-bottom">
           <Link
+            to="/insights"
+            className={`side-link ${location.pathname === '/insights' ? 'active' : ''}`}
+          >
+            Insights
+          </Link>
+          <Link
             to="/settings"
             className={`side-link ${location.pathname === '/settings' ? 'active' : ''}`}
           >

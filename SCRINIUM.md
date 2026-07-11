@@ -301,6 +301,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-11 (barcode separator sheets):** Opt-in (`SPLIT_ON_SEPARATORS=1`): multi-page PDFs arriving by upload or watch folder are scanned (low-DPI raster + zbar) for pages carrying a barcode/QR reading `SEPARATOR_BARCODE` (default **PATCHT** — Paperless's convention, so existing separator sheets work as-is). Segments between separators become independent documents titled "name (1 of N)"; separator pages are dropped; duplicate segments skip individually, so re-scanning a stack only adds what's new. Detection is fail-soft (an error means "no split", never a lost file) and costs one raster pass, hence opt-in. Image gains libzbar0 + pyzbar. Verified end-to-end: 5-page stack with a PATCHT QR → two 2-page ready documents via the watch folder.
 
+- **2026-07-11 (Insights page):** `/insights` (sidebar link, above Settings): stat cards (documents, total pages, bytes on disk for originals+archives), added-per-month chart for the last 12 months, and top-8 bars for correspondents, document types, tags (tinted with their colors), and OCR-engine breakdown. Pure CSS bars, no chart library. One aggregate endpoint (`GET /api/insights`), all queries excluding trashed docs.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

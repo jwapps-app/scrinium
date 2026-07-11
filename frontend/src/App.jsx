@@ -6,6 +6,7 @@ import Setup from './pages/Setup'
 import Library from './pages/Library'
 import DocumentView from './pages/DocumentView'
 import Settings from './pages/Settings'
+import Insights from './pages/Insights'
 import SharedDocument from './pages/SharedDocument'
 
 function RequireAuth({ children }) {
@@ -52,6 +53,14 @@ export default function App() {
         element={
           <RequireAuth>
             <Settings />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/insights"
+        element={
+          <RequireAuth>
+            <Insights />
           </RequireAuth>
         }
       />
