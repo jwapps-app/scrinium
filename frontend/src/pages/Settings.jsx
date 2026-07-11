@@ -4,6 +4,7 @@ import { APP_NAME } from '../constants/branding'
 import RulesSection from '../components/RulesSection'
 import TagsSection from '../components/TagsSection'
 import OrganizeSection from '../components/OrganizeSection'
+import TransferSection from '../components/TransferSection'
 import Shell from '../components/Shell'
 import SidecarSetup from '../components/SidecarSetup'
 
@@ -114,6 +115,8 @@ export default function Settings() {
         <OrganizeSection />
 
         <RulesSection />
+
+        <TransferSection />
       </div>
     </Shell>
   )

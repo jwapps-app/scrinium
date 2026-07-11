@@ -782,6 +782,10 @@ async def bulk_action(
         elif body.action == "remove_tags":
             remove = {t.id for t in tags}
             doc.tags = [t for t in doc.tags if t.id not in remove]
+        elif body.action == "set_correspondent":
+            doc.correspondent_id = body.correspondent_id  # None clears
+        elif body.action == "set_doc_type":
+            doc.doc_type_id = body.doc_type_id  # None clears
         processed += 1
     await db.flush()
     skipped = len(body.ids) - processed if body.ids else 0

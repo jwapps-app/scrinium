@@ -1,0 +1,68 @@
+"""Import (Paperless-ngx) and full-library export. Both run as background
+tasks in the API process; progress is polled from app_settings."""
+
+import asyncio
+import json
+
+from fastapi import APIRouter, HTTPException, status
+
+from app.deps import DB, CurrentUser
+from app.services.app_state import get_value
+from app.services.export import EXPORT_STATUS, run_export
+from app.services.paperless_import import (
+    IMPORT_STATUS,
+    find_export,
+    import_root,
+    run_import,
+)
+
+router = APIRouter(tags=["transfer"])
+
+
+async def _current(db, key) -> dict:
+    raw = await get_value(db, key)
+    try:
+        return json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+
+
+@router.get("/import/paperless")
+async def import_status(user: CurrentUser, db: DB) -> dict:
+    state = await _current(db, IMPORT_STATUS)
+    root = import_root()
+    found = find_export(root)
+    return {
+        "import_dir": str(root),
+        "export_found": str(found) if found else None,
+        "status": state,
+    }
+
+
+@router.post("/import/paperless")
+async def start_import(user: CurrentUser, db: DB) -> dict:
+    state = await _current(db, IMPORT_STATUS)
+    if state.get("state") == "running":
+        raise HTTPException(status.HTTP_409_CONFLICT, "An import is already running")
+    if find_export(import_root()) is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"No Paperless export found in {import_root()} — copy the export "
+            "folder (or zip) there first",
+        )
+    asyncio.create_task(run_import(user.tenant_id))
+    return {"started": True}
+
+
+@router.get("/export")
+async def export_status(user: CurrentUser, db: DB) -> dict:
+    return {"status": await _current(db, EXPORT_STATUS)}
+
+
+@router.post("/export")
+async def start_export(user: CurrentUser, db: DB) -> dict:
+    state = await _current(db, EXPORT_STATUS)
+    if state.get("state") == "running":
+        raise HTTPException(status.HTTP_409_CONFLICT, "An export is already running")
+    asyncio.create_task(run_export(user.tenant_id))
+    return {"started": True}

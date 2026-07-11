@@ -123,12 +123,16 @@ class PageOpRequest(BaseModel):
 
 class BulkActionRequest(BaseModel):
     ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
+    correspondent_id: uuid.UUID | None = None
+    doc_type_id: uuid.UUID | None = None
     # Alternative to ids: act on every document carrying this tag.
     # Processed in chunks of 500; call again while `remaining` > 0.
     filter_tag_id: uuid.UUID | None = None
     # Alternative to ids: act on everything in the trash.
     filter_trash: bool = False
-    action: str = Field(pattern="^(reprocess|delete|restore|purge|add_tags|remove_tags)$")
+    action: str = Field(
+        pattern="^(reprocess|delete|restore|purge|add_tags|remove_tags|set_correspondent|set_doc_type)$"
+    )
     mode: str = Field(default="skip", pattern="^(skip|redo|force)$")
     tag_ids: list[uuid.UUID] = []
 

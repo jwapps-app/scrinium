@@ -38,6 +38,7 @@ export default function Library() {
   const [total, setTotal] = useState(0)
   const [tags, setTags] = useState([])
   const [docTypes, setDocTypes] = useState([])
+  const [correspondents, setCorrespondents] = useState([])
   const [results, setResults] = useState(null)
   const [query, setQuery] = useState(params.get('q') || '')
   const [uploading, setUploading] = useState(false)
@@ -108,6 +109,7 @@ export default function Library() {
   useEffect(() => {
     apiJson('/api/tags').then(setTags).catch(() => {})
     apiJson('/api/doc-types').then(setDocTypes).catch(() => {})
+    apiJson('/api/correspondents').then(setCorrespondents).catch(() => {})
   }, [])
 
   // Poll while anything is still working its way through the pipeline.
@@ -490,6 +492,29 @@ export default function Library() {
                     label: t.name,
                     onClick: () => bulk('remove_tags', { tag_ids: [t.id] }),
                   }))}
+                />
+                <Menu
+                  label="From"
+                  className="ghost"
+                  items={[
+                    ...correspondents.map((c) => ({
+                      label: c.name,
+                      onClick: () =>
+                        bulk('set_correspondent', { correspondent_id: c.id }),
+                    })),
+                    { label: '(clear)', onClick: () => bulk('set_correspondent') },
+                  ]}
+                />
+                <Menu
+                  label="Type"
+                  className="ghost"
+                  items={[
+                    ...docTypes.map((t) => ({
+                      label: t.name,
+                      onClick: () => bulk('set_doc_type', { doc_type_id: t.id }),
+                    })),
+                    { label: '(clear)', onClick: () => bulk('set_doc_type') },
+                  ]}
                 />
                 <button
                   className="ghost danger"
