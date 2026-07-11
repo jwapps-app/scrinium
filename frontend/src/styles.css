@@ -26,6 +26,11 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -218,9 +223,10 @@ select {
 .hamburger {
   display: none;
   position: fixed;
-  top: 0.6rem;
-  left: 0.6rem;
+  top: calc(0.6rem + env(safe-area-inset-top, 0px));
+  left: calc(0.75rem + env(safe-area-inset-left, 0px));
   z-index: 30;
+  background: var(--surface);
 }
 
 .hamburger.hidden {
@@ -240,6 +246,8 @@ select {
     left: 0;
     top: 0;
     z-index: 20;
+    width: min(260px, 82vw);
+    padding-top: calc(1rem + env(safe-area-inset-top, 0px));
     transform: translateX(-100%);
     transition: transform 0.18s ease;
     box-shadow: 0 0 24px rgba(0, 0, 0, 0.3);
@@ -255,7 +263,41 @@ select {
     background: rgba(0, 0, 0, 0.4);
   }
   .content {
-    padding-top: 3rem;
+    padding: calc(3rem + env(safe-area-inset-top, 0px)) 0.75rem 1rem;
+  }
+  .library,
+  .viewer-page {
+    padding: 0.5rem;
+  }
+  /* Toolbar controls share the width instead of forcing it */
+  .toolbar select,
+  .toolbar input[type='date'] {
+    flex: 1 1 40%;
+    min-width: 0;
+    width: auto;
+  }
+  .toolbar .searchbar {
+    flex-basis: 100%;
+  }
+  /* Details strip fields stack comfortably */
+  .detail {
+    flex: 1 1 45%;
+  }
+  .detail input,
+  .detail select {
+    width: 100%;
+    min-width: 0;
+  }
+  /* Viewer chrome under the status bar in standalone PWA */
+  .viewer-chrome {
+    margin: -0.5rem -0.5rem 0.6rem;
+    padding: calc(0.5rem + env(safe-area-inset-top, 0px)) 0.5rem 0.6rem;
+  }
+  .findbar input {
+    width: 100%;
+  }
+  .findbar {
+    flex-basis: 100%;
   }
 }
 
