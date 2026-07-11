@@ -37,14 +37,22 @@ export default function Setup() {
         <p className="tagline">Create the first account to get started.</p>
         <input
           type="email"
+          name="email"
+          id="setup-email"
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           autoComplete="username"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          inputMode="email"
           required
         />
         <input
           type="password"
+          name="new-password"
+          id="setup-password"
           placeholder="Password (8+ characters)"
           value={password}
           onChange={(e) => setPassword(e.target.value)}

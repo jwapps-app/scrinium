@@ -46,14 +46,22 @@ export default function Login() {
         <p className="tagline">{APP_TAGLINE}</p>
         <input
           type="email"
+          name="email"
+          id="login-email"
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           autoComplete="username"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          inputMode="email"
           required
         />
         <input
           type="password"
+          name="password"
+          id="login-password"
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}

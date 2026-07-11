@@ -56,7 +56,16 @@ export default function Library() {
   const sort = params.get('sort') || 'newest'
   const from = params.get('from')
   const to = params.get('to')
-  const view = params.get('view') || 'grid'
+  // Density is a preference, not a filter: remembered across visits, but a
+  // saved view's explicit ?view= still wins.
+  const view =
+    params.get('view') || localStorage.getItem('library_view') || 'grid'
+
+  function setView(v) {
+    if (v) localStorage.setItem('library_view', v)
+    else localStorage.removeItem('library_view')
+    setParam('view', v)
+  }
   const q = params.get('q')
 
   function setParam(key, value) {
@@ -311,14 +320,28 @@ export default function Library() {
           <div className="view-toggle">
             <button
               className={view === 'grid' ? '' : 'ghost'}
-              onClick={() => setParam('view', null)}
-              title="Grid view"
+              onClick={() => setView(null)}
+              title="Grid — as many tiles as fit"
             >
               ▦
             </button>
             <button
+              className={view === 'grid3' ? '' : 'ghost'}
+              onClick={() => setView('grid3')}
+              title="3 tiles across"
+            >
+              3×
+            </button>
+            <button
+              className={view === 'grid4' ? '' : 'ghost'}
+              onClick={() => setView('grid4')}
+              title="4 tiles across"
+            >
+              4×
+            </button>
+            <button
               className={view === 'list' ? '' : 'ghost'}
-              onClick={() => setParam('view', 'list')}
+              onClick={() => setView('list')}
               title="List view"
             >
               ☰
@@ -495,8 +518,12 @@ export default function Library() {
               </p>
             )}
 
-            {view === 'grid' ? (
-              <div className="card-grid">
+            {view !== 'list' ? (
+              <div
+                className={`card-grid${
+                  view === 'grid3' ? ' cols-3' : view === 'grid4' ? ' cols-4' : ''
+                }`}
+              >
                 {docs.map((d) => (
                   <Link
                     to={`/doc/${d.id}`}

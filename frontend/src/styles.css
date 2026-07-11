@@ -308,9 +308,13 @@ select {
   display: none;
   position: fixed;
   top: calc(0.6rem + env(safe-area-inset-top, 0px));
-  left: calc(0.75rem + env(safe-area-inset-left, 0px));
+  /* Sit clearly inside the screen edge — align with the content gutter and
+     never hug the rounded corner, whatever the safe area reports. */
+  left: max(calc(1.1rem + env(safe-area-inset-left, 0px)), 1.1rem);
   z-index: 30;
   background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
 .hamburger.hidden {
@@ -484,6 +488,37 @@ select {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 0.6rem;
+}
+
+/* Fixed-density tiles: exactly N across regardless of screen width.
+   Compact typography so 3–4-wide stays readable on a phone. */
+.card-grid.cols-3 {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+}
+
+.card-grid.cols-4 {
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.4rem;
+}
+
+.card-grid.cols-3 .card-title,
+.card-grid.cols-4 .card-title {
+  font-size: 0.72rem;
+  -webkit-line-clamp: 1;
+}
+
+.card-grid.cols-3 .card-meta {
+  font-size: 0.65rem;
+}
+
+.card-grid.cols-4 .card-meta,
+.card-grid.cols-4 .card-body .chip {
+  display: none;
+}
+
+.card-grid.cols-4 .card-body {
+  padding: 0.35rem 0.4rem 0.4rem;
 }
 
 .card {
