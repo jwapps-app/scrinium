@@ -219,15 +219,76 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
             .limit(5)
         )
     ).all()
+
+    now = datetime.now(timezone.utc)
+
+    # Currently-running job(s): surface the furthest-along one for a live
+    # per-file bar, with a per-file ETA from its own page rate.
+    running = (
+        await db.execute(
+            select(Job, Document.title)
+            .join(Document, Job.document_id == Document.id)
+            .where(
+                Job.status == JobStatus.RUNNING,
+                Document.tenant_id == user.tenant_id,
+            )
+        )
+    ).all()
+    current = None
+    for job, title in running:
+        prog = (
+            min(job.pages_done / job.pages_total, 1.0)
+            if job.pages_done and job.pages_total
+            else 0.0
+        )
+        eta = None
+        if job.started_at and job.pages_done and job.pages_total:
+            elapsed = (now - job.started_at).total_seconds()
+            per_page = elapsed / job.pages_done
+            eta = int(max(0, (job.pages_total - job.pages_done) * per_page))
+        if current is None or prog > current["progress"]:
+            current = {
+                "title": title,
+                "progress": prog,
+                "phase": job.phase,
+                "eta_seconds": eta,
+            }
+
+    remaining = counts.get(DocumentStatus.PENDING, 0) + counts.get(
+        DocumentStatus.PROCESSING, 0
+    )
+
+    # Throughput-based queue ETA: measure documents actually completed in a
+    # recent window, so parallelism and real per-doc cost are baked in.
+    window_min = 5
+    done_recent = (
+        await db.execute(
+            select(func.count(Job.id))
+            .join(Document, Job.document_id == Document.id)
+            .where(
+                Job.status == JobStatus.DONE,
+                Job.finished_at >= now - timedelta(minutes=window_min),
+                Document.tenant_id == user.tenant_id,
+            )
+        )
+    ).scalar_one()
+    rate_per_min = done_recent / window_min
+    queue_eta = (
+        int(remaining / rate_per_min * 60) if rate_per_min > 0 and remaining else None
+    )
+
     return {
         "total": sum(counts.values()),
         "ready": counts.get(DocumentStatus.READY, 0),
-        "processing": counts.get(DocumentStatus.PENDING, 0)
-        + counts.get(DocumentStatus.PROCESSING, 0),
+        "processing": remaining,
         "flagged": counts.get(DocumentStatus.FLAGGED, 0),
         "trash": trash_count,
         "recent": [{"id": str(r[0]), "title": r[1]} for r in recent_added],
         "paused": await get_flag(db, PROCESSING_PAUSED),
+        "current": current,
+        "running_count": len(running),
+        "rate_per_min": round(rate_per_min, 2),
+        "queue_eta_seconds": queue_eta,
     }
 
 

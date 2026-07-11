@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { apiJson, setTokens } from '../api'
 import { APP_NAME } from '../constants/branding'
+import ProgressBar, { formatEta } from './ProgressBar'
 
 // Order tags as a tree: parents first, children indented beneath them.
 export function flattenTagTree(tags) {
@@ -35,7 +36,9 @@ export default function Shell({ children }) {
 
   useEffect(() => {
     let cancelled = false
+    let timer = null
     async function load() {
+      let active = false
       try {
         const [s, t, v, c] = await Promise.all([
           apiJson('/api/documents/stats'),
@@ -43,26 +46,39 @@ export default function Shell({ children }) {
           apiJson('/api/views'),
           apiJson('/api/correspondents'),
         ])
-        if (!cancelled) {
-          setStats(s)
-          setTags(t)
-          setViews(v)
-          setCorrespondents(c)
-        }
+        if (cancelled) return
+        setStats(s)
+        setTags(t)
+        setViews(v)
+        setCorrespondents(c)
+        active = s.processing > 0 || !!s.current
       } catch {
         /* sidebar data is best-effort */
       }
+      if (cancelled) return
+      // Poll fast while the queue is active so the live bars stay current;
+      // idle otherwise.
+      timer = setTimeout(load, active ? 2500 : 15000)
     }
     load()
-    const timer = setInterval(load, 15000)
     const onChange = () => load()
     window.addEventListener('library-changed', onChange)
     return () => {
       cancelled = true
-      clearInterval(timer)
+      if (timer) clearTimeout(timer)
       window.removeEventListener('library-changed', onChange)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Burndown peak for the overall import bar: high-water mark of the queue,
+  // reset when it drains. Fills 0→100% as the backlog clears; dips when a
+  // fresh wave arrives — exactly the "adjusts as files keep coming" behavior.
+  const peakRef = useRef(0)
+  const remaining = stats?.processing || 0
+  if (remaining === 0) peakRef.current = 0
+  else if (remaining > peakRef.current) peakRef.current = remaining
+  const burndown = peakRef.current > 0 ? (peakRef.current - remaining) / peakRef.current : 0
 
   useEffect(() => {
     setOpen(false)
@@ -146,6 +162,42 @@ export default function Shell({ children }) {
               <span>{stats?.paused ? '▶ Resume processing' : '⏸ Pause processing'}</span>
               {stats?.paused && <span className="side-count">paused</span>}
             </button>
+          )}
+
+          {(stats?.current || remaining > 0) && (
+            <div className="proc-panel">
+              {stats?.current && (
+                <>
+                  <div className="proc-line">
+                    <span className="proc-title">{stats.current.title}</span>
+                    <span className="proc-eta">
+                      {formatEta(stats.current.eta_seconds) || ''}
+                    </span>
+                  </div>
+                  <ProgressBar value={stats.current.progress} />
+                  {stats.running_count > 1 && (
+                    <div className="proc-sub">
+                      {stats.running_count} workers active
+                    </div>
+                  )}
+                </>
+              )}
+              {remaining > 0 && (
+                <>
+                  <div className="proc-line proc-overall">
+                    <span>
+                      {remaining.toLocaleString()} in queue
+                    </span>
+                    <span className="proc-eta">
+                      {stats?.paused
+                        ? 'paused'
+                        : formatEta(stats?.queue_eta_seconds) || 'estimating…'}
+                    </span>
+                  </div>
+                  <ProgressBar value={burndown} />
+                </>
+              )}
+            </div>
           )}
         </nav>
 

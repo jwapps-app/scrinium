@@ -196,6 +196,48 @@ select {
   color: var(--accent);
 }
 
+.proc-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem;
+  margin-top: 0.35rem;
+  background: var(--bg);
+  border-radius: 8px;
+}
+
+.proc-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.76rem;
+}
+
+.proc-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.proc-overall {
+  color: var(--muted);
+  margin-top: 0.15rem;
+}
+
+.proc-eta {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.proc-sub {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
 .pause-toggle.is-paused {
   color: var(--error);
 }
