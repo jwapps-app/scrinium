@@ -66,6 +66,9 @@ class Document(Base):
     status: Mapped[str] = mapped_column(
         String(32), default=DocumentStatus.PENDING, index=True
     )
+    # For watched-folder ingests: where the consumed copy was filed
+    # (relative to WATCH_DIR), so deleting the document cleans it up too.
+    source_path: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_engine: Mapped[str | None] = mapped_column(String(32), nullable=True)
     page_count: Mapped[int | None] = mapped_column(nullable=True)

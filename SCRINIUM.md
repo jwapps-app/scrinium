@@ -268,6 +268,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-10 (pause/resume):** Processing queue can be paused: the in-flight job always finishes; new job claims AND watch-folder sweeps hold until resume. Flag lives in Postgres (`app_settings` key-value, migration 0008) so **pausing survives restarts** — the intended workflow for rebooting the NAS or the Mac (Apple OCR host) mid-batch without losing work or silently degrading scans to Tesseract. API: `POST /api/documents/processing {paused}`; state rides `/documents/stats`. Sidebar shows ⏸ Pause / ▶ Resume whenever the queue is active or paused (hidden when idle). Verified: paused mid-batch → current 150pp finished, queued doc held; worker restart while paused → came back paused; resume → processed.
 
+- **2026-07-10 (consumed-copy cleanup):** Documents ingested via the watch folder record where their filed copy went (`documents.source_path`, migration 0009, relative to WATCH_DIR). Deleting the document (single or bulk) now also removes that `.consumed/` copy and prunes emptied folders — path-checked to never reach outside the watch dir. The api service now gets WATCH_DIR in both compose files (deletion runs there). Pre-existing consumed copies (no source_path) still need manual clearing. `.duplicates/`/`.failed/` untouched by design.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

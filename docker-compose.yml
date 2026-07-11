@@ -26,6 +26,7 @@ services:
       DATA_DIR: /data
       OCR_ENGINE: ${OCR_ENGINE:-tesseract}
       APPLE_OCR_URL: ${APPLE_OCR_URL:-}
+      WATCH_DIR: /data/watch
     ports:
       - "8010:8000"
     volumes:

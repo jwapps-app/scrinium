@@ -22,6 +22,7 @@ from app.schemas import (
     DocumentUpdate,
     ReprocessRequest,
 )
+from app.config import settings as app_settings
 from app.services import intake, storage, thumbnails
 from app.services.app_state import PROCESSING_PAUSED, get_flag, set_flag
 from app.services.intake import ACCEPTED_SUFFIXES
@@ -370,12 +371,32 @@ async def reprocess(
     return doc_out(doc)
 
 
+def _remove_consumed_copy(source_path: str) -> None:
+    """Delete a document's filed copy under WATCH_DIR (e.g. .consumed/…)
+    and prune any folders that emptied out. Best-effort."""
+    if not app_settings.watch_dir:
+        return
+    watch = Path(app_settings.watch_dir)
+    target = (watch / source_path).resolve()
+    if not str(target).startswith(str(watch.resolve())):
+        return  # never follow a path outside the watch dir
+    target.unlink(missing_ok=True)
+    parent = target.parent
+    while parent != watch and parent.name != "":
+        try:
+            parent.rmdir()  # fails harmlessly unless empty
+        except OSError:
+            break
+        parent = parent.parent
+
+
 async def _delete_document_and_blobs(db, doc: Document) -> None:
     blob_ids = [doc.original_blob_id]
     if doc.archive_blob_id is not None:
         blob_ids.append(doc.archive_blob_id)
     if doc.thumbnail_blob_id is not None:
         blob_ids.append(doc.thumbnail_blob_id)
+    source_path = doc.source_path
     await db.delete(doc)
     await db.flush()
     for blob_id in blob_ids:
@@ -384,6 +405,8 @@ async def _delete_document_and_blobs(db, doc: Document) -> None:
             await db.delete(blob)
         storage.delete_blob(blob_id)
     await db.flush()
+    if source_path:
+        _remove_consumed_copy(source_path)
 
 
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)

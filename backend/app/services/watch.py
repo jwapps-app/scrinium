@@ -51,15 +51,16 @@ def _candidates(watch: Path) -> list[Path]:
     return found
 
 
-def _file_into(watch: Path, path: Path, folder_name: str) -> None:
+def _file_into(watch: Path, path: Path, folder_name: str) -> Path:
     """Move a processed file under watch/<folder_name>/, keeping its
-    relative folder structure."""
+    relative folder structure. Returns the destination."""
     rel = path.relative_to(watch)
     dest = watch / folder_name / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         dest = dest.with_name(f"{int(time.time())}-{dest.name}")
     path.rename(dest)
+    return dest
 
 
 def _prune_empty_dirs(watch: Path) -> None:
@@ -119,7 +120,11 @@ async def scan_once() -> int:
                     session, tenant_id, path, path.name, tags=tags
                 )
                 await session.commit()
-                _file_into(watch, path, ".consumed")
+                dest = _file_into(watch, path, ".consumed")
+                # Remember the filing location so deleting the document can
+                # clean up its consumed copy too.
+                doc.source_path = str(dest.relative_to(watch))
+                await session.commit()
                 consumed += 1
                 logger.info(
                     "consumed %s as document %s%s",
