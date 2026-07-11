@@ -36,6 +36,11 @@ class Job(Base):
     pages_total: Mapped[int | None] = mapped_column(nullable=True)
     # Which stage the counters describe: preparing | ocr | finishing
     phase: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Stamped by the progress loop while running; a RUNNING job whose
+    # heartbeat is stale was orphaned by a dead worker and gets requeued.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

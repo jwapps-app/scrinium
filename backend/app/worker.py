@@ -7,8 +7,9 @@ Jobs are claimed with FOR UPDATE SKIP LOCKED so multiple workers are safe.
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
 
 from app.config import settings
 from app.database import SessionLocal, engine
@@ -101,6 +102,7 @@ async def maintenance_loop() -> None:
     """Single lane for the periodic sweeps (watch/mail/purge). Advisory
     locks keep these singular even across multiple worker replicas."""
     last_watch = last_mail = last_purge = 0.0
+    last_reclaim = time.monotonic()
     while True:
         now = time.monotonic()
         paused = await _is_paused()
@@ -141,28 +143,56 @@ async def maintenance_loop() -> None:
             except Exception:
                 logger.exception("retention sweep crashed; continuing")
 
+        if time.monotonic() - last_reclaim >= 300:
+            last_reclaim = time.monotonic()
+            try:
+                await _with_advisory_lock(
+                    PURGE_LOCK_KEY, lambda: reclaim_interrupted_jobs(180)
+                )
+            except Exception:
+                logger.exception("stale-job reclaim crashed; continuing")
+
         await asyncio.sleep(1)
 
 
-async def reclaim_interrupted_jobs() -> None:
-    """Requeue jobs left RUNNING by a killed worker — redeploy, crash, or
-    NAS reboot. Reprocessing is idempotent (OCR re-runs on the existing
-    document), so a doc interrupted mid-OCR simply starts over rather than
-    stranding in 'processing' forever.
+async def reclaim_interrupted_jobs(stale_after_seconds: int | None = None) -> None:
+    """Requeue jobs left RUNNING by a dead worker — redeploy, crash, or
+    NAS reboot. Reprocessing is idempotent, so an interrupted doc simply
+    starts over rather than stranding in 'processing' forever.
 
-    Safe for a single worker container (the recommended setup): at startup
-    no job is legitimately RUNNING. Running multiple worker *replicas* would
-    need a heartbeat instead of this blanket reclaim.
+    Liveness comes from the heartbeat each running job stamps every ~15s:
+    with `stale_after_seconds` set, only jobs whose heartbeat has gone quiet
+    are reclaimed — safe even with multiple worker replicas, since live
+    jobs on other replicas keep beating. Without it (startup), anything
+    RUNNING with no fresh beat in the last 2 minutes is fair game.
     """
+    threshold = datetime.now(timezone.utc) - timedelta(
+        seconds=stale_after_seconds if stale_after_seconds is not None else 120
+    )
     async with SessionLocal() as session:
         jobs = (
-            await session.execute(select(Job).where(Job.status == JobStatus.RUNNING))
+            await session.execute(
+                select(Job).where(
+                    Job.status == JobStatus.RUNNING,
+                    or_(
+                        Job.heartbeat_at < threshold,
+                        # Not yet beating: stale only if it also STARTED
+                        # before the window (a just-claimed job on another
+                        # replica hasn't had time to beat).
+                        and_(
+                            Job.heartbeat_at.is_(None),
+                            or_(Job.started_at.is_(None), Job.started_at < threshold),
+                        ),
+                    ),
+                )
+            )
         ).scalars().all()
         for job in jobs:
             job.status = JobStatus.QUEUED
             job.pages_done = None
             job.pages_total = None
             job.phase = None
+            job.heartbeat_at = None
             doc = await session.get(Document, job.document_id)
             if doc is not None and doc.status == DocumentStatus.PROCESSING:
                 doc.status = DocumentStatus.PENDING

@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -89,10 +90,16 @@ async def _run_with_progress(
         asyncio.to_thread(_run_ocr, original, suffix, job.mode, workdir, engine)
     )
     last: tuple[str, int, int] | None = None
+    last_beat = 0.0
     while True:
         done, _ = await asyncio.wait({task}, timeout=1.5)
         if done:
             break
+        # Liveness signal for orphan recovery; cheap, so every ~15s is plenty.
+        if time.monotonic() - last_beat >= 15:
+            last_beat = time.monotonic()
+            job.heartbeat_at = datetime.now(timezone.utc)
+            await session.commit()
         try:
             report = json.loads(progress_file.read_text())
             snapshot = (
