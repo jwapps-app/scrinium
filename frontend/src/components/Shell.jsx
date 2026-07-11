@@ -282,7 +282,12 @@ export default function Shell({ children }) {
                   to={`/?tag=${t.id}`}
                   className={`side-link tag-link ${activeTag === t.id ? 'active' : ''}`}
                 >
-                  <span className="side-tag-name">{t.name}</span>
+                  <span className="side-tag-name">
+                    {t.color && (
+                      <span className="tag-dot" style={{ background: t.color }} />
+                    )}
+                    {t.name}
+                  </span>
                   <span className="side-count">
                     {collapsedTags.has(t.id) ? `${t.count} ▸` : t.count}
                   </span>

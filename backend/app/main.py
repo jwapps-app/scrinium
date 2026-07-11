@@ -14,6 +14,7 @@ from app.routers import (
     organize,
     rules,
     search,
+    share,
     settings as settings_router,
     tags,
 )
@@ -44,6 +45,7 @@ app.include_router(documents.router, prefix=API_PREFIX)
 app.include_router(organize.router, prefix=API_PREFIX)
 app.include_router(rules.router, prefix=API_PREFIX)
 app.include_router(search.router, prefix=API_PREFIX)
+app.include_router(share.router, prefix=API_PREFIX)
 app.include_router(settings_router.router, prefix=API_PREFIX)
 app.include_router(tags.router, prefix=API_PREFIX)
 

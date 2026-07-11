@@ -13,7 +13,9 @@ router = APIRouter(prefix="/tags", tags=["tags"])
 
 
 def _tag_out(tag: Tag, count: int = 0) -> TagOut:
-    return TagOut(id=tag.id, name=tag.name, parent_id=tag.parent_id, count=count)
+    return TagOut(
+        id=tag.id, name=tag.name, parent_id=tag.parent_id, color=tag.color, count=count
+    )
 
 
 async def _get_owned(tag_id: uuid.UUID, user, db) -> Tag:
@@ -48,7 +50,12 @@ async def create_tag(body: TagCreate, user: CurrentUser, db: DB) -> TagOut:
         return _tag_out(existing)
     if body.parent_id is not None:
         await _get_owned(body.parent_id, user, db)
-    tag = Tag(tenant_id=user.tenant_id, name=body.name, parent_id=body.parent_id)
+    tag = Tag(
+        tenant_id=user.tenant_id,
+        name=body.name,
+        parent_id=body.parent_id,
+        color=body.color,
+    )
     db.add(tag)
     await db.flush()
     return _tag_out(tag)
@@ -73,6 +80,10 @@ async def update_tag(
             )
         await _get_owned(body.parent_id, user, db)
         tag.parent_id = body.parent_id
+    if body.clear_color:
+        tag.color = None
+    elif body.color is not None:
+        tag.color = body.color
     await db.flush()
     return _tag_out(tag)
 

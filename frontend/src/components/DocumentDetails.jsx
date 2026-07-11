@@ -136,12 +136,36 @@ export default function DocumentDetails({ doc, onChange }) {
       {doc.tags.length > 0 && (
         <span className="detail detail-tags">
           {doc.tags.map((t) => (
-            <span key={t.id} className="chip chip-tag">
+            <span
+              key={t.id}
+              className="chip chip-tag"
+              style={
+                t.color
+                  ? {
+                      background: `color-mix(in srgb, ${t.color} 22%, transparent)`,
+                      borderColor: t.color,
+                      color: t.color,
+                    }
+                  : undefined
+              }
+            >
               {t.name}
             </span>
           ))}
         </span>
       )}
+
+      <label className="detail detail-notes">
+        <span className="detail-label">Notes</span>
+        <textarea
+          rows={1}
+          placeholder="Add a note…"
+          defaultValue={doc.notes || ''}
+          onBlur={(e) => {
+            if (e.target.value !== (doc.notes || '')) patch({ notes: e.target.value })
+          }}
+        />
+      </label>
 
       {error && <span className="error">{error}</span>}
     </div>

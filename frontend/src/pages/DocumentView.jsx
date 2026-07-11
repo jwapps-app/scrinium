@@ -144,6 +144,33 @@ export default function DocumentView() {
     }
   }
 
+  async function shareDoc() {
+    try {
+      const link = await apiJson(`/api/documents/${id}/share`, {
+        method: 'POST',
+        body: JSON.stringify({ days: 7 }),
+      })
+      const url = `${window.location.origin}${link.url_path}`
+      try {
+        await navigator.clipboard.writeText(url)
+        window.alert('Share link copied — anyone with it can view this document for 7 days.')
+      } catch {
+        window.prompt('Copy this link:', url)
+      }
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function unshareDoc() {
+    try {
+      await apiFetch(`/api/documents/${id}/share`, { method: 'DELETE' })
+      window.alert('All share links for this document are revoked.')
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   async function saveTitle() {
     setEditingTitle(false)
     if (!title.trim() || title === doc.title) return
@@ -335,6 +362,15 @@ export default function DocumentView() {
                 label: 'Edit pages…',
                 hint: 'rotate, delete, split',
                 onClick: () => setPageMode(true),
+              },
+              {
+                label: 'Copy share link',
+                hint: 'public link, 7 days',
+                onClick: shareDoc,
+              },
+              {
+                label: 'Revoke share links',
+                onClick: unshareDoc,
               },
               {
                 label: 'Move to trash',

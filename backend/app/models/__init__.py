@@ -3,6 +3,7 @@ from app.models.blob import Blob
 from app.models.device import DeviceToken
 from app.models.document import Document, DocumentStatus, document_tags
 from app.models.job import Job, JobStatus
+from app.models.share import ShareLink
 from app.models.organize import (
     Correspondent,
     CustomField,
@@ -23,6 +24,7 @@ __all__ = [
     "DocumentStatus",
     "document_tags",
     "Correspondent",
+    "ShareLink",
     "CustomField",
     "DocType",
     "SavedView",

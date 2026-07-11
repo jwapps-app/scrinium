@@ -6,6 +6,7 @@ import Setup from './pages/Setup'
 import Library from './pages/Library'
 import DocumentView from './pages/DocumentView'
 import Settings from './pages/Settings'
+import SharedDocument from './pages/SharedDocument'
 
 function RequireAuth({ children }) {
   if (!getTokens()) return <Navigate to="/login" replace />
@@ -27,6 +28,7 @@ export default function App() {
 
   return (
     <Routes>
+      <Route path="/share/:token" element={<SharedDocument />} />
       <Route path="/login" element={<Login />} />
       <Route path="/setup" element={<Setup />} />
       <Route

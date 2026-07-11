@@ -19,6 +19,8 @@ class Tag(Base):
         UUID(as_uuid=True), ForeignKey("tenants.id"), index=True
     )
     name: Mapped[str] = mapped_column(String(255))
+    # Display color (hex like "#c2410c"); null = default chip styling.
+    color: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Hierarchy: applying a tag also applies its ancestors to the document.
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tags.id", ondelete="SET NULL"), nullable=True

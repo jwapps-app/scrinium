@@ -500,6 +500,9 @@ async def update_document(
         if dtype is None or dtype.tenant_id != user.tenant_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Document type not found")
         doc.doc_type_id = dtype.id
+    if body.notes is not None:
+        doc.notes = body.notes.strip() or None
+
     if body.custom_values is not None:
         for field_id, value in body.custom_values.items():
             field = await db.get(CustomField, field_id)

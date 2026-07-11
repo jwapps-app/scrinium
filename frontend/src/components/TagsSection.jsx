@@ -119,6 +119,23 @@ export default function TagsSection() {
                   {t.count} document{t.count === 1 ? '' : 's'}
                 </span>
               </div>
+              <span className="tag-color-cell">
+                <input
+                  type="color"
+                  value={t.color || '#8a8a8a'}
+                  onChange={(e) => patch(t.id, { color: e.target.value })}
+                  title="Tag color"
+                />
+                {t.color && (
+                  <button
+                    className="ghost side-x"
+                    onClick={() => patch(t.id, { clear_color: true })}
+                    title="Clear color"
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
               <select
                 value={t.parent_id || ''}
                 onChange={(e) =>

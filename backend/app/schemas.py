@@ -34,18 +34,22 @@ class TagOut(BaseModel):
     id: uuid.UUID
     name: str
     parent_id: uuid.UUID | None = None
+    color: str | None = None
     count: int = 0
 
 
 class TagCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     parent_id: uuid.UUID | None = None
+    color: str | None = Field(default=None, max_length=16)
 
 
 class TagUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     parent_id: uuid.UUID | None = None
     clear_parent: bool = False  # set true to move a tag to the root
+    color: str | None = Field(default=None, max_length=16)
+    clear_color: bool = False
 
 
 class DocumentOut(BaseModel):
@@ -68,6 +72,7 @@ class DocumentOut(BaseModel):
     doc_type_id: uuid.UUID | None = None
     doc_type_name: str | None = None
     deleted_at: datetime | None = None
+    notes: str | None = None
     custom_values: dict[str, str] = {}
     tags: list[TagOut] = []
     created_at: datetime
@@ -90,10 +95,23 @@ class DocumentUpdate(BaseModel):
     clear_doc_type: bool = False
     # field_id -> value; empty string removes the value
     custom_values: dict[uuid.UUID, str] | None = None
+    notes: str | None = None  # empty string clears
 
 
 class ReprocessRequest(BaseModel):
     mode: str = Field(default="redo", pattern="^(skip|redo|force)$")
+
+
+class ShareLinkCreate(BaseModel):
+    days: int = Field(default=7, ge=0, le=365)  # 0 = no expiry
+
+
+class ShareLinkOut(BaseModel):
+    id: uuid.UUID
+    token: str
+    url_path: str
+    expires_at: datetime | None
+    created_at: datetime
 
 
 class PageOpRequest(BaseModel):

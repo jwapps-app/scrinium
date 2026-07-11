@@ -214,6 +214,89 @@ select {
   width: 1.1rem;
 }
 
+/* Shared-document public page */
+.share-page {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1rem 1.25rem calc(2rem + env(safe-area-inset-bottom, 0px));
+}
+
+.share-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+
+.share-app {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.share-header h1 {
+  font-size: 1.15rem;
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.button-link {
+  display: inline-block;
+  padding: 0.4rem 0.9rem;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.share-error {
+  margin-top: 3rem;
+  text-align: center;
+}
+
+/* Notes + tag colors */
+.detail-notes {
+  flex: 1 1 100%;
+}
+
+.detail-notes textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 2rem;
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.tag-color-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.tag-color-cell input[type='color'] {
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+.tag-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  margin-right: 0.4rem;
+  vertical-align: 1px;
+}
+
 /* Page organizer (rotate / delete / extract pages) */
 .page-organizer {
   position: fixed;
