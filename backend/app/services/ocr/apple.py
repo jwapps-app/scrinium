@@ -22,7 +22,7 @@ from app.services.ocr.tesseract import (
     PROGRESS_PLUGIN,
     OCRError,
     extract_text,
-    run_ocrmypdf,
+    process_with_fallbacks,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,10 +73,4 @@ class AppleVisionProvider:
             cmd += ["--image-dpi", "300"]
         cmd += [str(original), str(archive)]
 
-        run_ocrmypdf(cmd, workdir)
-
-        return OCRResult(
-            archive_path=archive,
-            text=extract_text(archive),
-            engine=self.engine,
-        )
+        return process_with_fallbacks(cmd, original, workdir, archive, self.engine)
