@@ -74,7 +74,7 @@ services:
       MAIL_POLL_SECONDS: ${MAIL_POLL_SECONDS:-300}
     volumes:
       - ${DATA_ROOT:-/volume1/docker/scrinium}/data:/data
-    mem_limit: 2g
+    mem_limit: ${WORKER_MEM_LIMIT:-2g}
     restart: unless-stopped
     depends_on:
       postgres:
