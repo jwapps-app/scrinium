@@ -102,6 +102,27 @@ export default function Shell({ children }) {
   else if (remaining > peakRef.current) peakRef.current = remaining
   const burndown = peakRef.current > 0 ? (peakRef.current - remaining) / peakRef.current : 0
 
+  // Anti-flicker: between jobs the running list momentarily empties, and at
+  // the very end it toggles on/off — both made the whole sidebar jump.
+  // Two stabilizers:
+  //  - slot memory: while the queue is active, keep as many bar rows as the
+  //    recent maximum, padding with "next file…" placeholders;
+  //  - linger: once shown, the panel stays until things have been quiet for
+  //    a while, then leaves for good.
+  const running = stats?.running || []
+  const active = running.length > 0 || remaining > 0
+  const slotsRef = useRef(0)
+  const quietSinceRef = useRef(null)
+  if (active) {
+    slotsRef.current = Math.max(slotsRef.current, running.length, 1)
+    quietSinceRef.current = null
+  } else {
+    if (quietSinceRef.current === null) quietSinceRef.current = Date.now()
+    if (Date.now() - quietSinceRef.current > 15000) slotsRef.current = 0
+  }
+  const showPanel = active || slotsRef.current > 0
+  const placeholders = Math.max(0, (active ? slotsRef.current : 0) - running.length)
+
   useEffect(() => {
     setOpen(false)
   }, [location])
@@ -186,9 +207,9 @@ export default function Shell({ children }) {
             </button>
           )}
 
-          {((stats?.running && stats.running.length > 0) || remaining > 0) && (
+          {showPanel && (
             <div className="proc-panel">
-              {stats?.running?.map((r) => (
+              {running.map((r) => (
                 <div key={r.id} className="proc-item">
                   <div className="proc-line">
                     <span className="proc-title">{r.title}</span>
@@ -203,8 +224,24 @@ export default function Shell({ children }) {
                   <ProgressBar value={r.progress} />
                 </div>
               ))}
-              {stats?.running_count > 1 && (
-                <div className="proc-sub">{stats.running_count} files at once</div>
+              {Array.from({ length: placeholders }, (_, i) => (
+                <div key={`ph-${i}`} className="proc-item proc-placeholder">
+                  <div className="proc-line">
+                    <span className="proc-title">next file…</span>
+                    <span className="proc-eta" />
+                  </div>
+                  <ProgressBar value={0} />
+                </div>
+              ))}
+              {!active && (
+                <div className="proc-item">
+                  <div className="proc-line proc-overall">
+                    <span>All caught up</span>
+                  </div>
+                </div>
+              )}
+              {active && slotsRef.current > 1 && (
+                <div className="proc-sub">{slotsRef.current} files at once</div>
               )}
               {remaining > 0 && (
                 <div className="proc-item proc-overall-item">
