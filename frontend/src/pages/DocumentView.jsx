@@ -5,6 +5,7 @@ import StatusChip from '../components/StatusChip'
 import ProgressBar from '../components/ProgressBar'
 import PdfViewer from '../components/PdfViewer'
 import Menu from '../components/Menu'
+import DocumentDetails from '../components/DocumentDetails'
 
 export default function DocumentView() {
   const { id } = useParams()
@@ -151,9 +152,10 @@ export default function DocumentView() {
   }
 
   async function remove() {
-    if (!window.confirm('Delete this document and its files?')) return
+    if (!window.confirm('Move this document to the trash?')) return
     try {
       await apiJson(`/api/documents/${id}`, { method: 'DELETE' })
+      window.dispatchEvent(new Event('library-changed'))
       navigate('/')
     } catch (err) {
       setError(err.message)
@@ -291,7 +293,7 @@ export default function DocumentView() {
                 onClick: classify,
               },
               {
-                label: 'Delete document',
+                label: 'Move to trash',
                 danger: true,
                 onClick: remove,
               },
@@ -337,15 +339,35 @@ export default function DocumentView() {
       )}
       </div>
 
-      {doc.tags.length > 0 && (
-        <p className="doc-tags">
-          {doc.tags.map((t) => (
-            <span key={t.id} className="chip chip-tag">
-              {t.name}
-            </span>
-          ))}
-        </p>
+      {doc.deleted_at && (
+        <div className="trash-banner">
+          <span>
+            This document is in the trash — it will be permanently deleted
+            after the retention period.
+          </span>
+          <button
+            onClick={async () => {
+              setDoc(await apiJson(`/api/documents/${id}/restore`, { method: 'POST' }))
+              window.dispatchEvent(new Event('library-changed'))
+            }}
+          >
+            Restore
+          </button>
+          <button
+            className="ghost danger"
+            onClick={async () => {
+              if (!window.confirm('Permanently delete this document and its files?')) return
+              await apiJson(`/api/documents/${id}/purge`, { method: 'DELETE' })
+              window.dispatchEvent(new Event('library-changed'))
+              navigate('/')
+            }}
+          >
+            Delete forever
+          </button>
+        </div>
       )}
+
+      {!doc.deleted_at && <DocumentDetails doc={doc} onChange={setDoc} />}
 
       {doc.status === 'flagged' && (
         <p className="error">

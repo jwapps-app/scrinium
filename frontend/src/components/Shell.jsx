@@ -27,6 +27,8 @@ export function flattenTagTree(tags) {
 export default function Shell({ children }) {
   const [stats, setStats] = useState(null)
   const [tags, setTags] = useState([])
+  const [views, setViews] = useState([])
+  const [correspondents, setCorrespondents] = useState([])
   const [open, setOpen] = useState(false)
   const location = useLocation()
   const [params] = useSearchParams()
@@ -35,13 +37,17 @@ export default function Shell({ children }) {
     let cancelled = false
     async function load() {
       try {
-        const [s, t] = await Promise.all([
+        const [s, t, v, c] = await Promise.all([
           apiJson('/api/documents/stats'),
           apiJson('/api/tags'),
+          apiJson('/api/views'),
+          apiJson('/api/correspondents'),
         ])
         if (!cancelled) {
           setStats(s)
           setTags(t)
+          setViews(v)
+          setCorrespondents(c)
         }
       } catch {
         /* sidebar data is best-effort */
@@ -65,6 +71,7 @@ export default function Shell({ children }) {
   const onLibrary = location.pathname === '/'
   const activeStatus = onLibrary ? params.get('status') : null
   const activeTag = onLibrary ? params.get('tag') : null
+  const activeCorrespondent = onLibrary ? params.get('correspondent') : null
 
   const statusLinks = [
     { label: 'All documents', to: '/', key: null, count: stats?.total },
@@ -81,6 +88,7 @@ export default function Shell({ children }) {
       key: 'flagged',
       count: stats?.flagged,
     },
+    { label: 'Trash', to: '/?status=trash', key: 'trash', count: stats?.trash },
   ]
 
   return (
@@ -140,6 +148,45 @@ export default function Shell({ children }) {
             </button>
           )}
         </nav>
+
+        {views.length > 0 && (
+          <div className="side-group">
+            <div className="side-title">Views</div>
+            {views.map((v) => (
+              <span key={v.id} className="side-view-row">
+                <Link to={`/?${v.params}`} className="side-link">
+                  <span className="side-tag-name">{v.name}</span>
+                </Link>
+                <button
+                  className="side-x"
+                  title="Delete view"
+                  onClick={async () => {
+                    await apiJson(`/api/views/${v.id}`, { method: 'DELETE' })
+                    window.dispatchEvent(new Event('library-changed'))
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {correspondents.length > 0 && (
+          <div className="side-group">
+            <div className="side-title">Correspondents</div>
+            {correspondents.map((c) => (
+              <Link
+                key={c.id}
+                to={`/?correspondent=${c.id}`}
+                className={`side-link ${activeCorrespondent === c.id ? 'active' : ''}`}
+              >
+                <span className="side-tag-name">{c.name}</span>
+                <span className="side-count">{c.count}</span>
+              </Link>
+            ))}
+          </div>
+        )}
 
         {tags.length > 0 && (
           <div className="side-group">

@@ -30,6 +30,7 @@ async def search(q: str, user: CurrentUser, db: DB, limit: int = 25) -> SearchRe
             select(Document.id, Document.title, Document.status, snippet, rank)
             .where(
                 Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
                 Document.search_vector.op("@@")(tsquery),
             )
             .order_by(rank.desc())

@@ -4,7 +4,8 @@ import httpx
 from fastapi import APIRouter
 
 from app.config import settings
-from app.deps import CurrentUser
+from app.deps import DB, CurrentUser
+from app.models import AppSetting
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -42,6 +43,17 @@ def _helper_port() -> int:
         if parsed.port:
             return parsed.port
     return 9876
+
+
+@router.get("/mail")
+async def mail_settings(user: CurrentUser, db: DB) -> dict:
+    status_row = await db.get(AppSetting, "mail_last_result")
+    return {
+        "configured": settings.mail_enabled(),
+        "host": settings.mail_host or None,
+        "folder": settings.mail_folder,
+        "last_result": status_row.value if status_row else None,
+    }
 
 
 @router.get("/ocr")

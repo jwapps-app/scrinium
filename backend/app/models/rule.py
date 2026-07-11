@@ -30,6 +30,14 @@ class Rule(Base):
         UUID(as_uuid=True), ForeignKey("tags.id", ondelete="SET NULL"), nullable=True
     )
     set_title: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    correspondent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("correspondents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    doc_type_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("doc_types.id", ondelete="SET NULL"), nullable=True
+    )
     priority: Mapped[int] = mapped_column(default=100)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(

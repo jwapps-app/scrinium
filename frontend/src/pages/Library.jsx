@@ -20,17 +20,24 @@ function Snippet({ text }) {
 
 const ENGINES = ['tesseract', 'apple', 'native']
 const SORTS = [
-  ['newest', 'Newest'],
-  ['oldest', 'Oldest'],
+  ['newest', 'Newest added'],
+  ['oldest', 'Oldest added'],
+  ['docdate', 'Document date'],
   ['title', 'Title A–Z'],
   ['updated', 'Recently updated'],
 ]
+
+function displayDate(d) {
+  const raw = d.doc_date || d.created_at
+  return new Date(d.doc_date ? raw + 'T00:00:00' : raw).toLocaleDateString()
+}
 
 export default function Library() {
   const [params, setParams] = useSearchParams()
   const [docs, setDocs] = useState([])
   const [total, setTotal] = useState(0)
   const [tags, setTags] = useState([])
+  const [docTypes, setDocTypes] = useState([])
   const [results, setResults] = useState(null)
   const [query, setQuery] = useState(params.get('q') || '')
   const [uploading, setUploading] = useState(false)
@@ -43,6 +50,8 @@ export default function Library() {
 
   const status = params.get('status')
   const tag = params.get('tag')
+  const correspondent = params.get('correspondent')
+  const doctype = params.get('doctype')
   const engine = params.get('engine')
   const sort = params.get('sort') || 'newest'
   const from = params.get('from')
@@ -67,6 +76,8 @@ export default function Library() {
         search.set('status_filter', status)
       }
       if (tag) search.set('tag_id', tag)
+      if (correspondent) search.set('correspondent_id', correspondent)
+      if (doctype) search.set('doc_type_id', doctype)
       if (engine) search.set('engine', engine)
       if (from) search.set('date_from', from)
       if (to) search.set('date_to', to)
@@ -78,7 +89,7 @@ export default function Library() {
     } catch (err) {
       setError(err.message)
     }
-  }, [status, tag, engine, sort, from, to])
+  }, [status, tag, correspondent, doctype, engine, sort, from, to])
 
   useEffect(() => {
     load()
@@ -86,6 +97,7 @@ export default function Library() {
 
   useEffect(() => {
     apiJson('/api/tags').then(setTags).catch(() => {})
+    apiJson('/api/doc-types').then(setDocTypes).catch(() => {})
   }, [])
 
   // Poll while anything is still working its way through the pipeline.
@@ -133,7 +145,27 @@ export default function Library() {
   }
 
   const tagName = tag ? tags.find((t) => t.id === tag)?.name : null
-  const hasFilters = status || tag || engine || from || to
+  const inTrash = status === 'trash'
+  const hasFilters = status || tag || correspondent || doctype || engine || from || to
+
+  async function saveCurrentView() {
+    const name = window.prompt('Name this view:')
+    if (!name?.trim()) return
+    const keep = new URLSearchParams()
+    for (const key of ['status', 'tag', 'correspondent', 'doctype', 'engine', 'from', 'to', 'sort', 'q', 'view']) {
+      const value = params.get(key)
+      if (value) keep.set(key, value)
+    }
+    try {
+      await apiJson('/api/views', {
+        method: 'POST',
+        body: JSON.stringify({ name: name.trim(), params: keep.toString() }),
+      })
+      window.dispatchEvent(new Event('library-changed'))
+    } catch (err) {
+      setError(err.message)
+    }
+  }
 
   function toggleSelected(id) {
     setSelected((prev) => {
@@ -153,22 +185,28 @@ export default function Library() {
   async function bulk(action, extra = {}) {
     const count = wholeFilter ? total : selected.size
     if (count === 0) return
+    if (action === 'delete' && !window.confirm(`Move ${count} document(s) to the trash?`))
+      return
     if (
-      action === 'delete' &&
-      !window.confirm(`Delete ${count} document(s) and their files?`)
+      action === 'purge' &&
+      !window.confirm(`Permanently delete ${count} document(s) and their files? This cannot be undone.`)
     )
       return
     setError('')
     setBulkBusy(true)
     try {
-      if (wholeFilter && tag) {
+      if (wholeFilter && (tag || inTrash)) {
         // Server-side: acts on everything carrying the tag; deletes are
         // chunked, so repeat until the server says nothing remains.
         let done = 0
         for (;;) {
           const result = await apiJson('/api/documents/bulk', {
             method: 'POST',
-            body: JSON.stringify({ filter_tag_id: tag, action, ...extra }),
+            body: JSON.stringify(
+              inTrash
+                ? { filter_trash: true, action, ...extra }
+                : { filter_tag_id: tag, action, ...extra },
+            ),
           })
           done += result.processed
           load()
@@ -237,6 +275,18 @@ export default function Library() {
             ))}
           </select>
 
+          <select
+            value={doctype || ''}
+            onChange={(e) => setParam('doctype', e.target.value)}
+          >
+            <option value="">Any type</option>
+            {docTypes.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+
           <select value={sort} onChange={(e) => setParam('sort', e.target.value)}>
             {SORTS.map(([value, label]) => (
               <option key={value} value={value}>
@@ -275,6 +325,11 @@ export default function Library() {
             </button>
           </div>
 
+          {hasFilters && !inTrash && (
+            <button className="ghost" onClick={saveCurrentView} title="Save this filter combination to the sidebar">
+              Save view
+            </button>
+          )}
           <button
             className="ghost"
             onClick={() => (selecting ? exitSelection() : setSelecting(true))}
@@ -322,38 +377,70 @@ export default function Library() {
                 Entire filter ({total})
               </button>
             )}
+            {inTrash && total > 0 && (
+              <button
+                className={wholeFilter ? '' : 'ghost'}
+                onClick={() => setWholeFilter(!wholeFilter)}
+                title="Act on everything in the trash"
+              >
+                Entire trash ({total})
+              </button>
+            )}
             <span className="bulk-spacer" />
             {bulkBusy && <span className="doc-meta">working…</span>}
-            <button
-              className="ghost"
-              disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
-              onClick={() => bulk('reprocess', { mode: 'skip' })}
-            >
-              Re-OCR
-            </button>
-            <Menu
-              label="Tag"
-              className="ghost"
-              items={tags.map((t) => ({
-                label: t.name,
-                onClick: () => bulk('add_tags', { tag_ids: [t.id] }),
-              }))}
-            />
-            <Menu
-              label="Untag"
-              className="ghost"
-              items={tags.map((t) => ({
-                label: t.name,
-                onClick: () => bulk('remove_tags', { tag_ids: [t.id] }),
-              }))}
-            />
-            <button
-              className="ghost danger"
-              disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
-              onClick={() => bulk('delete')}
-            >
-              Delete
-            </button>
+            {inTrash ? (
+              <>
+                <button
+                  className="ghost"
+                  disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
+                  onClick={() => bulk('restore')}
+                >
+                  Restore
+                </button>
+                <button
+                  className="ghost danger"
+                  disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
+                  onClick={() => bulk('purge')}
+                >
+                  Delete forever
+                </button>
+              </>
+            ) : (
+              <button
+                className="ghost"
+                disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
+                onClick={() => bulk('reprocess', { mode: 'skip' })}
+              >
+                Re-OCR
+              </button>
+            )}
+            {!inTrash && (
+              <>
+                <Menu
+                  label="Tag"
+                  className="ghost"
+                  items={tags.map((t) => ({
+                    label: t.name,
+                    onClick: () => bulk('add_tags', { tag_ids: [t.id] }),
+                  }))}
+                />
+                <Menu
+                  label="Untag"
+                  className="ghost"
+                  items={tags.map((t) => ({
+                    label: t.name,
+                    onClick: () => bulk('remove_tags', { tag_ids: [t.id] }),
+                  }))}
+                />
+                <button
+                  className="ghost danger"
+                  disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
+                  onClick={() => bulk('delete')}
+                >
+                  Delete
+                </button>
+              </>
+            )}
           </div>
         )}
 
@@ -383,6 +470,7 @@ export default function Library() {
           <section>
             <h2>
               {total} document{total === 1 ? '' : 's'}
+              {inTrash ? ' in the trash' : ''}
               {tagName ? ` tagged ${tagName}` : ''}
               {hasFilters && (
                 <button className="ghost clear-filters" onClick={() => setParams({})}>
@@ -391,11 +479,19 @@ export default function Library() {
               )}
             </h2>
 
+            {inTrash && total > 0 && (
+              <p className="settings-help">
+                Items here delete permanently after the retention period, or
+                immediately via “Delete forever”.
+              </p>
+            )}
             {docs.length === 0 && (
               <p className="empty">
-                {hasFilters
-                  ? 'Nothing matches these filters.'
-                  : 'Drop a PDF here or hit Upload to get started.'}
+                {inTrash
+                  ? 'The trash is empty.'
+                  : hasFilters
+                    ? 'Nothing matches these filters.'
+                    : 'Drop a PDF here or hit Upload to get started.'}
               </p>
             )}
 
@@ -419,8 +515,9 @@ export default function Library() {
                     <div className="card-body">
                       <span className="card-title">{d.title}</span>
                       <span className="card-meta">
+                        {d.correspondent_name ? `${d.correspondent_name} · ` : ''}
                         {d.page_count ? `${d.page_count} pp · ` : ''}
-                        {new Date(d.created_at).toLocaleDateString()}
+                        {displayDate(d)}
                       </span>
                       <StatusChip status={d.status} progress={d.progress} phase={d.phase} />
                       {d.status === 'processing' && d.progress != null && (
@@ -454,8 +551,9 @@ export default function Library() {
                         </span>
                       ))}
                       <span className="doc-meta">
+                        {d.correspondent_name ? `${d.correspondent_name} · ` : ''}
                         {d.page_count ? `${d.page_count} pp · ` : ''}
-                        {new Date(d.created_at).toLocaleDateString()}
+                        {displayDate(d)}
                       </span>
                       {d.status === 'processing' && d.progress != null && (
                         <ProgressBar value={d.progress} />

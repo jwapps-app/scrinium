@@ -14,29 +14,37 @@ from app.config import settings
 from app.database import SessionLocal, engine
 from app.models import Job, JobStatus
 from app.services.app_state import PROCESSING_PAUSED, get_flag
+from app.services.deletion import purge_expired
 from app.services.ingest import process_job
+from app.services.mail import poll_once as poll_mail_once
 from app.services.watch import scan_once
 
-# Advisory lock so only one worker replica sweeps the watch folder at a
-# time; the job queue itself is already replica-safe (SKIP LOCKED).
+# Advisory locks so only one worker replica runs each background sweep;
+# the job queue itself is already replica-safe (SKIP LOCKED).
 WATCH_LOCK_KEY = 815551
+MAIL_LOCK_KEY = 815552
+PURGE_LOCK_KEY = 815553
 
 
-async def scan_watch_exclusively() -> None:
+async def _with_advisory_lock(key: int, coro_fn) -> None:
     async with engine.connect() as conn:
         locked = (
             await conn.execute(
-                text("SELECT pg_try_advisory_lock(:key)"), {"key": WATCH_LOCK_KEY}
+                text("SELECT pg_try_advisory_lock(:key)"), {"key": key}
             )
         ).scalar()
         if not locked:
-            return  # another replica is sweeping
+            return
         try:
-            await scan_once()
+            await coro_fn()
         finally:
             await conn.execute(
-                text("SELECT pg_advisory_unlock(:key)"), {"key": WATCH_LOCK_KEY}
+                text("SELECT pg_advisory_unlock(:key)"), {"key": key}
             )
+
+
+async def scan_watch_exclusively() -> None:
+    await _with_advisory_lock(WATCH_LOCK_KEY, scan_once)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("worker")
@@ -68,6 +76,8 @@ async def main() -> None:
         settings.watch_dir or "disabled",
     )
     last_watch_scan = 0.0
+    last_mail_poll = 0.0
+    last_purge = 0.0
     was_paused = False
     try:
         while True:
@@ -97,6 +107,25 @@ async def main() -> None:
                     await scan_watch_exclusively()
                 except Exception:
                     logger.exception("watch sweep crashed; continuing")
+
+            if settings.mail_enabled() and (
+                time.monotonic() - last_mail_poll >= settings.mail_poll_seconds
+            ):
+                last_mail_poll = time.monotonic()
+                try:
+                    await _with_advisory_lock(MAIL_LOCK_KEY, poll_mail_once)
+                except Exception:
+                    logger.exception("mail poll crashed; continuing")
+
+            if time.monotonic() - last_purge >= 3600:
+                last_purge = time.monotonic()
+                try:
+                    async def _purge():
+                        async with SessionLocal() as session:
+                            await purge_expired(session)
+                    await _with_advisory_lock(PURGE_LOCK_KEY, _purge)
+                except Exception:
+                    logger.exception("trash purge crashed; continuing")
 
             if not worked:
                 await asyncio.sleep(settings.worker_poll_seconds)

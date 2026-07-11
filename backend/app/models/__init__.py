@@ -3,6 +3,13 @@ from app.models.blob import Blob
 from app.models.device import DeviceToken
 from app.models.document import Document, DocumentStatus, document_tags
 from app.models.job import Job, JobStatus
+from app.models.organize import (
+    Correspondent,
+    CustomField,
+    DocType,
+    SavedView,
+    document_custom_values,
+)
 from app.models.rule import Rule
 from app.models.tag import Tag
 from app.models.tenant import Tenant
@@ -15,6 +22,11 @@ __all__ = [
     "Document",
     "DocumentStatus",
     "document_tags",
+    "Correspondent",
+    "CustomField",
+    "DocType",
+    "SavedView",
+    "document_custom_values",
     "Job",
     "JobStatus",
     "Rule",

@@ -1,9 +1,10 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     Column,
     Computed,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -69,6 +70,22 @@ class Document(Base):
     # For watched-folder ingests: where the consumed copy was filed
     # (relative to WATCH_DIR), so deleting the document cleans it up too.
     source_path: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # The document's own date (letter date, invoice date…), extracted from
+    # its text at ingest and editable by the user. Distinct from created_at,
+    # which is only "when it entered the library".
+    doc_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    correspondent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("correspondents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    doc_type_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("doc_types.id", ondelete="SET NULL"), nullable=True
+    )
+    # Soft delete: set = in the trash; purged for real after retention.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_engine: Mapped[str | None] = mapped_column(String(32), nullable=True)
     page_count: Mapped[int | None] = mapped_column(nullable=True)
@@ -90,6 +107,8 @@ class Document(Base):
     original_blob = relationship("Blob", foreign_keys=[original_blob_id])
     archive_blob = relationship("Blob", foreign_keys=[archive_blob_id])
     tags = relationship("Tag", secondary=document_tags, lazy="selectin")
+    correspondent = relationship("Correspondent", lazy="selectin")
+    doc_type = relationship("DocType", lazy="selectin")
 
     __table_args__ = (
         Index("ix_documents_search_vector", "search_vector", postgresql_using="gin"),

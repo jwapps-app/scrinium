@@ -11,6 +11,7 @@ from app.routers import (
     classify,
     devices,
     documents,
+    organize,
     rules,
     search,
     settings as settings_router,
@@ -40,6 +41,7 @@ app.include_router(auth.router, prefix=API_PREFIX)
 app.include_router(classify.router, prefix=API_PREFIX)
 app.include_router(devices.router, prefix=API_PREFIX)
 app.include_router(documents.router, prefix=API_PREFIX)
+app.include_router(organize.router, prefix=API_PREFIX)
 app.include_router(rules.router, prefix=API_PREFIX)
 app.include_router(search.router, prefix=API_PREFIX)
 app.include_router(settings_router.router, prefix=API_PREFIX)

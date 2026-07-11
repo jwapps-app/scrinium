@@ -27,6 +27,11 @@ services:
       OCR_ENGINE: ${OCR_ENGINE:-tesseract}
       APPLE_OCR_URL: ${APPLE_OCR_URL:-}
       WATCH_DIR: /data/watch
+      TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS:-30}
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FOLDER: ${MAIL_FOLDER:-INBOX}
     ports:
       - "8010:8000"
     volumes:
@@ -49,6 +54,13 @@ services:
       WATCH_BATCH_SIZE: ${WATCH_BATCH_SIZE:-25}
       PUSH_RELAY_URL: ${PUSH_RELAY_URL:-}
       PUSH_RELAY_API_KEY: ${PUSH_RELAY_API_KEY:-}
+      TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS:-30}
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-993}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FOLDER: ${MAIL_FOLDER:-INBOX}
+      MAIL_POLL_SECONDS: ${MAIL_POLL_SECONDS:-300}
     volumes:
       - ./data:/data
     depends_on:

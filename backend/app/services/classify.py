@@ -21,6 +21,8 @@ class ClassifyOutcome:
     matched_rules: list[str] = field(default_factory=list)
     added_tags: list[str] = field(default_factory=list)
     new_title: str | None = None
+    set_correspondent: bool = False
+    set_doc_type: bool = False
 
 
 def rule_matches(rule: Rule, text: str) -> bool:
@@ -70,6 +72,14 @@ async def classify_document(
                         outcome.added_tags.append(applied.name)
         if rule.set_title and title_candidate is None:
             title_candidate = rule.set_title
+        # Correspondent/type: first matching rule wins, and never stomps a
+        # value that's already set (manually or by an earlier run).
+        if rule.correspondent_id and document.correspondent_id is None:
+            document.correspondent_id = rule.correspondent_id
+            outcome.set_correspondent = True
+        if rule.doc_type_id and document.doc_type_id is None:
+            document.doc_type_id = rule.doc_type_id
+            outcome.set_doc_type = True
 
     # Report a title change only when it actually changes something, so
     # reclassifying is a true no-op the second time.

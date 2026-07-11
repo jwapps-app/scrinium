@@ -1,23 +1,29 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '../api'
 
-const EMPTY = { name: '', match_type: 'contains', pattern: '', tag_name: '', set_title: '' }
+const EMPTY = { name: '', match_type: 'contains', pattern: '', tag_name: '', set_title: '', correspondent_name: '', doc_type_name: '' }
 
 export default function RulesSection() {
   const [rules, setRules] = useState([])
   const [tags, setTags] = useState([])
+  const [correspondents, setCorrespondents] = useState([])
+  const [docTypes, setDocTypes] = useState([])
   const [form, setForm] = useState(EMPTY)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
   const load = useCallback(async () => {
     try {
-      const [ruleData, tagData] = await Promise.all([
+      const [ruleData, tagData, corrData, typeData] = await Promise.all([
         apiJson('/api/rules'),
         apiJson('/api/tags'),
+        apiJson('/api/correspondents'),
+        apiJson('/api/doc-types'),
       ])
       setRules(ruleData)
       setTags(tagData)
+      setCorrespondents(corrData)
+      setDocTypes(typeData)
     } catch (err) {
       setError(err.message)
     }
@@ -45,6 +51,22 @@ export default function RulesSection() {
         })
         tagId = tag.id
       }
+      let correspondentId = null
+      if (form.correspondent_name.trim()) {
+        const corr = await apiJson('/api/correspondents', {
+          method: 'POST',
+          body: JSON.stringify({ name: form.correspondent_name.trim() }),
+        })
+        correspondentId = corr.id
+      }
+      let docTypeId = null
+      if (form.doc_type_name.trim()) {
+        const dtype = await apiJson('/api/doc-types', {
+          method: 'POST',
+          body: JSON.stringify({ name: form.doc_type_name.trim() }),
+        })
+        docTypeId = dtype.id
+      }
       await apiJson('/api/rules', {
         method: 'POST',
         body: JSON.stringify({
@@ -53,6 +75,8 @@ export default function RulesSection() {
           pattern: form.pattern,
           tag_id: tagId,
           set_title: form.set_title.trim() || null,
+          correspondent_id: correspondentId,
+          doc_type_id: docTypeId,
         }),
       })
       setForm(EMPTY)
@@ -119,6 +143,12 @@ export default function RulesSection() {
                   {r.match_type === 'regex' ? 'regex' : 'contains'} “{r.pattern}”
                   {r.tag_id && tagName(r.tag_id) ? ` → tag ${tagName(r.tag_id)}` : ''}
                   {r.set_title ? ` → title “${r.set_title}”` : ''}
+                  {r.correspondent_id
+                    ? ` → from ${correspondents.find((c) => c.id === r.correspondent_id)?.name || '…'}`
+                    : ''}
+                  {r.doc_type_id
+                    ? ` → type ${docTypes.find((t) => t.id === r.doc_type_id)?.name || '…'}`
+                    : ''}
                 </span>
               </div>
               <button className="ghost" onClick={() => toggleRule(r)}>
@@ -168,6 +198,30 @@ export default function RulesSection() {
             value={form.set_title}
             onChange={set('set_title')}
           />
+        </div>
+        <div className="rule-form-row">
+          <input
+            placeholder="Set correspondent (optional)"
+            value={form.correspondent_name}
+            onChange={set('correspondent_name')}
+            list="existing-correspondents"
+          />
+          <datalist id="existing-correspondents">
+            {correspondents.map((c) => (
+              <option key={c.id} value={c.name} />
+            ))}
+          </datalist>
+          <input
+            placeholder="Set type (optional)"
+            value={form.doc_type_name}
+            onChange={set('doc_type_name')}
+            list="existing-doctypes"
+          />
+          <datalist id="existing-doctypes">
+            {docTypes.map((t) => (
+              <option key={t.id} value={t.name} />
+            ))}
+          </datalist>
         </div>
         <div className="rule-form-row">
           <button type="submit">Add rule</button>

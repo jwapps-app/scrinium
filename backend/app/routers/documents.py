@@ -22,8 +22,11 @@ from app.schemas import (
     DocumentUpdate,
     ReprocessRequest,
 )
+from datetime import datetime, timezone
 from app.config import settings as app_settings
-from app.services import intake, storage, thumbnails
+from app.models import Correspondent, CustomField, DocType, document_custom_values
+from app.services import deletion, intake, storage, thumbnails
+from app.services.dates import extract_document_date
 from app.services.app_state import PROCESSING_PAUSED, get_flag, set_flag
 from app.services.intake import ACCEPTED_SUFFIXES
 from app.services.tag_tree import with_ancestors
@@ -32,13 +35,19 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 
 def doc_out(
-    doc: Document, progress: tuple[float, str | None] | None = None
+    doc: Document,
+    progress: tuple[float, str | None] | None = None,
+    custom_values: dict[str, str] | None = None,
 ) -> DocumentOut:
     out = DocumentOut.model_validate(doc)
     out.has_archive = doc.archive_blob_id is not None
     out.has_thumbnail = doc.thumbnail_blob_id is not None
+    out.correspondent_name = doc.correspondent.name if doc.correspondent else None
+    out.doc_type_name = doc.doc_type.name if doc.doc_type else None
     if progress is not None:
         out.progress, out.phase = progress
+    if custom_values is not None:
+        out.custom_values = custom_values
     return out
 
 
@@ -65,6 +74,7 @@ async def _progress_map(
 SORTS = {
     "newest": Document.created_at.desc(),
     "oldest": Document.created_at.asc(),
+    "docdate": func.coalesce(Document.doc_date, func.date(Document.created_at)).desc(),
     "title": func.lower(Document.title).asc(),
     "updated": Document.updated_at.desc(),
 }
@@ -124,6 +134,8 @@ async def list_documents(
     db: DB,
     status_filter: str | None = None,
     tag_id: uuid.UUID | None = None,
+    correspondent_id: uuid.UUID | None = None,
+    doc_type_id: uuid.UUID | None = None,
     engine: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
@@ -132,18 +144,29 @@ async def list_documents(
     limit: int = 50,
 ) -> DocumentList:
     conditions = [Document.tenant_id == user.tenant_id]
-    if status_filter:
-        # Comma-separated, so the UI's "Processing" bucket (pending +
-        # processing) is one query.
-        conditions.append(Document.status.in_(status_filter.split(",")))
+    if status_filter == "trash":
+        conditions.append(Document.deleted_at.is_not(None))
+    else:
+        conditions.append(Document.deleted_at.is_(None))
+        if status_filter:
+            # Comma-separated, so the UI's "Processing" bucket (pending +
+            # processing) is one query.
+            conditions.append(Document.status.in_(status_filter.split(",")))
     if tag_id:
         conditions.append(Document.tags.any(Tag.id == tag_id))
+    if correspondent_id:
+        conditions.append(Document.correspondent_id == correspondent_id)
+    if doc_type_id:
+        conditions.append(Document.doc_type_id == doc_type_id)
     if engine:
         conditions.append(Document.ocr_engine == engine)
+    # Date filters mean the document's own date, falling back to when it
+    # was added for docs without one.
+    effective_date = func.coalesce(Document.doc_date, func.date(Document.created_at))
     if date_from:
-        conditions.append(Document.created_at >= date_from)
+        conditions.append(effective_date >= date_from)
     if date_to:
-        conditions.append(Document.created_at < date_to + timedelta(days=1))
+        conditions.append(effective_date <= date_to)
 
     total = (
         await db.execute(select(func.count(Document.id)).where(*conditions))
@@ -170,15 +193,28 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         (
             await db.execute(
                 select(Document.status, func.count(Document.id))
-                .where(Document.tenant_id == user.tenant_id)
+                .where(
+                    Document.tenant_id == user.tenant_id,
+                    Document.deleted_at.is_(None),
+                )
                 .group_by(Document.status)
             )
         ).all()
     )
+    trash_count = (
+        await db.execute(
+            select(func.count(Document.id)).where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_not(None),
+            )
+        )
+    ).scalar_one()
     recent_added = (
         await db.execute(
             select(Document.id, Document.title)
-            .where(Document.tenant_id == user.tenant_id)
+            .where(
+                Document.tenant_id == user.tenant_id, Document.deleted_at.is_(None)
+            )
             .order_by(Document.created_at.desc())
             .limit(5)
         )
@@ -189,9 +225,34 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         "processing": counts.get(DocumentStatus.PENDING, 0)
         + counts.get(DocumentStatus.PROCESSING, 0),
         "flagged": counts.get(DocumentStatus.FLAGGED, 0),
+        "trash": trash_count,
         "recent": [{"id": str(r[0]), "title": r[1]} for r in recent_added],
         "paused": await get_flag(db, PROCESSING_PAUSED),
     }
+
+
+@router.post("/extract-dates")
+async def extract_dates(user: CurrentUser, db: DB) -> dict:
+    """Backfill document dates for existing docs that don't have one,
+    from their already-stored text. Cheap — no OCR involved."""
+    docs = (
+        await db.execute(
+            select(Document).where(
+                Document.tenant_id == user.tenant_id,
+                Document.doc_date.is_(None),
+                Document.text_content.is_not(None),
+                Document.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    updated = 0
+    for doc in docs:
+        found = extract_document_date(doc.text_content)
+        if found:
+            doc.doc_date = found
+            updated += 1
+    await db.flush()
+    return {"examined": len(docs), "dated": updated}
 
 
 @router.post("/processing")
@@ -211,11 +272,22 @@ async def _get_owned(doc_id: uuid.UUID, user, db) -> Document:
     return doc
 
 
+async def _custom_values(db, doc_id: uuid.UUID) -> dict[str, str]:
+    rows = (
+        await db.execute(
+            select(
+                document_custom_values.c.field_id, document_custom_values.c.value
+            ).where(document_custom_values.c.document_id == doc_id)
+        )
+    ).all()
+    return {str(field_id): value for field_id, value in rows}
+
+
 @router.get("/{doc_id}", response_model=DocumentOut)
 async def get_document(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> DocumentOut:
     doc = await _get_owned(doc_id, user, db)
     progress = await _progress_map(db, [doc.id])
-    return doc_out(doc, progress.get(doc.id))
+    return doc_out(doc, progress.get(doc.id), await _custom_values(db, doc.id))
 
 
 @router.get("/{doc_id}/file")
@@ -343,6 +415,41 @@ async def update_document(
     doc = await _get_owned(doc_id, user, db)
     if body.title is not None:
         doc.title = body.title
+    if body.clear_doc_date:
+        doc.doc_date = None
+    elif body.doc_date is not None:
+        doc.doc_date = body.doc_date
+    if body.clear_correspondent:
+        doc.correspondent_id = None
+    elif body.correspondent_id is not None:
+        corr = await db.get(Correspondent, body.correspondent_id)
+        if corr is None or corr.tenant_id != user.tenant_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Correspondent not found")
+        doc.correspondent_id = corr.id
+    if body.clear_doc_type:
+        doc.doc_type_id = None
+    elif body.doc_type_id is not None:
+        dtype = await db.get(DocType, body.doc_type_id)
+        if dtype is None or dtype.tenant_id != user.tenant_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Document type not found")
+        doc.doc_type_id = dtype.id
+    if body.custom_values is not None:
+        for field_id, value in body.custom_values.items():
+            field = await db.get(CustomField, field_id)
+            if field is None or field.tenant_id != user.tenant_id:
+                continue
+            await db.execute(
+                document_custom_values.delete().where(
+                    document_custom_values.c.document_id == doc.id,
+                    document_custom_values.c.field_id == field_id,
+                )
+            )
+            if value.strip():
+                await db.execute(
+                    document_custom_values.insert().values(
+                        document_id=doc.id, field_id=field_id, value=value.strip()
+                    )
+                )
     if body.tag_ids is not None:
         tags = (
             await db.execute(
@@ -355,7 +462,7 @@ async def update_document(
         doc.tags = await with_ancestors(db, list(tags))
     await db.flush()
     await db.refresh(doc)
-    return doc_out(doc)
+    return doc_out(doc, custom_values=await _custom_values(db, doc.id))
 
 
 @router.post("/{doc_id}/reprocess", response_model=DocumentOut)
@@ -371,48 +478,30 @@ async def reprocess(
     return doc_out(doc)
 
 
-def _remove_consumed_copy(source_path: str) -> None:
-    """Delete a document's filed copy under WATCH_DIR (e.g. .consumed/…)
-    and prune any folders that emptied out. Best-effort."""
-    if not app_settings.watch_dir:
-        return
-    watch = Path(app_settings.watch_dir)
-    target = (watch / source_path).resolve()
-    if not str(target).startswith(str(watch.resolve())):
-        return  # never follow a path outside the watch dir
-    target.unlink(missing_ok=True)
-    parent = target.parent
-    while parent != watch and parent.name != "":
-        try:
-            parent.rmdir()  # fails harmlessly unless empty
-        except OSError:
-            break
-        parent = parent.parent
-
-
-async def _delete_document_and_blobs(db, doc: Document) -> None:
-    blob_ids = [doc.original_blob_id]
-    if doc.archive_blob_id is not None:
-        blob_ids.append(doc.archive_blob_id)
-    if doc.thumbnail_blob_id is not None:
-        blob_ids.append(doc.thumbnail_blob_id)
-    source_path = doc.source_path
-    await db.delete(doc)
-    await db.flush()
-    for blob_id in blob_ids:
-        blob = await db.get(Blob, blob_id)
-        if blob is not None:
-            await db.delete(blob)
-        storage.delete_blob(blob_id)
-    await db.flush()
-    if source_path:
-        _remove_consumed_copy(source_path)
-
-
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
+    """Soft delete: the document moves to the trash and purges for real
+    after the retention window (or explicitly via /purge)."""
     doc = await _get_owned(doc_id, user, db)
-    await _delete_document_and_blobs(db, doc)
+    doc.deleted_at = datetime.now(timezone.utc)
+    await db.flush()
+
+
+@router.post("/{doc_id}/restore", response_model=DocumentOut)
+async def restore_document(
+    doc_id: uuid.UUID, user: CurrentUser, db: DB
+) -> DocumentOut:
+    doc = await _get_owned(doc_id, user, db)
+    doc.deleted_at = None
+    await db.flush()
+    await db.refresh(doc)
+    return doc_out(doc)
+
+
+@router.delete("/{doc_id}/purge", status_code=status.HTTP_204_NO_CONTENT)
+async def purge_document(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
+    doc = await _get_owned(doc_id, user, db)
+    await deletion.purge_document(db, doc)
 
 
 @router.post("/bulk", response_model=BulkActionResult)
@@ -425,21 +514,31 @@ async def bulk_action(
     call — the response's `remaining` says how many are left; call again
     until it reaches zero."""
     remaining = 0
-    if body.filter_tag_id is not None:
+    heavy = body.action in ("delete", "purge")
+    if body.filter_trash:
+        base = select(Document).where(
+            Document.tenant_id == user.tenant_id, Document.deleted_at.is_not(None)
+        )
+        count_where = [
+            Document.tenant_id == user.tenant_id, Document.deleted_at.is_not(None)
+        ]
+    elif body.filter_tag_id is not None:
         base = select(Document).where(
             Document.tenant_id == user.tenant_id,
             Document.tags.any(Tag.id == body.filter_tag_id),
+            Document.deleted_at.is_(None),
         )
-        if body.action == "delete":
-            # Deletes do file IO — chunk them; caller repeats while remaining.
+        count_where = [
+            Document.tenant_id == user.tenant_id,
+            Document.tags.any(Tag.id == body.filter_tag_id),
+            Document.deleted_at.is_(None),
+        ]
+    if body.filter_trash or body.filter_tag_id is not None:
+        if heavy:
+            # Purges do file IO — chunk them; caller repeats while remaining.
             docs = (await db.execute(base.limit(500))).scalars().all()
             total = (
-                await db.execute(
-                    select(func.count(Document.id)).where(
-                        Document.tenant_id == user.tenant_id,
-                        Document.tags.any(Tag.id == body.filter_tag_id),
-                    )
-                )
+                await db.execute(select(func.count(Document.id)).where(*count_where))
             ).scalar_one()
             remaining = max(total - len(docs), 0)
         else:
@@ -471,11 +570,17 @@ async def bulk_action(
     processed = 0
     for doc in docs:
         if body.action == "reprocess":
+            if doc.deleted_at is not None:
+                continue
             doc.status = DocumentStatus.PENDING
             doc.error = None
             db.add(Job(document_id=doc.id, kind="ingest", mode=body.mode))
         elif body.action == "delete":
-            await _delete_document_and_blobs(db, doc)
+            doc.deleted_at = datetime.now(timezone.utc)
+        elif body.action == "restore":
+            doc.deleted_at = None
+        elif body.action == "purge":
+            await deletion.purge_document(db, doc)
         elif body.action == "add_tags":
             expanded = await with_ancestors(db, tags)
             existing = {t.id for t in doc.tags}

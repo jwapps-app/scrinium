@@ -28,6 +28,23 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 2.0
     max_upload_mb: int = 500
 
+    # Document-date extraction: MDY (US) or DMY for ambiguous 03/04/2024
+    date_order: str = "MDY"
+
+    # Trash: soft-deleted documents purge for real after this many days
+    trash_retention_days: int = 30
+
+    # Email ingestion (all three of host/username/password set = enabled)
+    mail_host: str = ""
+    mail_port: int = 993
+    mail_username: str = ""
+    mail_password: str = ""
+    mail_folder: str = "INBOX"
+    mail_poll_seconds: float = 300.0
+
+    def mail_enabled(self) -> bool:
+        return bool(self.mail_host and self.mail_username and self.mail_password)
+
     # Watched-folder ingest (empty = disabled)
     watch_dir: str = ""
     watch_poll_seconds: float = 5.0
