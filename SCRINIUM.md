@@ -280,6 +280,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-11 (worker concurrency):** Worker refactored into N independent processor lanes + one maintenance lane (`asyncio.gather`); `WORKER_CONCURRENCY` (default 1) sets documents processed at once per container — fills the idle time each doc spends on the OCR round-trip to the sidecar. SKIP LOCKED already makes lanes claim distinct jobs; pause is honored per lane; watch/mail/purge sweeps stay singular in the maintenance lane (advisory locks). Lighter than `WORKER_REPLICAS` (no duplicated runtime); the two compose. Verified: concurrency=2 → running_count 2. Guidance: 2–3 is the sweet spot on the DS1621+ (4c/8t); watch NAS + Mac CPU and back off if either saturates.
 
+- **2026-07-11 (interrupted-job recovery):** Worker now requeues jobs left RUNNING by a killed container (redeploy / crash / NAS reboot) at startup — resets them to QUEUED and their docs to PENDING so nothing strands in "processing" forever; reprocessing is idempotent. Makes a mid-import redeploy safe even without waiting for the in-flight file. Safe for single-container (concurrency) setups; multiple worker *replicas* would need a heartbeat instead (noted in code). Verified: killed worker mid-OCR → orphaned RUNNING job → restart requeued and completed it.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

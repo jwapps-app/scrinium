@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 
 from app.config import settings
 from app.database import SessionLocal, engine
-from app.models import Job, JobStatus
+from app.models import Document, DocumentStatus, Job, JobStatus
 from app.services.app_state import PROCESSING_PAUSED, get_flag
 from app.services.deletion import purge_expired
 from app.services.ingest import process_job
@@ -137,6 +137,33 @@ async def maintenance_loop() -> None:
         await asyncio.sleep(1)
 
 
+async def reclaim_interrupted_jobs() -> None:
+    """Requeue jobs left RUNNING by a killed worker — redeploy, crash, or
+    NAS reboot. Reprocessing is idempotent (OCR re-runs on the existing
+    document), so a doc interrupted mid-OCR simply starts over rather than
+    stranding in 'processing' forever.
+
+    Safe for a single worker container (the recommended setup): at startup
+    no job is legitimately RUNNING. Running multiple worker *replicas* would
+    need a heartbeat instead of this blanket reclaim.
+    """
+    async with SessionLocal() as session:
+        jobs = (
+            await session.execute(select(Job).where(Job.status == JobStatus.RUNNING))
+        ).scalars().all()
+        for job in jobs:
+            job.status = JobStatus.QUEUED
+            job.pages_done = None
+            job.pages_total = None
+            job.phase = None
+            doc = await session.get(Document, job.document_id)
+            if doc is not None and doc.status == DocumentStatus.PROCESSING:
+                doc.status = DocumentStatus.PENDING
+        if jobs:
+            await session.commit()
+            logger.info("requeued %d interrupted job(s) from a prior run", len(jobs))
+
+
 async def main() -> None:
     concurrency = max(1, settings.worker_concurrency)
     logger.info(
@@ -145,6 +172,7 @@ async def main() -> None:
         settings.watch_dir or "disabled",
     )
     try:
+        await reclaim_interrupted_jobs()
         await asyncio.gather(
             maintenance_loop(),
             *(processor_loop(i) for i in range(concurrency)),
