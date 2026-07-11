@@ -1,11 +1,12 @@
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 
 from app.config import settings
 from app.deps import DB, CurrentUser
 from app.models import AppSetting
+from app.services.app_state import OCR_ENGINE_OVERRIDE, get_value, set_value
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -57,7 +58,7 @@ async def mail_settings(user: CurrentUser, db: DB) -> dict:
 
 
 @router.get("/ocr")
-async def ocr_settings(user: CurrentUser) -> dict:
+async def ocr_settings(user: CurrentUser, db: DB) -> dict:
     sidecar = {"configured": bool(settings.apple_ocr_url), "healthy": None}
     if settings.apple_ocr_url:
         try:
@@ -66,11 +67,30 @@ async def ocr_settings(user: CurrentUser) -> dict:
             sidecar["healthy"] = resp.status_code == 200
         except httpx.HTTPError:
             sidecar["healthy"] = False
+    override = await get_value(db, OCR_ENGINE_OVERRIDE)
     return {
-        "engine": settings.ocr_engine,
+        "engine": override or settings.ocr_engine,
+        "engine_env": settings.ocr_engine,
+        "engine_override": override,
         "languages": settings.ocr_languages,
         "sidecar": sidecar,
     }
+
+
+@router.post("/ocr")
+async def set_ocr_engine(body: dict, user: CurrentUser, db: DB) -> dict:
+    """Runtime engine choice; empty string returns to the env default.
+    Applies to jobs claimed from now on — no restart needed."""
+    engine = (body.get("engine") or "").strip()
+    if engine not in ("", "tesseract", "apple"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown engine")
+    if engine == "apple" and not settings.apple_ocr_url:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "APPLE_OCR_URL is not configured — set it in the stack env first",
+        )
+    await set_value(db, OCR_ENGINE_OVERRIDE, engine)
+    return {"engine": engine or settings.ocr_engine, "engine_override": engine}
 
 
 @router.get("/sidecar-setup")

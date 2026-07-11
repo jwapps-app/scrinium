@@ -3,13 +3,15 @@ from app.services.ocr.base import OCRProvider, OCRResult
 from app.services.ocr.tesseract import TesseractProvider
 
 
-def get_provider() -> OCRProvider:
-    """Resolve the configured OCR provider.
+def get_provider(engine: str | None = None) -> OCRProvider:
+    """Resolve the OCR provider.
 
-    "apple" (Mac sidecar / Option B) plugs in here later; it must fall back to
-    Tesseract on connection failure so a stopped sidecar never wedges ingestion.
+    `engine` (from the runtime Settings toggle) wins over the OCR_ENGINE env
+    default. The Apple provider always falls back to Tesseract on connection
+    failure, so a stopped sidecar never wedges ingestion.
     """
-    if settings.ocr_engine == "apple" and settings.apple_ocr_url:
+    effective = engine or settings.ocr_engine
+    if effective == "apple" and settings.apple_ocr_url:
         from app.services.ocr.apple import AppleVisionProvider
 
         return AppleVisionProvider(fallback=TesseractProvider())

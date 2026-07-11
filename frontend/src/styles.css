@@ -214,6 +214,19 @@ select {
   width: 1.1rem;
 }
 
+/* Engine toggle in Settings */
+.engine-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.settings-hint {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
 /* Shared-document public page */
 .share-page {
   max-width: 900px;

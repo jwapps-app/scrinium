@@ -21,6 +21,7 @@ from app.models import Blob, Document, DocumentStatus, Job, JobStatus
 from app.services import push, storage, thumbnails
 from app.services.classify import classify_document
 from app.services.dates import extract_document_date
+from app.services.app_state import OCR_ENGINE_OVERRIDE, get_value
 from app.services.ocr import get_provider
 
 logger = logging.getLogger(__name__)
@@ -45,8 +46,10 @@ class IngestOutcome:
     thumb: tuple[uuid.UUID, str, int] | None = None  # (blob_id, sha256, size)
 
 
-def _run_ocr(original: Path, suffix: str, mode: str, workdir: Path) -> IngestOutcome:
-    provider = get_provider()
+def _run_ocr(
+    original: Path, suffix: str, mode: str, workdir: Path, engine: str | None = None
+) -> IngestOutcome:
+    provider = get_provider(engine)
     # Blob paths are opaque (no extension); providers dispatch on suffix,
     # so hand them a properly-named symlink to the untouched original.
     source = workdir / f"input{suffix.lower()}"
@@ -72,13 +75,18 @@ def _run_ocr(original: Path, suffix: str, mode: str, workdir: Path) -> IngestOut
 
 
 async def _run_with_progress(
-    session: AsyncSession, job: Job, original: Path, suffix: str, workdir: Path
+    session: AsyncSession,
+    job: Job,
+    original: Path,
+    suffix: str,
+    workdir: Path,
+    engine: str | None = None,
 ) -> IngestOutcome:
     """Run OCR in a thread while mirroring the plugin's page counter (see
     ocr/progress_plugin.py) onto the job row so the UI can show a real bar."""
     progress_file = workdir / "progress"
     task = asyncio.create_task(
-        asyncio.to_thread(_run_ocr, original, suffix, job.mode, workdir)
+        asyncio.to_thread(_run_ocr, original, suffix, job.mode, workdir, engine)
     )
     last: tuple[str, int, int] | None = None
     while True:
@@ -118,11 +126,13 @@ async def process_job(session: AsyncSession, job: Job) -> None:
 
     original = storage.blob_file(document.original_blob_id)
     suffix = Path(document.original_filename).suffix
+    # Runtime Settings toggle wins over the OCR_ENGINE env default.
+    engine_override = await get_value(session, OCR_ENGINE_OVERRIDE)
     try:
         with tempfile.TemporaryDirectory(prefix="ingest-") as tmp:
             workdir = Path(tmp)
             outcome = await _run_with_progress(
-                session, job, original, suffix, workdir
+                session, job, original, suffix, workdir, engine_override or None
             )
     except Exception as exc:
         logger.warning("OCR failed for document %s: %s", document.id, exc)

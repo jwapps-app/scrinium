@@ -51,7 +51,42 @@ export default function Settings() {
         <div className="settings-card">
           <div className="settings-row">
             <span>Engine</span>
-            <strong>{ocr ? ocr.engine : '…'}</strong>
+            <span className="engine-toggle">
+              {['tesseract', 'apple'].map((e) => (
+                <button
+                  key={e}
+                  className={ocr?.engine === e ? '' : 'ghost'}
+                  disabled={!ocr || (e === 'apple' && !ocr.sidecar?.configured)}
+                  title={
+                    e === 'apple' && !ocr?.sidecar?.configured
+                      ? 'Set APPLE_OCR_URL in the stack env first'
+                      : e === ocr?.engine_env
+                        ? 'Server default'
+                        : undefined
+                  }
+                  onClick={async () => {
+                    try {
+                      // Choosing the env default clears the override.
+                      const next = e === ocr.engine_env ? '' : e
+                      await apiJson('/api/settings/ocr', {
+                        method: 'POST',
+                        body: JSON.stringify({ engine: next }),
+                      })
+                      setOcr({ ...ocr, engine: e, engine_override: next })
+                    } catch (err) {
+                      setError(err.message)
+                    }
+                  }}
+                >
+                  {e === 'apple' ? 'Apple Vision' : 'Tesseract'}
+                </button>
+              ))}
+              {ocr?.engine_override && (
+                <span className="settings-hint">
+                  overriding server default ({ocr.engine_env})
+                </span>
+              )}
+            </span>
           </div>
           <div className="settings-row">
             <span>Languages</span>
