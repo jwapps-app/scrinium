@@ -17,7 +17,7 @@ from app.services.app_state import PROCESSING_PAUSED, get_flag
 from app.services.deletion import purge_expired
 from app.services.ingest import process_job
 from app.services.mail import poll_once as poll_mail_once
-from app.services.watch import scan_once
+from app.services.watch import scan_once, sweep_retention
 
 # Advisory locks so only one worker replica runs each background sweep;
 # the job queue itself is already replica-safe (SKIP LOCKED).
@@ -133,6 +133,12 @@ async def maintenance_loop() -> None:
                 await _with_advisory_lock(PURGE_LOCK_KEY, _purge)
             except Exception:
                 logger.exception("trash purge crashed; continuing")
+            try:
+                async def _retention():
+                    await asyncio.to_thread(sweep_retention)
+                await _with_advisory_lock(WATCH_LOCK_KEY, _retention)
+            except Exception:
+                logger.exception("retention sweep crashed; continuing")
 
         await asyncio.sleep(1)
 

@@ -286,6 +286,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-11 (mobile polish round 2):** Hamburger moved clearly inside the screen edge (`left: max(1.1rem + safe-area-inset-left, 1.1rem)`) with border + shadow so it reads as a button, not a stray glyph. Library gained fixed-density grid options — ▦ (auto-fill), **3× and 4× tiles across**, ☰ list — with compact typography at 3×/4× (4× shows title only). Density is a remembered preference (localStorage) so it survives navigation, but a saved view's explicit `?view=` still wins. **Login/Setup autofill fixed:** inputs had `autocomplete` but no `name`/`id`, so iOS password managers didn't recognize the form; added `name`/`id` plus `autocapitalize=none`/`autocorrect=off`/`inputmode=email` on email. Setup keeps `new-password` so Keychain offers to save on first run.
 
+- **2026-07-11 (filed-copy retention):** Opt-in sweep of the watch folder's `.consumed/` and `.duplicates/`: set `CONSUMED_RETENTION_DAYS` (default 0 = keep forever, preserving the never-delete convention) and the worker's hourly maintenance pass removes filed copies older than that, pruning emptied subfolders. `.failed/` is never swept — failures need eyes. Verified: 40-day-old files removed from both folders, fresh files and .failed untouched.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

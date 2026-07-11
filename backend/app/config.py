@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # Max files ingested per sweep, so a huge folder dump can't starve OCR
     # jobs — intake and processing interleave.
     watch_batch_size: int = 25
+    # Age in days after which filed copies in .consumed/ and .duplicates/
+    # are removed. 0 (default) keeps them forever — deletion is opt-in.
+    consumed_retention_days: int = 0
 
     # Push via the shared push-relay (all three set = enabled)
     push_relay_url: str = ""      # e.g. http://192.168.1.10:8088

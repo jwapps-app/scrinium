@@ -84,6 +84,46 @@ def _prune_empty_dirs(watch: Path) -> None:
             pass
 
 
+def sweep_retention() -> int:
+    """Delete filed copies in .consumed/ and .duplicates/ older than
+    CONSUMED_RETENTION_DAYS. Opt-in: 0 (the default) keeps everything
+    forever, preserving the never-delete convention. .failed/ is never
+    swept — those need eyes. Returns how many files were removed."""
+    days = settings.consumed_retention_days
+    if not settings.watch_dir or days <= 0:
+        return 0
+    watch = Path(settings.watch_dir)
+    cutoff = time.time() - days * 86400
+    removed = 0
+    for folder_name in (".consumed", ".duplicates"):
+        folder = watch / folder_name
+        if not folder.is_dir():
+            continue
+        for dirpath, _dirnames, filenames in os.walk(folder):
+            for name in filenames:
+                path = Path(dirpath) / name
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink()
+                        removed += 1
+                except OSError:
+                    continue
+        # Prune emptied subfolders (never the filing root itself).
+        for dirpath, _dirnames, _filenames in os.walk(folder, topdown=False):
+            directory = Path(dirpath)
+            if directory == folder:
+                continue
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+    if removed:
+        logger.info(
+            "retention sweep removed %d filed copies older than %dd", removed, days
+        )
+    return removed
+
+
 async def scan_once() -> int:
     """One sweep of the watch dir. Returns how many files were ingested."""
     if not settings.watch_dir:
