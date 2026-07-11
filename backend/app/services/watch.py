@@ -162,20 +162,22 @@ async def scan_once() -> int:
                     if folder_names
                     else None
                 )
-                doc = await intake.ingest_file(
+                created = await intake.ingest_with_split(
                     session, tenant_id, path, path.name, tags=tags
                 )
                 await session.commit()
                 dest = _file_into(watch, path, ".consumed")
                 # Remember the filing location so deleting the document can
-                # clean up its consumed copy too.
-                doc.source_path = str(dest.relative_to(watch))
+                # clean up its consumed copy too. (Split segments share the
+                # one source file; only a lone document claims it.)
+                if len(created) == 1:
+                    created[0].source_path = str(dest.relative_to(watch))
                 await session.commit()
                 consumed += 1
                 logger.info(
-                    "consumed %s as document %s%s",
+                    "consumed %s as %d document(s)%s",
                     path.name,
-                    doc.id,
+                    len(created),
                     f" (tags: {', '.join(folder_names)})" if folder_names else "",
                 )
             except intake.DuplicateDocument as exc:

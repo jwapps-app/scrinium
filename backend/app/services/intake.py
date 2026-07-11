@@ -4,6 +4,7 @@ Used by the upload endpoint and the watched-folder consumer so every ingest
 path behaves identically.
 """
 
+import logging
 import mimetypes
 import uuid
 from pathlib import Path
@@ -18,6 +19,8 @@ from app.services.dates import extract_document_date
 from app.services.tag_tree import with_ancestors
 
 
+
+logger = logging.getLogger(__name__)
 
 ACCEPTED_SUFFIXES = {
     ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp",
@@ -89,3 +92,50 @@ async def ingest_file(
         await session.flush()
     await session.refresh(doc)
     return doc
+
+
+async def ingest_with_split(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    source: Path,
+    filename: str,
+    **kwargs,
+) -> list[Document]:
+    """Ingest, splitting on separator barcode pages first when enabled.
+
+    Returns the created documents (one, unless separators split the file).
+    Duplicate segments are skipped individually — a re-scanned stack only
+    adds what's new. Raises DuplicateDocument only for an unsplit single
+    duplicate, preserving the plain-ingest contract."""
+    from app.services.separators import split_on_separators
+
+    segments = None
+    try:
+        segments = split_on_separators(source)
+    except Exception:  # detection is best-effort, never blocks intake
+        logger.exception("separator detection failed for %s", filename)
+    if not segments:
+        return [await ingest_file(session, tenant_id, source, filename, **kwargs)]
+
+    stem = Path(filename).stem
+    created: list[Document] = []
+    for i, segment in enumerate(segments, start=1):
+        try:
+            created.append(
+                await ingest_file(
+                    session,
+                    tenant_id,
+                    segment,
+                    f"{stem} ({i} of {len(segments)}).pdf",
+                    **kwargs,
+                )
+            )
+        except DuplicateDocument:
+            continue
+        finally:
+            segment.unlink(missing_ok=True)
+    try:
+        segments[0].parent.rmdir()
+    except OSError:
+        pass
+    return created

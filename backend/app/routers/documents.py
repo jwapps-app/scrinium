@@ -207,16 +207,27 @@ async def upload(
             while chunk := await file.read(1024 * 1024):
                 await out.write(chunk)
         try:
-            doc = await intake.ingest_file(
-                db,
-                user.tenant_id,
-                tmp_path,
-                filename,
-                mime=file.content_type,
-                ocr_text=ocr_text,
-                ocr_engine=ocr_engine,
-                page_count=page_count,
-            )
+            if ocr_text is None:
+                created = await intake.ingest_with_split(
+                    db, user.tenant_id, tmp_path, filename, mime=file.content_type
+                )
+                if not created:
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        "Every segment already exists in the library",
+                    )
+                doc = created[0]
+            else:
+                doc = await intake.ingest_file(
+                    db,
+                    user.tenant_id,
+                    tmp_path,
+                    filename,
+                    mime=file.content_type,
+                    ocr_text=ocr_text,
+                    ocr_engine=ocr_engine,
+                    page_count=page_count,
+                )
         except intake.DuplicateDocument as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     finally:

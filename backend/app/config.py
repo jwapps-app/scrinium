@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     # Age in days after which filed copies in .consumed/ and .duplicates/
     # are removed. 0 (default) keeps them forever — deletion is opt-in.
     consumed_retention_days: int = 0
+    # Split multi-page PDFs on separator barcode pages (PATCHT convention,
+    # same as Paperless — existing separator sheets keep working).
+    split_on_separators: bool = False
+    separator_barcode: str = "PATCHT"
 
     # Push via the shared push-relay (all three set = enabled)
     push_relay_url: str = ""      # e.g. http://192.168.1.10:8088

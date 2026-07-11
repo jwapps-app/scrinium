@@ -299,6 +299,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-11 (heartbeat job recovery):** Running jobs stamp `jobs.heartbeat_at` every ~15s from the progress loop (migration 0012). Reclaim now requeues only RUNNING jobs whose heartbeat (or start, if never beaten) is stale — at worker startup and every 5 minutes during operation, under an advisory lock. This removes the single-container caveat: `WORKER_REPLICAS` is now fully safe, since live jobs on other replicas keep beating and are left alone. Verified: fresh-heartbeat job survives a worker restart un-reclaimed; same job requeued once stale; periodic reclaim needs no restart at all.
 
+- **2026-07-11 (barcode separator sheets):** Opt-in (`SPLIT_ON_SEPARATORS=1`): multi-page PDFs arriving by upload or watch folder are scanned (low-DPI raster + zbar) for pages carrying a barcode/QR reading `SEPARATOR_BARCODE` (default **PATCHT** — Paperless's convention, so existing separator sheets work as-is). Segments between separators become independent documents titled "name (1 of N)"; separator pages are dropped; duplicate segments skip individually, so re-scanning a stack only adds what's new. Detection is fail-soft (an error means "no split", never a lost file) and costs one raster pass, hence opt-in. Image gains libzbar0 + pyzbar. Verified end-to-end: 5-page stack with a PATCHT QR → two 2-page ready documents via the watch folder.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.
