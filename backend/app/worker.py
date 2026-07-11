@@ -69,66 +69,86 @@ async def claim_and_run() -> bool:
         return True
 
 
+async def _is_paused() -> bool:
+    try:
+        async with SessionLocal() as session:
+            return await get_flag(session, PROCESSING_PAUSED)
+    except Exception:
+        return False
+
+
+async def processor_loop(slot: int) -> None:
+    """One concurrent processing lane: claim and run jobs forever.
+
+    N of these run per worker (WORKER_CONCURRENCY), so N documents process
+    at once — filling the idle time each doc spends waiting on the OCR
+    round-trip. SKIP LOCKED guarantees each lane grabs a distinct job.
+    """
+    while True:
+        if await _is_paused():
+            await asyncio.sleep(settings.worker_poll_seconds)
+            continue
+        try:
+            worked = await claim_and_run()
+        except Exception:
+            logger.exception("job crashed in lane %s; continuing", slot)
+            worked = False
+        if not worked:
+            await asyncio.sleep(settings.worker_poll_seconds)
+
+
+async def maintenance_loop() -> None:
+    """Single lane for the periodic sweeps (watch/mail/purge). Advisory
+    locks keep these singular even across multiple worker replicas."""
+    last_watch = last_mail = last_purge = 0.0
+    while True:
+        now = time.monotonic()
+        paused = await _is_paused()
+
+        # Watch + mail add NEW work, so they honor pause too.
+        if not paused and now - last_watch >= settings.watch_poll_seconds:
+            last_watch = now
+            try:
+                await scan_watch_exclusively()
+            except Exception:
+                logger.exception("watch sweep crashed; continuing")
+
+        if (
+            not paused
+            and settings.mail_enabled()
+            and now - last_mail >= settings.mail_poll_seconds
+        ):
+            last_mail = now
+            try:
+                await _with_advisory_lock(MAIL_LOCK_KEY, poll_mail_once)
+            except Exception:
+                logger.exception("mail poll crashed; continuing")
+
+        if now - last_purge >= 3600:
+            last_purge = now
+            try:
+                async def _purge():
+                    async with SessionLocal() as session:
+                        await purge_expired(session)
+                await _with_advisory_lock(PURGE_LOCK_KEY, _purge)
+            except Exception:
+                logger.exception("trash purge crashed; continuing")
+
+        await asyncio.sleep(1)
+
+
 async def main() -> None:
+    concurrency = max(1, settings.worker_concurrency)
     logger.info(
-        "worker started (poll every %ss, watch dir: %s)",
-        settings.worker_poll_seconds,
+        "worker started (concurrency %d, watch dir: %s)",
+        concurrency,
         settings.watch_dir or "disabled",
     )
-    last_watch_scan = 0.0
-    last_mail_poll = 0.0
-    last_purge = 0.0
-    was_paused = False
     try:
-        while True:
-            # Pause gates NEW work only — an in-flight job always finishes.
-            # DB-backed, so pausing survives restarts until resumed.
-            try:
-                async with SessionLocal() as session:
-                    paused = await get_flag(session, PROCESSING_PAUSED)
-            except Exception:
-                paused = False
-            if paused != was_paused:
-                logger.info("processing %s", "paused" if paused else "resumed")
-                was_paused = paused
-            if paused:
-                await asyncio.sleep(settings.worker_poll_seconds)
-                continue
-
-            try:
-                worked = await claim_and_run()
-            except Exception:
-                logger.exception("job crashed; continuing")
-                worked = False
-
-            if time.monotonic() - last_watch_scan >= settings.watch_poll_seconds:
-                last_watch_scan = time.monotonic()
-                try:
-                    await scan_watch_exclusively()
-                except Exception:
-                    logger.exception("watch sweep crashed; continuing")
-
-            if settings.mail_enabled() and (
-                time.monotonic() - last_mail_poll >= settings.mail_poll_seconds
-            ):
-                last_mail_poll = time.monotonic()
-                try:
-                    await _with_advisory_lock(MAIL_LOCK_KEY, poll_mail_once)
-                except Exception:
-                    logger.exception("mail poll crashed; continuing")
-
-            if time.monotonic() - last_purge >= 3600:
-                last_purge = time.monotonic()
-                try:
-                    async def _purge():
-                        async with SessionLocal() as session:
-                            await purge_expired(session)
-                    await _with_advisory_lock(PURGE_LOCK_KEY, _purge)
-                except Exception:
-                    logger.exception("trash purge crashed; continuing")
-
-            if not worked:
-                await asyncio.sleep(settings.worker_poll_seconds)
+        await asyncio.gather(
+            maintenance_loop(),
+            *(processor_loop(i) for i in range(concurrency)),
+        )
     finally:
         await engine.dispose()
 

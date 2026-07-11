@@ -278,6 +278,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-11 (progress in sidebar + ETAs):** `/documents/stats` now returns live processing telemetry: `current` (running job's title, progress, phase, per-file `eta_seconds` from its own page rate), `running_count`, `rate_per_min` (docs completed in the last 5 min — parallelism-aware), and `queue_eta_seconds` (remaining ÷ rate). Sidebar gained a processing panel under the pause button: current-file bar + ETA, and an overall **queue burndown bar** (client-side high-water-mark of the queue; fills 0→100% as the backlog drains, dips when a fresh wave arrives) with "N in queue · ETA". Shell polls every 2.5s while active, 15s idle. ETAs are deliberately coarse (`formatEta`: <1m / ~Nm / ~Nh Nm). Verified: per-file ETA counting down, queue draining 2→1→0 with rate climbing, panel text + bars in the DOM.
 
+- **2026-07-11 (worker concurrency):** Worker refactored into N independent processor lanes + one maintenance lane (`asyncio.gather`); `WORKER_CONCURRENCY` (default 1) sets documents processed at once per container — fills the idle time each doc spends on the OCR round-trip to the sidecar. SKIP LOCKED already makes lanes claim distinct jobs; pause is honored per lane; watch/mail/purge sweeps stay singular in the maintenance lane (advisory locks). Lighter than `WORKER_REPLICAS` (no duplicated runtime); the two compose. Verified: concurrency=2 → running_count 2. Guidance: 2–3 is the sweet spot on the DS1621+ (4c/8t); watch NAS + Mac CPU and back off if either saturates.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     apple_ocr_url: str = ""  # e.g. http://host.docker.internal:9876
 
     worker_poll_seconds: float = 2.0
+    # Documents processed at once per worker container. Raise to fill the
+    # idle time each doc spends waiting on the OCR round-trip; keep modest
+    # so ocrmypdf/Ghostscript don't oversubscribe CPU.
+    worker_concurrency: int = 1
     max_upload_mb: int = 500
 
     # Document-date extraction: MDY (US) or DMY for ambiguous 03/04/2024
