@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
+import { TextLayer } from 'pdfjs-dist'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -86,6 +87,21 @@ export default function PdfViewer({
         }).promise
         const textContent = await page.getTextContent()
         st.textCache.set(n, { textContent, viewport })
+        // Selectable/copyable text over the canvas. Errors here cost only
+        // selection, never the page render.
+        try {
+          const layer = document.createElement('div')
+          layer.className = 'pdf-text-layer'
+          layer.style.setProperty('--scale-factor', st.scale)
+          slot.appendChild(layer)
+          await new TextLayer({
+            textContentSource: textContent,
+            container: layer,
+            viewport,
+          }).render()
+        } catch (err) {
+          console.warn(`text layer for page ${n} failed:`, err)
+        }
         st.rendered.add(n)
         drawHighlights(n)
         // Estimated slot heights drift as real pages land; once the focused

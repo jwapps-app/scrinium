@@ -214,6 +214,37 @@ select {
   width: 1.1rem;
 }
 
+/* Selectable text over the canvas (pdf.js TextLayer) */
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  caret-color: transparent;
+  z-index: 1;
+}
+
+.pdf-text-layer span,
+.pdf-text-layer br {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+
+.pdf-text-layer span::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: transparent;
+}
+
+/* Search highlight marks sit above the text layer */
+.pdf-hl {
+  z-index: 2;
+}
+
 /* Night reading: invert page pixels, keep UI untouched */
 .pdf-night .pdf-page {
   filter: invert(1) hue-rotate(180deg);
@@ -359,6 +390,48 @@ select {
   text-align: right;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* Duplicate / low-yield lists in Insights */
+.dup-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.dup-pair {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  font-size: 0.85rem;
+}
+
+.dup-similarity {
+  flex: none;
+  min-width: 3.2rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.dup-docs {
+  min-width: 0;
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.dup-docs a {
+  color: var(--text);
+}
+
+.dup-vs {
+  color: var(--muted);
 }
 
 /* Engine toggle in Settings */

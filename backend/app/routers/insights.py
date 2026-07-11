@@ -3,7 +3,9 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
+
+from app.services.similarity import find_near_duplicates
 
 from app.deps import DB, CurrentUser
 from app.models import (
@@ -102,6 +104,31 @@ async def insights(user: CurrentUser, db: DB) -> dict:
         )
     ).all()
 
+    # Suspiciously little text per page: candidates for a better scan or
+    # a re-OCR (OCR "succeeded" but yielded almost nothing).
+    low_yield_rows = (
+        await db.execute(
+            select(
+                Document.id,
+                Document.title,
+                Document.page_count,
+                func.length(Document.text_content),
+            )
+            .where(
+                *live,
+                Document.status == "ready",
+                Document.page_count > 0,
+                Document.text_content.is_not(None),
+                func.length(Document.text_content)
+                < Document.page_count * 150,
+            )
+            .order_by(
+                (func.length(Document.text_content) / Document.page_count)
+            )
+            .limit(10)
+        )
+    ).all()
+
     return {
         "documents": totals[0],
         "pages": int(totals[1]),
@@ -113,4 +140,66 @@ async def insights(user: CurrentUser, db: DB) -> dict:
             {"name": n, "color": col, "count": c} for n, col, c in top_tags_rows
         ],
         "engines": [{"name": n, "count": c} for n, c in engines],
+        "low_yield": [
+            {
+                "id": str(i),
+                "title": t,
+                "pages": p,
+                "chars_per_page": round(l / p) if p else 0,
+            }
+            for i, t, p, l in low_yield_rows
+        ],
+    }
+
+
+@router.get("/insights/duplicates")
+async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
+    """Near-duplicate pairs by content fingerprint — the same document
+    scanned twice, not byte-identical (that's blocked at ingest)."""
+    rows = (
+        await db.execute(
+            select(Document.id, Document.simhash).where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+                Document.simhash.is_not(None),
+                Document.simhash != 0,
+            )
+        )
+    ).all()
+    pending = (
+        await db.execute(
+            select(func.count(Document.id)).where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+                Document.simhash.is_(None),
+                Document.text_content.is_not(None),
+            )
+        )
+    ).scalar_one()
+
+    pairs = find_near_duplicates([(r[0], r[1]) for r in rows])[:50]
+    ids = {i for a, b, _ in pairs for i in (a, b)}
+    docs = {}
+    if ids:
+        for doc in (
+            await db.execute(select(Document).where(Document.id.in_(ids)))
+        ).scalars():
+            docs[doc.id] = {
+                "id": str(doc.id),
+                "title": doc.title,
+                "page_count": doc.page_count,
+                "created_at": doc.created_at.isoformat(),
+            }
+    return {
+        "fingerprinted": len(rows),
+        "pending_fingerprint": pending,
+        "pairs": [
+            {
+                "a": docs[a],
+                "b": docs[b],
+                "similarity": round((1 - dist / 64) * 100),
+            }
+            for a, b, dist in pairs
+            if a in docs and b in docs
+        ],
     }

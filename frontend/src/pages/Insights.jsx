@@ -46,10 +46,12 @@ function Bars({ items, labelKey, max, color, linkTo }) {
 
 export default function Insights() {
   const [data, setData] = useState(null)
+  const [dupes, setDupes] = useState(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
     apiJson('/api/insights').then(setData).catch((e) => setError(e.message))
+    apiJson('/api/insights/duplicates').then(setDupes).catch(() => {})
   }, [])
 
   const maxMonthly = data ? Math.max(1, ...data.monthly.map((m) => m.count)) : 1
@@ -137,6 +139,60 @@ export default function Insights() {
                 </section>
               )}
             </div>
+
+            {dupes && (dupes.pairs.length > 0 || dupes.pending_fingerprint > 0) && (
+              <section className="insight-section">
+                <h2>Possible duplicates</h2>
+                {dupes.pending_fingerprint > 0 && (
+                  <p className="settings-help">
+                    Still fingerprinting {dupes.pending_fingerprint.toLocaleString()}{' '}
+                    documents — check back shortly for full coverage.
+                  </p>
+                )}
+                {dupes.pairs.length === 0 ? (
+                  <p className="settings-help">
+                    No near-duplicates among {dupes.fingerprinted.toLocaleString()}{' '}
+                    fingerprinted documents.
+                  </p>
+                ) : (
+                  <ul className="dup-list">
+                    {dupes.pairs.map((p, i) => (
+                      <li key={i} className="dup-pair">
+                        <span className="dup-similarity">{p.similarity}%</span>
+                        <span className="dup-docs">
+                          <Link to={`/doc/${p.a.id}`}>{p.a.title}</Link>
+                          <span className="dup-vs">≈</span>
+                          <Link to={`/doc/${p.b.id}`}>{p.b.title}</Link>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            )}
+
+            {data.low_yield?.length > 0 && (
+              <section className="insight-section">
+                <h2>Weak OCR — worth a better scan?</h2>
+                <p className="settings-help">
+                  These finished OCR but yielded almost no text per page —
+                  usually a very low-quality scan or a mostly-image document.
+                </p>
+                <ul className="dup-list">
+                  {data.low_yield.map((d) => (
+                    <li key={d.id} className="dup-pair">
+                      <span className="dup-similarity">
+                        {d.chars_per_page}&thinsp;ch/p
+                      </span>
+                      <span className="dup-docs">
+                        <Link to={`/doc/${d.id}`}>{d.title}</Link>
+                        <span className="settings-hint">{d.pages} pp</span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
           </>
         )}
       </div>

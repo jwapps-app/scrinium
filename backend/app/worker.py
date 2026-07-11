@@ -15,6 +15,7 @@ from app.config import settings
 from app.database import SessionLocal, engine
 from app.models import Document, DocumentStatus, Job, JobStatus, Tenant
 from app.services.app_state import PROCESSING_PAUSED, get_flag, set_value
+from app.services import similarity
 from app.services.deletion import purge_expired, sweep_upload_sessions
 from app.services.export import run_export
 from app.services.ingest import process_job
@@ -186,6 +187,25 @@ async def maintenance_loop() -> None:
                                 {},
                             )
                     prev_backlog = backlog
+                    # Backfill content fingerprints for docs from before the
+                    # near-duplicate feature; a few hundred per pulse until
+                    # the corpus is covered.
+                    stale = (
+                        await session.execute(
+                            select(Document)
+                            .where(
+                                Document.simhash.is_(None),
+                                Document.text_content.is_not(None),
+                            )
+                            .limit(300)
+                        )
+                    ).scalars().all()
+                    for doc in stale:
+                        doc.simhash = similarity.simhash(doc.text_content or "")
+                        if doc.simhash is None:
+                            doc.simhash = 0  # too short to fingerprint; mark done
+                    if stale:
+                        logger.info("fingerprinted %d document(s)", len(stale))
                     await session.commit()
             except Exception:
                 logger.exception("liveness pulse crashed; continuing")

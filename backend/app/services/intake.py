@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Blob, Document, DocumentStatus, Job, Tag
-from app.services import storage
+from app.services import similarity, storage
 from app.services.classify import classify_document
 from app.services.dates import extract_document_date
 from app.services.tag_tree import with_ancestors
@@ -76,6 +76,7 @@ async def ingest_file(
     )
     if captured:
         doc.text_content = ocr_text
+        doc.simhash = similarity.simhash(ocr_text)
         doc.ocr_engine = ocr_engine or "apple"
         doc.page_count = page_count
         doc.doc_date = extract_document_date(ocr_text)

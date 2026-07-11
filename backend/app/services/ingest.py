@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import Blob, Document, DocumentStatus, Job, JobStatus
-from app.services import push, storage, thumbnails
+from app.services import push, similarity, storage, thumbnails
 from app.services.classify import classify_document
 from app.services.dates import extract_document_date
 from app.services.app_state import OCR_ENGINE_OVERRIDE, get_value
@@ -180,6 +180,7 @@ async def process_job(session: AsyncSession, job: Job) -> None:
         )
         document.thumbnail_blob_id = t_id
     document.text_content = outcome.text
+    document.simhash = similarity.simhash(outcome.text or "")
     if document.doc_date is None:
         document.doc_date = extract_document_date(outcome.text)
     document.page_count = outcome.page_count
