@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { apiFetch, apiJson } from '../api'
 import StatusChip from '../components/StatusChip'
 import ProgressBar from '../components/ProgressBar'
+import PageOrganizer from '../components/PageOrganizer'
 import PdfViewer from '../components/PdfViewer'
 import Menu from '../components/Menu'
 import DocumentDetails from '../components/DocumentDetails'
@@ -15,6 +16,8 @@ export default function DocumentView() {
 
   const [doc, setDoc] = useState(null)
   const [fileUrl, setFileUrl] = useState(null)
+  const [pageMode, setPageMode] = useState(false)
+  const [pageBusy, setPageBusy] = useState(false)
   const [error, setError] = useState('')
   const [editingTitle, setEditingTitle] = useState(false)
   const [title, setTitle] = useState('')
@@ -103,6 +106,42 @@ export default function DocumentView() {
     if (findText.trim()) next.set('q', findText.trim())
     else next.delete('q')
     setParams(next, { replace: true })
+  }
+
+  async function pageOp(action, pages, extra = {}) {
+    setPageBusy(true)
+    setError('')
+    try {
+      const result = await apiJson(`/api/documents/${id}/pages`, {
+        method: 'POST',
+        body: JSON.stringify({ action, pages, ...extra }),
+      })
+      if (action === 'extract') {
+        window.dispatchEvent(new Event('library-changed'))
+        if (window.confirm('Pages copied into a new document. Open it now?')) {
+          navigate(`/doc/${result.new_document_id}`)
+          setPageMode(false)
+          return
+        }
+      } else {
+        // The document was rebuilt: refetch metadata and the file itself.
+        setPageMode(false)
+        setFileUrl(null)
+        await load()
+        const resp = await apiFetch(`/api/documents/${id}/file`)
+        if (resp.ok) {
+          const blob = await resp.blob()
+          if (urlRef.current) URL.revokeObjectURL(urlRef.current)
+          urlRef.current = URL.createObjectURL(blob)
+          setFileUrl(urlRef.current)
+        }
+        window.dispatchEvent(new Event('library-changed'))
+      }
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setPageBusy(false)
+    }
   }
 
   async function saveTitle() {
@@ -292,6 +331,11 @@ export default function DocumentView() {
                 label: 'Run classification',
                 onClick: classify,
               },
+              fileUrl && {
+                label: 'Edit pages…',
+                hint: 'rotate, delete, split',
+                onClick: () => setPageMode(true),
+              },
               {
                 label: 'Move to trash',
                 danger: true,
@@ -376,6 +420,15 @@ export default function DocumentView() {
       )}
       {error && <p className="error">{error}</p>}
       {notice && <p className="notice">{notice}</p>}
+
+      {pageMode && fileUrl && (
+        <PageOrganizer
+          url={fileUrl}
+          busy={pageBusy}
+          onAction={pageOp}
+          onClose={() => setPageMode(false)}
+        />
+      )}
 
       {fileUrl ? (
         <PdfViewer

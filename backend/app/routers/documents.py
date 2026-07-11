@@ -20,12 +20,15 @@ from app.schemas import (
     DocumentList,
     DocumentOut,
     DocumentUpdate,
+    PageOpRequest,
     ReprocessRequest,
 )
 from datetime import datetime, timezone
 from app.config import settings as app_settings
 from app.models import Correspondent, CustomField, DocType, document_custom_values
 from app.services import deletion, intake, storage, thumbnails
+from app.services import pages as pages_service
+from app.services.intake import DuplicateDocument
 from app.services.dates import extract_document_date
 from app.services.app_state import PROCESSING_PAUSED, get_flag, set_flag
 from app.services.intake import ACCEPTED_SUFFIXES
@@ -540,6 +543,35 @@ async def reprocess(
     await db.flush()
     await db.refresh(doc)
     return doc_out(doc)
+
+
+@router.post("/{doc_id}/pages")
+async def page_operation(
+    doc_id: uuid.UUID, body: PageOpRequest, user: CurrentUser, db: DB
+) -> dict:
+    """Rotate/delete pages in place (new original, re-OCR queued) or
+    extract the selection into a brand-new document (source untouched)."""
+    doc = await _get_owned(doc_id, user, db)
+    try:
+        if body.action == "rotate":
+            await pages_service.rotate_pages(db, doc, body.pages, body.degrees)
+        elif body.action == "delete":
+            await pages_service.delete_pages(db, doc, body.pages)
+        else:  # extract
+            try:
+                new_doc = await pages_service.extract_pages(
+                    db, doc, body.pages, body.title
+                )
+            except DuplicateDocument as dup:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "Those pages already exist as a separate document",
+                ) from dup
+            return {"new_document_id": str(new_doc.id)}
+    except pages_service.PageOpError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    await db.refresh(doc)
+    return {"document": doc_out(doc).model_dump(mode="json")}
 
 
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)

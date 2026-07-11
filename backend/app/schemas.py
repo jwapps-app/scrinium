@@ -96,6 +96,13 @@ class ReprocessRequest(BaseModel):
     mode: str = Field(default="redo", pattern="^(skip|redo|force)$")
 
 
+class PageOpRequest(BaseModel):
+    action: str = Field(pattern="^(rotate|delete|extract)$")
+    pages: list[int] = Field(min_length=1, max_length=2000)
+    degrees: int = 90
+    title: str | None = None
+
+
 class BulkActionRequest(BaseModel):
     ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
     # Alternative to ids: act on every document carrying this tag.

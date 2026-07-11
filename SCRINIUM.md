@@ -288,6 +288,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-11 (filed-copy retention):** Opt-in sweep of the watch folder's `.consumed/` and `.duplicates/`: set `CONSUMED_RETENTION_DAYS` (default 0 = keep forever, preserving the never-delete convention) and the worker's hourly maintenance pass removes filed copies older than that, pruning emptied subfolders. `.failed/` is never swept — failures need eyes. Verified: 40-day-old files removed from both folders, fresh files and .failed untouched.
 
+- **2026-07-11 (page operations):** `POST /documents/{id}/pages` with pikepdf behind it. **Extract** copies selected pages into a brand-new document via the normal intake path (dedup, source's tags inherited, OCR queued) — the source is untouched, keeping the never-mutate rule intact. **Rotate** (±90/180) and **delete pages** are the sanctioned exception: deliberate user edits write a NEW original blob, drop the old original/archive/thumbnail, and re-queue OCR with force (a copied text layer wouldn't match the new layout). Guardrails: page numbers validated against the real PDF, deleting every page is refused (trash instead), extract-to-duplicate returns 409. UI: "Edit pages…" in the document ⋯ menu opens a full-screen organizer — lazy-rendered page thumbnails (scroll-position virtualization, same as the viewer), tap to select, rotate left/right / Extract (prompts title) / Delete / All-None. Verified end-to-end: extract 3 pages → new ready doc; rotate 2 pages → re-OCR to ready; delete 21 of 120 → 99 pages; both guardrails 400.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.
