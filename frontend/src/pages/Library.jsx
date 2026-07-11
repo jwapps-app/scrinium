@@ -517,6 +517,35 @@ export default function Library() {
                   ]}
                 />
                 <button
+                  className="ghost"
+                  disabled={bulkBusy || wholeFilter || selected.size < 2}
+                  title="Combine the selected PDFs into one document (sources go to the trash)"
+                  onClick={async () => {
+                    const title = window.prompt('Title for the merged document:')
+                    if (title === null) return
+                    setBulkBusy(true)
+                    setError('')
+                    try {
+                      await apiJson('/api/documents/merge', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          ids: [...selected],
+                          title: title.trim() || null,
+                        }),
+                      })
+                      exitSelection()
+                      load()
+                      window.dispatchEvent(new Event('library-changed'))
+                    } catch (err) {
+                      setError(err.message)
+                    } finally {
+                      setBulkBusy(false)
+                    }
+                  }}
+                >
+                  Merge
+                </button>
+                <button
                   className="ghost danger"
                   disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
                   onClick={() => bulk('delete')}

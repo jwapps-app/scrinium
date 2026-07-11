@@ -659,6 +659,57 @@ async def reprocess(
     return doc_out(doc)
 
 
+@router.post("/merge")
+async def merge_documents(body: dict, user: CurrentUser, db: DB) -> dict:
+    """Concatenate 2+ PDF documents into a new one (in the given order);
+    the sources move to the trash. The inverse of extract/split."""
+    import pikepdf
+
+    ids = body.get("ids") or []
+    if len(ids) < 2 or len(ids) > 50:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Pick 2-50 documents")
+    docs = []
+    for raw in ids:
+        docs.append(await _get_owned(uuid.UUID(str(raw)), user, db))
+    for doc in docs:
+        if not doc.original_filename.lower().endswith(".pdf"):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"“{doc.title}” isn't a PDF — merge only combines PDFs",
+            )
+    title = (body.get("title") or "").strip() or f"{docs[0].title} (merged)"
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        merged_path = Path(tmp.name)
+    try:
+        merged = pikepdf.new()
+        for doc in docs:
+            source = storage.blob_file(doc.original_blob_id)
+            if not source.exists():
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND, f"File missing for “{doc.title}”"
+                )
+            with pikepdf.open(source) as src:
+                for page in src.pages:
+                    merged.pages.append(page)
+        merged.save(merged_path)
+        try:
+            new_doc = await intake.ingest_file(
+                db, user.tenant_id, merged_path, f"{title}.pdf",
+                mime="application/pdf",
+            )
+        except DuplicateDocument as dup:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "An identical merged document already exists",
+            ) from dup
+        for doc in docs:
+            doc.deleted_at = datetime.now(timezone.utc)
+        await db.flush()
+        return {"new_document_id": str(new_doc.id)}
+    finally:
+        merged_path.unlink(missing_ok=True)
+
+
 @router.post("/{doc_id}/pages")
 async def page_operation(
     doc_id: uuid.UUID, body: PageOpRequest, user: CurrentUser, db: DB

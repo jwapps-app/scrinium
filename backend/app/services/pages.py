@@ -5,16 +5,17 @@ pages become a NEW document through the normal intake path (dedup, tags,
 classification, OCR queue).
 
 Rotate and delete-pages are deliberate edits to the document itself: they
-write a NEW original blob, drop the old original/archive/thumbnail, and
-re-queue OCR. The "originals are never mutated" rule still holds in spirit —
-the *system* never touches an original; a user explicitly reshaping their
-document is the exception, and the old bytes are gone only after the new
-blob is safely stored.
+write a NEW original blob and re-queue OCR, while the pre-edit blobs move to
+a trashed snapshot document — undoable via Restore for the trash retention
+window, auto-purged after. The "originals are never mutated" rule holds:
+the system never touches an original; a user reshaping their document is
+the sanctioned exception, and even then the old bytes survive in the trash.
 """
 
 import logging
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pikepdf
@@ -53,27 +54,35 @@ def _check_pages(pages: list[int], total: int) -> list[int]:
 async def _replace_original(
     session: AsyncSession, doc: Document, edited: Path
 ) -> None:
-    """Swap in a new original blob and re-queue OCR; the old original,
-    archive, and thumbnail blobs are removed once the new one is stored."""
+    """Swap in a new original blob and re-queue OCR.
+
+    The pre-edit version isn't destroyed: its blobs are handed to a snapshot
+    document that goes straight to the trash — restorable for the retention
+    window, purged automatically after. Undo for the one destructive edit in
+    the app, at zero disk cost (the blobs just change owner)."""
     new_id, sha256, size = storage.store_file(edited)
     session.add(
         Blob(id=new_id, sha256=sha256, size_bytes=size, mime_type="application/pdf")
     )
-    old_ids = [doc.original_blob_id]
-    for stale in (doc.archive_blob_id, doc.thumbnail_blob_id):
-        if stale is not None:
-            old_ids.append(stale)
+    snapshot = Document(
+        tenant_id=doc.tenant_id,
+        title=f"{doc.title} (before page edit)",
+        original_filename=doc.original_filename,
+        original_blob_id=doc.original_blob_id,
+        archive_blob_id=doc.archive_blob_id,
+        thumbnail_blob_id=doc.thumbnail_blob_id,
+        status=DocumentStatus.READY,
+        text_content=doc.text_content,
+        ocr_engine=doc.ocr_engine,
+        page_count=doc.page_count,
+        deleted_at=datetime.now(timezone.utc),
+    )
+    session.add(snapshot)
     doc.original_blob_id = new_id
     doc.archive_blob_id = None
     doc.thumbnail_blob_id = None
     doc.status = DocumentStatus.PENDING
     doc.text_content = None
-    await session.flush()
-    for blob_id in old_ids:
-        blob = await session.get(Blob, blob_id)
-        if blob is not None:
-            await session.delete(blob)
-        storage.delete_blob(blob_id)
     # Force: the copied text layer (if any) no longer matches the new layout.
     session.add(Job(document_id=doc.id, kind="ingest", mode="force"))
     await session.flush()

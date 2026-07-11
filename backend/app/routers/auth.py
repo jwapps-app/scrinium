@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 
 from app.config import settings
-from app.deps import DB
+from app.deps import DB, CurrentUser
 from app.models import Tenant, User
 from app.schemas import (
     AuthStatus,
@@ -72,3 +72,69 @@ async def refresh(body: RefreshRequest, db: DB) -> TokenPair:
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
     return _token_pair(user)
+
+
+@router.post("/change-password")
+async def change_password(body: dict, user: CurrentUser, db: DB) -> dict:
+    current = body.get("current_password") or ""
+    new = body.get("new_password") or ""
+    if len(new) < 8:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "New password needs 8+ characters"
+        )
+    if not verify_password(current, user.password_hash):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Current password is wrong")
+    user.password_hash = hash_password(new)
+    await db.flush()
+    return {"changed": True}
+
+
+@router.get("/users")
+async def list_users(user: CurrentUser, db: DB) -> list[dict]:
+    rows = (
+        (
+            await db.execute(
+                select(User)
+                .where(User.tenant_id == user.tenant_id)
+                .order_by(User.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {"id": str(u.id), "email": u.email, "is_me": u.id == user.id} for u in rows
+    ]
+
+
+@router.post("/users", status_code=status.HTTP_201_CREATED)
+async def add_user(body: SetupRequest, user: CurrentUser, db: DB) -> dict:
+    email = body.email.lower()
+    existing = (
+        await db.execute(select(User).where(User.email == email))
+    ).scalars().first()
+    if existing is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "That email already has an account")
+    new_user = User(
+        tenant_id=user.tenant_id,
+        email=email,
+        password_hash=hash_password(body.password),
+    )
+    db.add(new_user)
+    await db.flush()
+    return {"id": str(new_user.id), "email": new_user.email}
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_user(user_id: str, user: CurrentUser, db: DB) -> None:
+    import uuid as _uuid
+
+    target = await db.get(User, _uuid.UUID(user_id))
+    if target is None or target.tenant_id != user.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    if target.id == user.id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "You can't remove your own account"
+        )
+    await db.delete(target)
+    await db.flush()

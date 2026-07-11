@@ -5,6 +5,8 @@ import RulesSection from '../components/RulesSection'
 import TagsSection from '../components/TagsSection'
 import OrganizeSection from '../components/OrganizeSection'
 import TransferSection from '../components/TransferSection'
+import AccountSection from '../components/AccountSection'
+import HealthSection from '../components/HealthSection'
 import Shell from '../components/Shell'
 import SidecarSetup from '../components/SidecarSetup'
 
@@ -44,6 +46,8 @@ export default function Settings() {
     <Shell>
       <div className="library">
         <h1 className="page-title">Settings</h1>
+
+        <HealthSection />
 
         {error && <p className="error">{error}</p>}
 
@@ -117,6 +121,8 @@ export default function Settings() {
         <RulesSection />
 
         <TransferSection />
+
+        <AccountSection />
       </div>
     </Shell>
   )

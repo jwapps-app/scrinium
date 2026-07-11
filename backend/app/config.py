@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     split_on_separators: bool = False
     separator_barcode: str = "PATCHT"
 
+    # Automatic full-library exports: every N days (0 = manual only),
+    # keeping the newest `export_keep` zips.
+    export_every_days: int = 0
+    export_keep: int = 3
+
     # Push via the shared push-relay (all three set = enabled)
     push_relay_url: str = ""      # e.g. http://192.168.1.10:8088
     push_relay_api_key: str = ""  # value after '=' in the relay's apps.keys

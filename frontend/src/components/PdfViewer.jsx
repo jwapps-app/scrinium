@@ -24,6 +24,8 @@ export default function PdfViewer({
   focusPage = null,
   fitMode = 'width',
   zoom = 1,
+  storageKey = null,
+  onOutline = null,
 }) {
   const containerRef = useRef(null)
   const stateRef = useRef(null)
@@ -115,6 +117,15 @@ export default function PdfViewer({
             anchorPageRef.current = i + 1
             container.dataset.anchor = i + 1
             anchored = true
+            // Remember where reading stopped; resume on next open.
+            if (storageKey && st.slots.length > 3) {
+              try {
+                localStorage.setItem(
+                  `readpos:${storageKey}`,
+                  JSON.stringify({ page: i + 1, total: st.slots.length }),
+                )
+              } catch { /* storage full/blocked: not worth breaking scroll */ }
+            }
           }
         }
       }
@@ -194,11 +205,48 @@ export default function PdfViewer({
         window.addEventListener('scroll', onScroll, { passive: true })
         window.addEventListener('resize', onScroll, { passive: true })
         // Rebuild from a size change: return to the page being read.
-        if (restorePage && st.slots[restorePage - 1]) {
-          st.slots[restorePage - 1].scrollIntoView({ block: 'start' })
+        // Otherwise, a fresh open resumes where reading last stopped.
+        let target = restorePage
+        if (!target && storageKey && !focusPage) {
+          try {
+            const saved = JSON.parse(localStorage.getItem(`readpos:${storageKey}`))
+            if (saved?.page > 1 && saved.page <= pdf.numPages) target = saved.page
+          } catch { /* no saved position */ }
+        }
+        if (target && st.slots[target - 1]) {
+          st.focusTarget = target
+          st.slots[target - 1].scrollIntoView({ block: 'start' })
         }
         renderVisible()
         if (!cancelled) setReady(true)
+
+        // Table of contents, if the PDF carries one. Flattened with depth
+        // so the caller can indent; page numbers resolved best-effort.
+        if (onOutline) {
+          try {
+            const outline = await pdf.getOutline()
+            if (outline?.length && !cancelled) {
+              const flat = []
+              async function walk(items, depth) {
+                for (const item of items) {
+                  if (flat.length >= 200) return
+                  let page = null
+                  try {
+                    let dest = item.dest
+                    if (typeof dest === 'string') dest = await pdf.getDestination(dest)
+                    if (Array.isArray(dest) && dest[0]) {
+                      page = (await pdf.getPageIndex(dest[0])) + 1
+                    }
+                  } catch { /* unresolvable entry */ }
+                  if (item.title) flat.push({ title: item.title, page, depth })
+                  if (item.items?.length && depth < 2) await walk(item.items, depth + 1)
+                }
+              }
+              await walk(outline, 0)
+              if (!cancelled && flat.some((i) => i.page)) onOutline(flat)
+            }
+          } catch { /* no outline */ }
+        }
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to open PDF')
       }

@@ -17,6 +17,11 @@ export default function DocumentView() {
   const [doc, setDoc] = useState(null)
   const [fileUrl, setFileUrl] = useState(null)
   const [pageMode, setPageMode] = useState(false)
+  const [outline, setOutline] = useState(null)
+  const [night, setNight] = useState(
+    () => localStorage.getItem('viewer_night') === '1',
+  )
+  const [focusOverride, setFocusOverride] = useState(null)
   const [pageBusy, setPageBusy] = useState(false)
   const [error, setError] = useState('')
   const [editingTitle, setEditingTitle] = useState(false)
@@ -248,7 +253,8 @@ export default function DocumentView() {
   if (!doc) return <div className="viewer-page">{error && <p className="error">{error}</p>}</div>
 
   const matchPages = matches?.pages || []
-  const focusPage = q && matchPages.length ? matchPages[matchIdx]?.page : null
+  const focusPage =
+    focusOverride ?? (q && matchPages.length ? matchPages[matchIdx]?.page : null)
 
   // Apple upgrade offer: only when the server is set up for Apple OCR, the
   // helper is answering, and this document was done by a lesser engine.
@@ -259,7 +265,7 @@ export default function DocumentView() {
     doc.ocr_engine !== 'apple'
 
   return (
-    <div className="viewer-page">
+    <div className={`viewer-page ${night ? 'pdf-night' : ''}`}>
       <div className="viewer-chrome">
       <header className="topbar">
         <Link to="/" className="back">
@@ -324,6 +330,30 @@ export default function DocumentView() {
           >
             +
           </button>
+          <button
+            className={night ? '' : 'ghost'}
+            onClick={() => {
+              const next = !night
+              setNight(next)
+              localStorage.setItem('viewer_night', next ? '1' : '0')
+            }}
+            title="Invert page colors for night reading"
+          >
+            ☾
+          </button>
+          {outline && (
+            <Menu
+              label="Contents"
+              className="ghost"
+              items={outline
+                .filter((o) => o.page)
+                .map((o) => ({
+                  label: `${'\u2003'.repeat(o.depth)}${o.title}`,
+                  hint: `p. ${o.page}`,
+                  onClick: () => setFocusOverride(o.page),
+                }))}
+            />
+          )}
         </div>
         <div className="topbar-actions">
           <Menu
@@ -469,6 +499,8 @@ export default function DocumentView() {
       {fileUrl ? (
         <PdfViewer
           url={fileUrl}
+          storageKey={id}
+          onOutline={setOutline}
           highlightTerms={matches?.terms || []}
           focusPage={focusPage}
           fitMode={fitMode}

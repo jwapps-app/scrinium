@@ -9,14 +9,16 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 
 from app.config import settings
 from app.database import SessionLocal, engine
-from app.models import Document, DocumentStatus, Job, JobStatus
-from app.services.app_state import PROCESSING_PAUSED, get_flag
+from app.models import Document, DocumentStatus, Job, JobStatus, Tenant
+from app.services.app_state import PROCESSING_PAUSED, get_flag, set_value
 from app.services.deletion import purge_expired, sweep_upload_sessions
+from app.services.export import run_export
 from app.services.ingest import process_job
+from app.services import push
 from app.services.mail import poll_once as poll_mail_once
 from app.services.watch import scan_once, sweep_retention
 
@@ -103,6 +105,8 @@ async def maintenance_loop() -> None:
     locks keep these singular even across multiple worker replicas."""
     last_watch = last_mail = last_purge = 0.0
     last_reclaim = time.monotonic()
+    last_pulse = 0.0
+    prev_backlog: int | None = None
     while True:
         now = time.monotonic()
         paused = await _is_paused()
@@ -142,6 +146,49 @@ async def maintenance_loop() -> None:
                 await _with_advisory_lock(WATCH_LOCK_KEY, _retention)
             except Exception:
                 logger.exception("retention sweep crashed; continuing")
+            if settings.export_every_days > 0:
+                try:
+                    await _with_advisory_lock(PURGE_LOCK_KEY, _scheduled_export)
+                except Exception:
+                    logger.exception("scheduled export crashed; continuing")
+
+        # Liveness pulse + drain detection, every ~15s.
+        if time.monotonic() - last_pulse >= 15:
+            last_pulse = time.monotonic()
+            try:
+                async with SessionLocal() as session:
+                    await set_value(
+                        session, "worker_last_seen",
+                        datetime.now(timezone.utc).isoformat(),
+                    )
+                    backlog = (
+                        await session.execute(
+                            select(func.count(Document.id)).where(
+                                Document.status.in_(
+                                    [DocumentStatus.PENDING, DocumentStatus.PROCESSING]
+                                ),
+                                Document.deleted_at.is_(None),
+                            )
+                        )
+                    ).scalar_one()
+                    # A real batch just finished — worth a ping. Small
+                    # trickles (a couple of uploads) stay quiet.
+                    if prev_backlog is not None and prev_backlog >= 10 and backlog == 0:
+                        tenant_id = (
+                            await session.execute(
+                                select(Tenant.id).order_by(Tenant.created_at)
+                            )
+                        ).scalars().first()
+                        if tenant_id is not None:
+                            await push.notify_tenant(
+                                session, tenant_id, settings.app_name,
+                                "All caught up — the processing queue is empty.",
+                                {},
+                            )
+                    prev_backlog = backlog
+                    await session.commit()
+            except Exception:
+                logger.exception("liveness pulse crashed; continuing")
 
         if time.monotonic() - last_reclaim >= 300:
             last_reclaim = time.monotonic()
@@ -153,6 +200,36 @@ async def maintenance_loop() -> None:
                 logger.exception("stale-job reclaim crashed; continuing")
 
         await asyncio.sleep(1)
+
+
+async def _scheduled_export() -> None:
+    """Kick a full-library export when the newest zip is older than the
+    schedule; prune beyond EXPORT_KEEP. Skips while a big import runs
+    (backlog would make the zip stale immediately)."""
+    from pathlib import Path
+
+    dest = Path(settings.data_dir) / "export"
+    newest = 0.0
+    zips = sorted(dest.glob("library-export-*.zip")) if dest.is_dir() else []
+    if zips:
+        newest = max(z.stat().st_mtime for z in zips)
+    if time.time() - newest < settings.export_every_days * 86400:
+        return
+    async with SessionLocal() as session:
+        tenant_id = (
+            await session.execute(select(Tenant.id).order_by(Tenant.created_at))
+        ).scalars().first()
+    if tenant_id is None:
+        return
+    logger.info("scheduled export starting")
+    await run_export(tenant_id)
+    keep = max(1, settings.export_keep)
+    zips = sorted(
+        dest.glob("library-export-*.zip"), key=lambda z: z.stat().st_mtime
+    )
+    for stale in zips[:-keep]:
+        stale.unlink(missing_ok=True)
+        logger.info("scheduled export pruned %s", stale.name)
 
 
 async def reclaim_interrupted_jobs(stale_after_seconds: int | None = None) -> None:

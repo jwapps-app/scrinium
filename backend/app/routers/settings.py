@@ -93,6 +93,61 @@ async def set_ocr_engine(body: dict, user: CurrentUser, db: DB) -> dict:
     return {"engine": engine or settings.ocr_engine, "engine_override": engine}
 
 
+@router.get("/health")
+async def system_health(user: CurrentUser, db: DB) -> dict:
+    """One-glance operational status for the Settings page."""
+    import shutil
+    from datetime import datetime, timezone
+
+    from sqlalchemy import func, select
+
+    from app.models import Document, DocumentStatus, Job, JobStatus
+
+    backlog = (
+        await db.execute(
+            select(func.count(Document.id)).where(
+                Document.status.in_(
+                    [DocumentStatus.PENDING, DocumentStatus.PROCESSING]
+                ),
+                Document.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    running = (
+        await db.execute(
+            select(func.count(Job.id)).where(Job.status == JobStatus.RUNNING)
+        )
+    ).scalar_one()
+
+    last_seen_raw = await get_value(db, "worker_last_seen")
+    worker_alive = None
+    if last_seen_raw:
+        try:
+            seen = datetime.fromisoformat(last_seen_raw)
+            worker_alive = (
+                datetime.now(timezone.utc) - seen
+            ).total_seconds() < 60
+        except ValueError:
+            pass
+
+    try:
+        usage = shutil.disk_usage(settings.data_dir)
+        disk = {
+            "total_gb": round(usage.total / 1024**3, 1),
+            "free_gb": round(usage.free / 1024**3, 1),
+        }
+    except OSError:
+        disk = None
+
+    return {
+        "queue": backlog,
+        "running": running,
+        "worker_alive": worker_alive,
+        "worker_last_seen": last_seen_raw or None,
+        "disk": disk,
+    }
+
+
 @router.get("/sidecar-setup")
 async def sidecar_setup(user: CurrentUser) -> dict:
     """Everything the guided setup checklist needs, with the port baked in.
