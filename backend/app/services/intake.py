@@ -65,6 +65,21 @@ async def ingest_file(
         raise DuplicateDocument(existing.id)
 
     blob_id, _, size = await asyncio.to_thread(storage.store_file, source)
+
+    # Page count up front for PDFs (a header read, even on huge files): the
+    # queue ETA estimates in pages, so pending work must be measurable.
+    known_pages = page_count
+    if known_pages is None and Path(filename).suffix.lower() == ".pdf":
+        def _count():
+            try:
+                import pikepdf
+
+                with pikepdf.open(source) as pdf:
+                    return len(pdf.pages)
+            except Exception:
+                return None
+
+        known_pages = await asyncio.to_thread(_count)
     mime = mime or mimetypes.guess_type(filename)[0] or "application/octet-stream"
     session.add(Blob(id=blob_id, sha256=sha256, size_bytes=size, mime_type=mime))
 
@@ -76,12 +91,12 @@ async def ingest_file(
         original_filename=filename,
         original_blob_id=blob_id,
         status=DocumentStatus.READY if captured else DocumentStatus.PENDING,
+        page_count=known_pages,
     )
     if captured:
         doc.text_content = ocr_text
         doc.simhash = similarity.simhash(ocr_text)
         doc.ocr_engine = ocr_engine or "apple"
-        doc.page_count = page_count
         doc.doc_date = extract_document_date(ocr_text)
     if tags:
         doc.tags = await with_ancestors(session, list(tags))

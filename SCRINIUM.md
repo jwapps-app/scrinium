@@ -337,6 +337,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-12 (overnight crash-loop, field report):** Lanes repeatedly logging asyncpg failures mid-`fetch` = Postgres dying under load, almost certainly the kernel OOM-killing it: the container was capped at **1 GB** while five lanes concurrently inserted multi-MB book texts and built their FTS/GIN entries. Default raised to 2 GB (`POSTGRES_MEM_LIMIT` env). The system already self-heals around such a death — pool pre-ping revives pooled connections, heartbeat reclaim requeues the jobs that died mid-flight — so the errors were noisy, not lossy. Sizing note for heavy imports: budget ~1.5 GB of `WORKER_MEM_LIMIT` per concurrency lane (5 lanes ⇒ 8 GB) or ocrmypdf children get cgroup-killed on giant scans.
 
+- **2026-07-12 (pages-based queue ETA, field report):** The doc-rate estimator read "142 days" mid-import — alphabetical queue order had it chewing a run of 1,000-page books and extrapolating that mix across 13k mostly-smaller files. Unit changed to **pages**: page counts are stamped at intake for PDFs (millisecond header read via pikepdf) and backfilled for already-queued docs by the worker pulse (100 per 15s), so remaining work is measurable up front. ETA = remaining pages ÷ pages/min over the 30-min window, crediting pages already done inside running jobs; unknown-size docs count at the known average; falls back to doc-rate until coverage exists. Sidebar shows "N in queue · Xk pages". A book-heavy stretch and a receipt-heavy stretch now produce the same honest number.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

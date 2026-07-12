@@ -253,3 +253,20 @@ async def test_all_sort_options_work(client, auth):
                  "expires", "tag", "correspondent", "doctype", "pages", "size"):
         resp = await client.get(f"/api/documents?sort={sort}&limit=5", headers=auth)
         assert resp.status_code == 200, (sort, resp.text)
+
+
+async def test_page_count_stamped_at_intake(client, auth, pdf_factory):
+    doc = (
+        await client.post(
+            "/api/documents", headers=auth,
+            files={"file": (f"pc-{uuid.uuid4().hex[:6]}.pdf", pdf_factory(pages=7, text=uuid.uuid4().hex), "application/pdf")},
+        )
+    ).json()
+    # pages known immediately, while the doc is still pending OCR
+    assert doc["status"] == "pending"
+    assert doc["page_count"] == 7
+
+    stats = (await client.get("/api/documents/stats", headers=auth)).json()
+    for key in ("pages_per_min", "queue_pages_remaining", "queue_eta_seconds"):
+        assert key in stats
+    assert stats["queue_pages_remaining"] >= 7

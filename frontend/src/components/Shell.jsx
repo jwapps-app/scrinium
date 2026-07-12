@@ -310,7 +310,15 @@ export default function Shell({ children }) {
               {remaining > 0 && (
                 <div className="proc-item proc-overall-item">
                   <div className="proc-line proc-overall">
-                    <span>{remaining.toLocaleString()} in queue</span>
+                    <span>
+                      {remaining.toLocaleString()} in queue
+                      {stats?.queue_pages_remaining > 0 &&
+                        ` · ${
+                          stats.queue_pages_remaining >= 10000
+                            ? `${Math.round(stats.queue_pages_remaining / 1000)}k`
+                            : stats.queue_pages_remaining.toLocaleString()
+                        } pages`}
+                    </span>
                     <span className="proc-eta">
                       {stats?.paused
                         ? 'paused'

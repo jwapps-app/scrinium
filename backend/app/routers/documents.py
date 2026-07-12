@@ -428,14 +428,19 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         DocumentStatus.PROCESSING, 0
     )
 
-    # Throughput-based queue ETA: measure documents actually completed in a
-    # recent window, so parallelism and real per-doc cost are baked in.
-    # 30 minutes: long enough that hour-long scanned books still register,
-    # short enough to track the current mix.
+    # Queue ETA in PAGES, not documents: a 1,000-page book and a receipt
+    # process at nearly the same pages/minute, so the estimate stops
+    # exploding to "142 days" while a run of giant books happens to be in
+    # front (and stops collapsing when the receipts fly by). Page counts
+    # are stamped at intake and backfilled by the worker, so remaining
+    # work is measurable up front.
     window_min = 30
-    done_recent = (
+    done_count, pages_done_recent = (
         await db.execute(
-            select(func.count(Job.id))
+            select(
+                func.count(Job.id),
+                func.coalesce(func.sum(Document.page_count), 0),
+            )
             .join(Document, Job.document_id == Document.id)
             .where(
                 Job.status == JobStatus.DONE,
@@ -443,11 +448,42 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
                 Document.tenant_id == user.tenant_id,
             )
         )
-    ).scalar_one()
-    rate_per_min = done_recent / window_min
-    queue_eta = (
-        int(remaining / rate_per_min * 60) if rate_per_min > 0 and remaining else None
+    ).one()
+    rate_per_min = done_count / window_min
+
+    known_pages, known_docs = (
+        await db.execute(
+            select(
+                func.coalesce(func.sum(Document.page_count), 0),
+                func.count(Document.id),
+            ).where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+                Document.status.in_(
+                    [DocumentStatus.PENDING, DocumentStatus.PROCESSING]
+                ),
+                Document.page_count.is_not(None),
+            )
+        )
+    ).one()
+    unknown_docs = remaining - known_docs
+    # Docs whose size we don't know yet count at the known average (or a
+    # conservative 20 pages when nothing is known).
+    avg_known = (known_pages / known_docs) if known_docs else 20.0
+    remaining_pages = int(known_pages + unknown_docs * avg_known)
+    # Credit pages already finished inside the currently running jobs.
+    pages_in_flight_done = sum(
+        job.pages_done or 0 for job, _title in running_rows
     )
+    remaining_pages = max(0, remaining_pages - pages_in_flight_done)
+
+    pages_per_min = pages_done_recent / window_min
+    if pages_per_min > 0 and remaining_pages:
+        queue_eta = int(remaining_pages / pages_per_min * 60)
+    elif rate_per_min > 0 and remaining:
+        queue_eta = int(remaining / rate_per_min * 60)
+    else:
+        queue_eta = None
 
     review_count = (
         await db.execute(
@@ -486,6 +522,8 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         "running": running,
         "running_count": len(running),
         "rate_per_min": round(rate_per_min, 2),
+        "pages_per_min": round(pages_per_min, 1),
+        "queue_pages_remaining": remaining_pages,
         "queue_eta_seconds": queue_eta,
     }
 

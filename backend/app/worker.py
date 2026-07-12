@@ -210,6 +210,48 @@ async def maintenance_loop() -> None:
                             doc.simhash = 0  # too short to fingerprint; mark done
                     if stale:
                         logger.info("fingerprinted %d document(s)", len(stale))
+                    # Backfill page counts for queued PDFs from before
+                    # page-at-intake, so the pages-based ETA can see the
+                    # whole backlog. Header reads only; small batches.
+                    uncounted = (
+                        await session.execute(
+                            select(Document)
+                            .where(
+                                Document.page_count.is_(None),
+                                Document.status.in_(
+                                    [DocumentStatus.PENDING, DocumentStatus.PROCESSING]
+                                ),
+                                Document.deleted_at.is_(None),
+                                Document.original_filename.ilike("%.pdf"),
+                            )
+                            .limit(100)
+                        )
+                    ).scalars().all()
+
+                    def _count_pages(paths):
+                        import pikepdf
+
+                        from app.services import storage as _storage
+
+                        results = []
+                        for doc_id, blob_id in paths:
+                            try:
+                                with pikepdf.open(_storage.blob_file(blob_id)) as pdf:
+                                    results.append((doc_id, len(pdf.pages)))
+                            except Exception:
+                                results.append((doc_id, 0))
+                        return results
+
+                    if uncounted:
+                        counted = await asyncio.to_thread(
+                            _count_pages,
+                            [(d.id, d.original_blob_id) for d in uncounted],
+                        )
+                        by_id = {d.id: d for d in uncounted}
+                        for doc_id, pages in counted:
+                            if pages:
+                                by_id[doc_id].page_count = pages
+                        logger.info("page-counted %d queued document(s)", len(uncounted))
                     await session.commit()
             except Exception:
                 logger.exception("liveness pulse crashed; continuing")
