@@ -160,3 +160,16 @@ async def test_insights_shape(client, auth):
     for key in ("documents", "pages", "storage_bytes", "monthly", "tags", "engines"):
         assert key in data
     assert data["documents"] >= 1
+
+
+async def test_tag_rename_and_clash(client, auth):
+    a = (await client.post("/api/tags", headers=auth, json={"name": _name("ren-a")})).json()
+    b = (await client.post("/api/tags", headers=auth, json={"name": _name("ren-b")})).json()
+    renamed = await client.patch(
+        f"/api/tags/{a['id']}", headers=auth, json={"name": a["name"] + "-new"}
+    )
+    assert renamed.status_code == 200 and renamed.json()["name"].endswith("-new")
+    clash = await client.patch(
+        f"/api/tags/{a['id']}", headers=auth, json={"name": b["name"]}
+    )
+    assert clash.status_code == 409

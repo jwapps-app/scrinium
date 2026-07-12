@@ -66,7 +66,21 @@ async def update_tag(
     tag_id: uuid.UUID, body: TagUpdate, user: CurrentUser, db: DB
 ) -> TagOut:
     tag = await _get_owned(tag_id, user, db)
-    if body.name is not None:
+    if body.name is not None and body.name != tag.name:
+        clash = (
+            await db.execute(
+                select(Tag).where(
+                    Tag.tenant_id == user.tenant_id,
+                    Tag.name == body.name,
+                    Tag.id != tag.id,
+                )
+            )
+        ).scalars().first()
+        if clash is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"A tag named “{body.name}” already exists",
+            )
         tag.name = body.name
     if body.clear_parent:
         tag.parent_id = None
