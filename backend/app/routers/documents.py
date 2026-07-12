@@ -74,6 +74,18 @@ async def _progress_map(
     }
 
 
+def _first_tag_name():
+    from app.models import document_tags
+
+    return (
+        select(func.min(func.lower(Tag.name)))
+        .select_from(document_tags.join(Tag, document_tags.c.tag_id == Tag.id))
+        .where(document_tags.c.document_id == Document.id)
+        .correlate(Document)
+        .scalar_subquery()
+    )
+
+
 SORTS = {
     "newest": Document.created_at.desc(),
     "oldest": Document.created_at.asc(),
@@ -81,6 +93,32 @@ SORTS = {
     "docdate": func.coalesce(Document.doc_date, func.date(Document.created_at)).desc(),
     "title": func.lower(Document.title).asc(),
     "updated": Document.updated_at.desc(),
+    "tag": _first_tag_name().asc().nulls_last(),
+    "correspondent": (
+        select(func.lower(Correspondent.name))
+        .where(Correspondent.id == Document.correspondent_id)
+        .correlate(Document)
+        .scalar_subquery()
+        .asc()
+        .nulls_last()
+    ),
+    "doctype": (
+        select(func.lower(DocType.name))
+        .where(DocType.id == Document.doc_type_id)
+        .correlate(Document)
+        .scalar_subquery()
+        .asc()
+        .nulls_last()
+    ),
+    "pages": Document.page_count.desc().nulls_last(),
+    "size": (
+        select(Blob.size_bytes)
+        .where(Blob.id == Document.original_blob_id)
+        .correlate(Document)
+        .scalar_subquery()
+        .desc()
+        .nulls_last()
+    ),
 }
 
 

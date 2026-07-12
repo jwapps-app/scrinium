@@ -246,3 +246,10 @@ def test_auto_color_small_roots_dont_steal_the_wheel():
     hues = sorted(palette[k][0] for k in kids)
     gaps = [hues[i + 1] - hues[i] for i in range(len(hues) - 1)]
     assert min(gaps) > 12, gaps  # still ~17° apart despite the stray roots
+
+
+async def test_all_sort_options_work(client, auth):
+    for sort in ("newest", "oldest", "docdate", "title", "updated",
+                 "expires", "tag", "correspondent", "doctype", "pages", "size"):
+        resp = await client.get(f"/api/documents?sort={sort}&limit=5", headers=auth)
+        assert resp.status_code == 200, (sort, resp.text)

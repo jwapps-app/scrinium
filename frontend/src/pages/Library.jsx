@@ -24,6 +24,12 @@ const SORTS = [
   ['oldest', 'Oldest added'],
   ['docdate', 'Document date'],
   ['title', 'Title A–Z'],
+  ['tag', 'Tag A–Z'],
+  ['correspondent', 'Correspondent A–Z'],
+  ['doctype', 'Type A–Z'],
+  ['pages', 'Most pages'],
+  ['size', 'Largest file'],
+  ['expires', 'Expiring first'],
   ['updated', 'Recently updated'],
 ]
 

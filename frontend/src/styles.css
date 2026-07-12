@@ -156,7 +156,7 @@ textarea:hover {
 
 .sidebar {
   flex: none;
-  width: 220px;
+  width: 260px;
   height: 100dvh;
   position: sticky;
   top: 0;
