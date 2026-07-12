@@ -353,18 +353,22 @@ export default function Library() {
             ))}
           </select>
 
-          <input
-            type="date"
-            value={from || ''}
-            onChange={(e) => setParam('from', e.target.value)}
-            title="From date"
-          />
-          <input
-            type="date"
-            value={to || ''}
-            onChange={(e) => setParam('to', e.target.value)}
-            title="To date"
-          />
+          <label className="date-filter">
+            <span>From</span>
+            <input
+              type="date"
+              value={from || ''}
+              onChange={(e) => setParam('from', e.target.value)}
+            />
+          </label>
+          <label className="date-filter">
+            <span>To</span>
+            <input
+              type="date"
+              value={to || ''}
+              onChange={(e) => setParam('to', e.target.value)}
+            />
+          </label>
 
           <div className="view-toggle">
             <button

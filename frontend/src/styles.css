@@ -677,6 +677,34 @@ textarea:hover {
   color: var(--muted);
 }
 
+/* Labeled date filters (iOS shows nothing inside an empty date input) */
+.date-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.date-filter input {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+@media (max-width: 800px) {
+  .date-filter {
+    flex: 1 1 45%;
+    min-width: 0;
+  }
+  .date-filter input {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+  }
+}
+
 /* TOTP + misc */
 .totp-qr {
   width: 180px;
@@ -1044,6 +1072,13 @@ button.linklike {
 }
 
 @media (max-width: 800px) {
+  /* iOS force-zooms any focused control under 16px — hold the line at 16
+     and the viewport never jumps. */
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
   .hamburger {
     display: block;
     z-index: 51;
