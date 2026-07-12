@@ -11,7 +11,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-app}
     volumes:
       - ${DATA_ROOT:-/volume1/docker/scrinium}/postgres:/var/lib/postgresql/data
-    mem_limit: 1g
+    mem_limit: ${POSTGRES_MEM_LIMIT:-2g}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app}"]
