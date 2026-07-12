@@ -230,7 +230,7 @@ async def test_export_zip_layout(client, auth, pdf_factory, tmp_path):
             )
         ).scalar_one()
 
-    await _run_export(tenant_id)
+    await _run_export(tenant_id, fmt="zip")
     newest = max(
         glob.glob(os.path.join(os.environ["DATA_DIR"], "export", "*.zip")),
         key=os.path.getmtime,
@@ -242,3 +242,70 @@ async def test_export_zip_layout(client, auth, pdf_factory, tmp_path):
     assert all(":" not in n.split("/", 1)[1].replace("/", "") or True for n in hit)
     # sanitized title present, quotes/colons gone
     assert any("Water- -notes- 2023" in n or "Water" in n for n in hit)
+
+
+def test_plan_parts_keeps_folders_together():
+    from app.services.export import plan_parts
+
+    GB = 1024**3
+    entries = [
+        ("Taxes/2023", "originals/Taxes/2023/a.pdf", None, 4 * GB),
+        ("Taxes/2023", "originals/Taxes/2023/b.pdf", None, 4 * GB),
+        ("Water", "originals/Water/c.pdf", None, 5 * GB),
+        ("Water", "originals/Water/d.pdf", None, 3 * GB),
+    ]
+    parts = plan_parts(entries, 10 * GB)
+    # Each folder stays whole; the two folders can't share a 10GB part
+    assert len(parts) == 2
+    for part in parts:
+        folders = {e[0] for e in part}
+        assert len(folders) == 1
+
+
+def test_plan_parts_splits_oversized_folder():
+    from app.services.export import plan_parts
+
+    GB = 1024**3
+    entries = [("Huge", f"originals/Huge/f{i}.pdf", None, 6 * GB) for i in range(4)]
+    parts = plan_parts(entries, 10 * GB)
+    assert len(parts) >= 2  # 24GB folder can't fit one 10GB part
+    assert sum(len(p) for p in parts) == 4  # nothing dropped
+    # all entries keep the same folder path → reassembly is exact
+    assert all(e[0] == "Huge" for p in parts for e in p)
+
+
+async def test_folder_export_hardlinks(client, auth, pdf_factory, tmp_path):
+    import glob
+    import os
+    import uuid as u
+
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models import Document
+    from app.services.export import _run_export
+
+    resp = await client.post(
+        "/api/documents", headers=auth,
+        files={"file": (f"fold-{u.uuid4().hex[:6]}.pdf", pdf_factory(text=u.uuid4().hex), "application/pdf")},
+    )
+    doc = resp.json()
+    async with SessionLocal() as session:
+        tenant_id = (
+            await session.execute(
+                sa.select(Document.tenant_id).where(Document.id == u.UUID(doc["id"]))
+            )
+        ).scalar_one()
+
+    await _run_export(tenant_id, fmt="folder")
+    export_root = max(
+        (p for p in glob.glob(os.path.join(os.environ["DATA_DIR"], "export", "library-export-*")) if os.path.isdir(p)),
+        key=os.path.getmtime,
+    )
+    assert os.path.exists(os.path.join(export_root, "manifest.json"))
+    originals = []
+    for base, _dirs, names in os.walk(os.path.join(export_root, "originals")):
+        originals += [os.path.join(base, n) for n in names]
+    assert originals
+    # hardlinked (same volume in tests): link count > 1 on at least one file
+    assert any(os.stat(f).st_nlink > 1 for f in originals)

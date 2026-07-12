@@ -5,6 +5,7 @@ import { APP_NAME } from '../constants/branding'
 /** Settings card: Paperless import + full-library export. */
 export default function TransferSection() {
   const [imp, setImp] = useState(null)
+  const [fmt, setFmt] = useState('folder')
   const [exp, setExp] = useState(null)
   const [error, setError] = useState('')
 
@@ -33,10 +34,13 @@ export default function TransferSection() {
     return () => clearInterval(t)
   }, [busy, load])
 
-  async function start(path) {
+  async function start(path, body) {
     setError('')
     try {
-      await apiJson(path, { method: 'POST' })
+      await apiJson(path, {
+        method: 'POST',
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      })
       load()
     } catch (err) {
       setError(err.message)
@@ -90,20 +94,27 @@ export default function TransferSection() {
       <div className="organize-block">
         <div className="organize-head">
           <strong>Export the whole library</strong>
+          <select value={fmt} onChange={(e) => setFmt(e.target.value)}>
+            <option value="folder">Folder on the server (instant)</option>
+            <option value="zip">Zip parts (~10 GB each)</option>
+          </select>
           <button
             disabled={exp?.state === 'running'}
-            onClick={() => start('/api/export')}
+            onClick={() => start('/api/export', { format: fmt })}
           >
             {exp?.state === 'running' ? 'Exporting…' : 'Export'}
           </button>
         </div>
         <p className="settings-help">
-          Writes a zip into the server&apos;s data folder with your documents
-          in browsable folders built from their tag hierarchy — e.g.{' '}
-          <code>originals/Taxes/2023/W2.pdf</code> — plus a parallel{' '}
-          <code>searchable/</code> tree of the OCR&apos;d copies and a
-          manifest of all metadata. Your documents are never locked into{' '}
-          {APP_NAME}.
+          Your documents in browsable folders built from their tag
+          hierarchy — e.g. <code>originals/Taxes/2023/W2.pdf</code> — plus a
+          parallel <code>searchable/</code> tree of the OCR&apos;d copies and
+          a metadata manifest. <strong>Folder</strong> writes a real tree in
+          the server&apos;s export share, hardlinked so even a huge library
+          finishes in seconds with no extra disk. <strong>Zip parts</strong>{' '}
+          makes portable ~10 GB archives that split only at folder
+          boundaries — unzip them all into one place and the tree reassembles
+          exactly. Never locked into {APP_NAME}.
         </p>
         <p className="settings-help">
           {progress(exp)}

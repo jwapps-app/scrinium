@@ -230,9 +230,11 @@ async def _scheduled_export() -> None:
 
     dest = Path(settings.data_dir) / "export"
     newest = 0.0
-    zips = sorted(dest.glob("library-export-*.zip")) if dest.is_dir() else []
-    if zips:
-        newest = max(z.stat().st_mtime for z in zips)
+    exports = (
+        sorted(dest.glob("library-export-*")) if dest.is_dir() else []
+    )
+    if exports:
+        newest = max(e.stat().st_mtime for e in exports)
     if time.time() - newest < settings.export_every_days * 86400:
         return
     async with SessionLocal() as session:
@@ -244,12 +246,25 @@ async def _scheduled_export() -> None:
     logger.info("scheduled export starting")
     await run_export(tenant_id)
     keep = max(1, settings.export_keep)
-    zips = sorted(
-        dest.glob("library-export-*.zip"), key=lambda z: z.stat().st_mtime
+    import shutil as _shutil
+
+    exports = sorted(
+        dest.glob("library-export-*"), key=lambda e: e.stat().st_mtime
     )
-    for stale in zips[:-keep]:
-        stale.unlink(missing_ok=True)
-        logger.info("scheduled export pruned %s", stale.name)
+    # Multi-part zips of one run share a stamp; group by stamp so a "kept
+    # export" means the whole run.
+    runs: dict[str, list] = {}
+    for e in exports:
+        stamp_key = e.name.split("-part")[0]
+        runs.setdefault(stamp_key, []).append(e)
+    ordered = sorted(runs.values(), key=lambda group: group[0].stat().st_mtime)
+    for group in ordered[:-keep]:
+        for stale in group:
+            if stale.is_dir():
+                _shutil.rmtree(stale, ignore_errors=True)
+            else:
+                stale.unlink(missing_ok=True)
+            logger.info("scheduled export pruned %s", stale.name)
 
 
 async def reclaim_interrupted_jobs(stale_after_seconds: int | None = None) -> None:

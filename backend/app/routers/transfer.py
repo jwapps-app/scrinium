@@ -60,9 +60,18 @@ async def export_status(user: CurrentUser, db: DB) -> dict:
 
 
 @router.post("/export")
-async def start_export(user: CurrentUser, db: DB) -> dict:
+async def start_export(user: CurrentUser, db: DB, body: dict | None = None) -> dict:
     state = await _current(db, EXPORT_STATUS)
     if state.get("state") == "running":
         raise HTTPException(status.HTTP_409_CONFLICT, "An export is already running")
-    asyncio.create_task(run_export(user.tenant_id))
+    body = body or {}
+    fmt = body.get("format") or None
+    if fmt not in (None, "folder", "zip"):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "format: folder|zip")
+    part_gb = body.get("part_gb")
+    if part_gb is not None and not (1 <= int(part_gb) <= 500):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "part_gb: 1-500")
+    asyncio.create_task(
+        run_export(user.tenant_id, fmt, int(part_gb) if part_gb else None)
+    )
     return {"started": True}

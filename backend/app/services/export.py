@@ -66,19 +66,61 @@ async def _status(state: str, **extra) -> None:
         await session.commit()
 
 
-async def run_export(tenant_id) -> None:
+async def run_export(
+    tenant_id, fmt: str | None = None, part_gb: int | None = None
+) -> None:
     try:
-        await _run_export(tenant_id)
+        await _run_export(
+            tenant_id,
+            fmt or settings.export_format,
+            part_gb or settings.export_part_gb,
+        )
     except Exception as exc:
         logger.exception("library export failed")
         await _status("failed", error=str(exc)[:500])
 
 
-async def _run_export(tenant_id) -> None:
+def plan_parts(entries: list[tuple], cap_bytes: int) -> list[list[tuple]]:
+    """Pack (folder, arcname, path, size) entries into parts ≤ cap, keeping
+    folder subtrees together whenever they fit.
+
+    Entries are grouped by their tag-path folder; folders sort
+    depth-first-alphabetically, so a subtree's folders are contiguous and a
+    greedy sweep keeps them in the same part when the subtree fits. A folder
+    larger than the cap spans parts (paths identical, so unzipping all parts
+    into one place still reassembles the tree exactly)."""
+    by_folder: dict[str, list[tuple]] = {}
+    for entry in entries:
+        by_folder.setdefault(entry[0], []).append(entry)
+
+    parts: list[list[tuple]] = [[]]
+    part_size = 0
+
+    def place(items: list[tuple], size: int) -> None:
+        nonlocal part_size
+        if part_size > 0 and part_size + size > cap_bytes:
+            parts.append([])
+            part_size = 0
+        parts[-1].extend(items)
+        part_size += size
+
+    for folder in sorted(by_folder):
+        items = by_folder[folder]
+        folder_size = sum(e[3] for e in items)
+        if folder_size <= cap_bytes:
+            place(items, folder_size)
+        else:
+            # One folder bigger than a part: split by files, largest first
+            # so the tail packs tight.
+            for entry in sorted(items, key=lambda e: -e[3]):
+                place([entry], entry[3])
+    return [p for p in parts if p]
+
+
+async def _run_export(tenant_id, fmt: str = "folder", part_gb: int = 10) -> None:
     dest_dir = Path(settings.data_dir) / "export"
     dest_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    dest = dest_dir / f"library-export-{stamp}.zip"
 
     async with SessionLocal() as session:
         docs = (
@@ -132,8 +174,8 @@ async def _run_export(tenant_id) -> None:
         await _status("running", done=0, total=total)
 
         manifest = []
-        # (zip arcname, disk path) pairs collected while the session is open
-        files: list[tuple[str, Path]] = []
+        # (folder, arcname, disk path, size) collected while the session is open
+        files: list[tuple] = []
         for doc in docs:
             suffix = Path(doc.original_filename).suffix.lower() or ".bin"
             folder = folder_for(doc, parents)
@@ -151,11 +193,15 @@ async def _run_export(tenant_id) -> None:
             )
             original_path = storage.blob_file(doc.original_blob_id)
             if original_path.exists():
-                files.append((original_name, original_path))
+                files.append(
+                    (folder, original_name, original_path, original_path.stat().st_size)
+                )
             if archive_name:
                 archive_path = storage.blob_file(doc.archive_blob_id)
                 if archive_path.exists():
-                    files.append((archive_name, archive_path))
+                    files.append(
+                        (folder, archive_name, archive_path, archive_path.stat().st_size)
+                    )
                 else:
                     archive_name = None
             manifest.append(
@@ -178,32 +224,89 @@ async def _run_export(tenant_id) -> None:
                 }
             )
 
-    def build_zip() -> int:
-        written = 0
-        with zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as zf:
-            zf.writestr(
-                "manifest.json",
-                json.dumps(
-                    {
-                        "app": settings.app_name,
-                        "exported_at": datetime.now(timezone.utc).isoformat(),
-                        "documents": manifest,
-                    },
-                    indent=2,
-                ),
-            )
-            for arcname, path in files:
-                zf.write(path, arcname)
-                written += 1
-        return written
+    manifest_bytes = json.dumps(
+        {
+            "app": settings.app_name,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "documents": manifest,
+        },
+        indent=2,
+    )
 
-    written = await asyncio.to_thread(build_zip)
-    size_mb = round(dest.stat().st_size / (1024 * 1024), 1)
+    if fmt == "zip":
+        cap = max(1, part_gb) * 1024**3
+        part_plans = plan_parts(files, cap)
+
+        def build_zips() -> tuple[int, list[str], float]:
+            written = 0
+            paths = []
+            total_bytes = 0
+            for i, part in enumerate(part_plans, start=1):
+                suffix_name = (
+                    f"library-export-{stamp}.zip"
+                    if len(part_plans) == 1
+                    else f"library-export-{stamp}-part{i:02d}.zip"
+                )
+                dest = dest_dir / suffix_name
+                with zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as zf:
+                    if i == 1:
+                        zf.writestr("manifest.json", manifest_bytes)
+                    for _folder, arcname, path, _size in part:
+                        zf.write(path, arcname)
+                        written += 1
+                total_bytes += dest.stat().st_size
+                paths.append(str(dest))
+            return written, paths, total_bytes / 1024**2
+
+        written, paths, size_mb = await asyncio.to_thread(build_zips)
+        await _status(
+            "done",
+            total=total,
+            files=written,
+            parts=len(paths),
+            path=paths[0] if len(paths) == 1 else f"{len(paths)} parts in {dest_dir}",
+            size_mb=round(size_mb, 1),
+        )
+        logger.info(
+            "library export done: %d docs, %d zip part(s), %.1f MB",
+            total, len(paths), size_mb,
+        )
+        return
+
+    # Folder format: a real browsable tree. Hardlink when possible (blobs
+    # and export share a volume → instant and zero extra disk), copy as
+    # fallback.
+    import os
+    import shutil
+
+    root = dest_dir / f"library-export-{stamp}"
+
+    def build_tree() -> tuple[int, int]:
+        written = linked = 0
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "manifest.json").write_text(manifest_bytes)
+        for _folder, arcname, path, _size in files:
+            dest = root / arcname
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists():
+                continue
+            try:
+                os.link(path, dest)
+                linked += 1
+            except OSError:
+                shutil.copyfile(path, dest)
+            written += 1
+        return written, linked
+
+    written, linked = await asyncio.to_thread(build_tree)
     await _status(
         "done",
         total=total,
         files=written,
-        path=str(dest),
-        size_mb=size_mb,
+        hardlinked=linked,
+        path=str(root),
     )
-    logger.info("library export done: %d docs, %s (%.1f MB)", total, dest, size_mb)
+    logger.info(
+        "library export done: %d docs → %s (%d/%d hardlinked)",
+        total, root, linked, written,
+    )

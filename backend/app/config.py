@@ -68,9 +68,13 @@ class Settings(BaseSettings):
     separator_barcode: str = "PATCHT"
 
     # Automatic full-library exports: every N days (0 = manual only),
-    # keeping the newest `export_keep` zips.
+    # keeping the newest `export_keep` exports.
     export_every_days: int = 0
     export_keep: int = 3
+    # "folder" (hardlinked tree on the same volume — instant, no extra disk)
+    # or "zip" (portable archive parts of ~export_part_gb each).
+    export_format: str = "folder"
+    export_part_gb: int = 10
 
     # Push via the shared push-relay (all three set = enabled)
     push_relay_url: str = ""      # e.g. http://192.168.1.10:8088
