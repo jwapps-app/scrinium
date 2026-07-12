@@ -137,14 +137,14 @@ export default function Shell({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Burndown peak for the overall import bar: high-water mark of the queue,
-  // reset when it drains. Fills 0→100% as the backlog clears; dips when a
-  // fresh wave arrives — exactly the "adjusts as files keep coming" behavior.
-  const peakRef = useRef(0)
+  // Overall progress = completed ÷ total (all live docs). Absolute and
+  // persistent — matches the sidebar's "Completed N / All M", survives page
+  // reloads, and climbs monotonically as the library finishes (dips slightly
+  // only when a fresh batch is ingested, which is honest).
   const remaining = stats?.processing || 0
-  if (remaining === 0) peakRef.current = 0
-  else if (remaining > peakRef.current) peakRef.current = remaining
-  const burndown = peakRef.current > 0 ? (peakRef.current - remaining) / peakRef.current : 0
+  const totalLive = stats?.total || 0
+  const overall = totalLive > 0 ? (stats.ready || 0) / totalLive : 0
+  const overallPct = Math.round(overall * 100)
 
   // Anti-flicker: between jobs the running list momentarily empties, and at
   // the very end it toggles on/off — both made the whole sidebar jump.
@@ -325,7 +325,11 @@ export default function Shell({ children }) {
                         : formatEta(stats?.queue_eta_seconds) || 'estimating…'}
                     </span>
                   </div>
-                  <ProgressBar value={burndown} />
+                  <ProgressBar value={overall} />
+                  <div className="proc-sub">
+                    {overallPct}% complete · {(stats?.ready || 0).toLocaleString()} of{' '}
+                    {totalLive.toLocaleString()}
+                  </div>
                 </div>
               )}
             </div>
