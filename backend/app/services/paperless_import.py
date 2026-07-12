@@ -52,6 +52,19 @@ def import_root() -> Path:
     return Path(settings.data_dir) / "import"
 
 
+def _safe_member(source: Path, value) -> Path | None:
+    """Resolve a manifest-referenced file, refusing anything that escapes
+    the export directory (absolute paths, ../ traversal). The manifest is
+    untrusted — it rides inside the imported zip."""
+    if not value or not isinstance(value, str):
+        return None
+    candidate = (source / value).resolve()
+    root = source.resolve()
+    if candidate == root or root not in candidate.parents:
+        return None
+    return candidate
+
+
 def find_export(root: Path) -> Path | None:
     """Locate an export: a directory containing manifest.json, or a zip."""
     if (root / "manifest.json").exists():
@@ -64,10 +77,19 @@ def find_export(root: Path) -> Path | None:
     return None
 
 
+MAX_EXTRACT_BYTES = 100 * 1024**3  # 100 GB uncompressed ceiling
+
+
 def _extract_zip(zip_path: Path) -> Path:
     dest = zip_path.parent / f".extracted-{zip_path.stem}"
     if not (dest / "manifest.json").exists():
         with zipfile.ZipFile(zip_path) as zf:
+            total = sum(i.file_size for i in zf.infolist())
+            if total > MAX_EXTRACT_BYTES:
+                raise ValueError(
+                    f"Export expands to {total // 1024**3} GB — refusing "
+                    "(possible zip bomb; raise MAX_EXTRACT_BYTES if genuine)"
+                )
             zf.extractall(dest)
     # manifest may be at the top level or one folder down
     if (dest / "manifest.json").exists():
@@ -203,7 +225,7 @@ async def _run_import(tenant_id) -> None:
             file_name = entry.get("__exported_file_name__") or fields.get(
                 "filename"
             )
-            path = (source / file_name) if file_name else None
+            path = _safe_member(source, file_name)
             if path is None or not path.exists():
                 failed += 1
                 logger.warning("import: missing file for document pk %s", entry.get("pk"))
@@ -290,7 +312,7 @@ async def _restore_scrinium(tenant_id, source: Path, manifest: dict) -> None:
 
         for i, entry in enumerate(docs):
             rel = entry.get("original")
-            path = (source / rel) if rel else None
+            path = _safe_member(source, rel)
             if path is None or not path.exists():
                 failed += 1
                 continue
@@ -303,10 +325,10 @@ async def _restore_scrinium(tenant_id, source: Path, manifest: dict) -> None:
 
                 text = None
                 pages = entry.get("page_count")
-                archive_rel = entry.get("archive")
-                if archive_rel and (source / archive_rel).exists():
+                archive_path = _safe_member(source, entry.get("archive"))
+                if archive_path and archive_path.exists():
                     result = subprocess.run(
-                        ["pdftotext", "-layout", str(source / archive_rel), "-"],
+                        ["pdftotext", "-layout", str(archive_path), "-"],
                         capture_output=True, text=True, timeout=300,
                     )
                     if result.returncode == 0 and result.stdout.strip():

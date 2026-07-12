@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from app.services.ratelimit import rate_limit
 from sqlalchemy import func, select
 
 from app.config import settings
@@ -22,6 +23,10 @@ from app.security import (
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# A real bcrypt hash to verify against when the account doesn't exist, so
+# the code path (and timing) matches a wrong-password attempt.
+_DUMMY_HASH = hash_password("scrinium-timing-equalizer")
+
 
 def _token_pair(user: User) -> TokenPair:
     return TokenPair(
@@ -36,7 +41,7 @@ async def auth_status(db: DB) -> AuthStatus:
     return AuthStatus(needs_setup=count == 0)
 
 
-@router.post("/setup", response_model=TokenPair)
+@router.post("/setup", response_model=TokenPair, dependencies=[Depends(rate_limit("setup", 5, 60))])
 async def setup(body: SetupRequest, db: DB) -> TokenPair:
     count = (await db.execute(select(func.count(User.id)))).scalar_one()
     if count > 0:
@@ -54,12 +59,17 @@ async def setup(body: SetupRequest, db: DB) -> TokenPair:
     return _token_pair(user)
 
 
-@router.post("/login", response_model=TokenPair)
+@router.post("/login", response_model=TokenPair, dependencies=[Depends(rate_limit("login", 10, 60))])
 async def login(body: LoginRequest, db: DB) -> TokenPair:
     user = (
         await db.execute(select(User).where(User.email == body.email.lower()))
     ).scalar_one_or_none()
-    if user is None or not verify_password(body.password, user.password_hash):
+    # Always run a bcrypt verify so a missing account costs the same as a
+    # wrong password — no timing oracle for enumerating valid emails.
+    password_ok = verify_password(
+        body.password, user.password_hash if user else _DUMMY_HASH
+    )
+    if user is None or not password_ok:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
     if user.totp_enabled:
         if not body.totp:

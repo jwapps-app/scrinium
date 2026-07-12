@@ -139,9 +139,15 @@ async def shared_file(
     path = storage.blob_file(blob_id)
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File missing")
-    dispo = "attachment" if disposition == "attachment" else "inline"
+    inline = disposition != "attachment" and media_type in (
+        "application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"
+    )
     return FileResponse(
-        path, media_type=media_type, filename=filename, content_disposition_type=dispo
+        path,
+        media_type=media_type,
+        filename=filename,
+        content_disposition_type="inline" if inline else "attachment",
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 

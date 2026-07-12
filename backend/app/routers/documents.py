@@ -36,6 +36,21 @@ from app.services.tag_tree import with_ancestors
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
+# Only these render inline; everything else is forced to download so a
+# mistyped/ível content-type can never execute in the browser origin.
+_INLINE_SAFE = {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"}
+
+
+def _serve_blob(path, media_type: str, filename: str, disposition: str):
+    inline = disposition != "attachment" and media_type in _INLINE_SAFE
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=filename,
+        content_disposition_type="inline" if inline else "attachment",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
+
 
 def doc_out(
     doc: Document,
@@ -160,9 +175,25 @@ async def upload_chunk(
     if index < 0 or index > 10000:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Bad chunk index")
     session_dir = _owned_session_dir(upload_id, user)
+    # Bound a single session so a client can't fill the disk: 10001 parts ×
+    # 64 MB ceiling ≈ well past any real document, and the assembled total
+    # is re-checked below.
+    existing = sum(p.stat().st_size for p in session_dir.glob("part-*"))
+    if existing > 40 * 1024**3:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Upload session too large"
+        )
     part = session_dir / f"part-{index:05d}"
+    written = 0
     async with aiofiles.open(part, "wb") as out:
         async for chunk in request.stream():
+            written += len(chunk)
+            if written > 128 * 1024 * 1024:
+                await out.close()
+                part.unlink(missing_ok=True)
+                raise HTTPException(
+                    status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Chunk too large"
+                )
             await out.write(chunk)
     return {"received": part.stat().st_size}
 
@@ -659,13 +690,7 @@ async def download(
     path = storage.blob_file(blob_id)
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Blob missing from store")
-    dispo = "attachment" if disposition == "attachment" else "inline"
-    return FileResponse(
-        path,
-        media_type=media_type,
-        filename=filename,
-        content_disposition_type=dispo,
-    )
+    return _serve_blob(path, media_type, filename, disposition)
 
 
 @router.get("/{doc_id}/search")
@@ -1187,6 +1212,16 @@ async def bulk_action(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide ids or filter_tag_id"
         )
+
+    # Validate FK targets belong to this tenant before assigning them.
+    if body.action == "set_correspondent" and body.correspondent_id is not None:
+        owned = await db.get(Correspondent, body.correspondent_id)
+        if owned is None or owned.tenant_id != user.tenant_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Correspondent not found")
+    if body.action == "set_doc_type" and body.doc_type_id is not None:
+        owned = await db.get(DocType, body.doc_type_id)
+        if owned is None or owned.tenant_id != user.tenant_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Document type not found")
 
     tags: list[Tag] = []
     if body.action in ("add_tags", "remove_tags") and body.tag_ids:

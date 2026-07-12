@@ -27,9 +27,9 @@ def _remove_consumed_copy(source_path: str) -> None:
     and prune any folders that emptied out. Best-effort."""
     if not settings.watch_dir:
         return
-    watch = Path(settings.watch_dir)
+    watch = Path(settings.watch_dir).resolve()
     target = (watch / source_path).resolve()
-    if not str(target).startswith(str(watch.resolve())):
+    if watch != target and watch not in target.parents:
         return  # never follow a path outside the watch dir
     target.unlink(missing_ok=True)
     parent = target.parent
