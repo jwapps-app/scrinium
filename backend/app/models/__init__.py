@@ -4,6 +4,7 @@ from app.models.device import DeviceToken
 from app.models.document import Document, DocumentStatus, document_tags
 from app.models.job import Job, JobStatus
 from app.models.share import ShareLink
+from app.models.userdata import Annotation, DismissedDuplicate, ReadingPosition
 from app.models.organize import (
     Correspondent,
     CustomField,
@@ -25,6 +26,9 @@ __all__ = [
     "document_tags",
     "Correspondent",
     "ShareLink",
+    "Annotation",
+    "ReadingPosition",
+    "DismissedDuplicate",
     "CustomField",
     "DocType",
     "SavedView",

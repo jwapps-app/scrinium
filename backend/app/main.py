@@ -7,6 +7,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import engine
 from app.routers import (
+    annotations,
     auth,
     classify,
     devices,
@@ -47,6 +48,7 @@ app.include_router(documents.router, prefix=API_PREFIX)
 app.include_router(organize.router, prefix=API_PREFIX)
 app.include_router(rules.router, prefix=API_PREFIX)
 app.include_router(search.router, prefix=API_PREFIX)
+app.include_router(annotations.router, prefix=API_PREFIX)
 app.include_router(insights.router, prefix=API_PREFIX)
 app.include_router(share.router, prefix=API_PREFIX)
 app.include_router(transfer.router, prefix=API_PREFIX)

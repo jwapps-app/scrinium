@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { apiJson } from '../api'
+import { apiFetch, apiJson } from '../api'
 import Shell from '../components/Shell'
 
 function fmtBytes(n) {
@@ -163,6 +163,41 @@ export default function Insights() {
                           <Link to={`/doc/${p.a.id}`}>{p.a.title}</Link>
                           <span className="dup-vs">≈</span>
                           <Link to={`/doc/${p.b.id}`}>{p.b.title}</Link>
+                        </span>
+                        <span className="dup-actions">
+                          <button
+                            className="ghost"
+                            title={`Move “${p.a.title}” to the trash`}
+                            onClick={async () => {
+                              await apiFetch(`/api/documents/${p.a.id}`, { method: 'DELETE' })
+                              setDupes({ ...dupes, pairs: dupes.pairs.filter((x) => x !== p) })
+                            }}
+                          >
+                            Trash left
+                          </button>
+                          <button
+                            className="ghost"
+                            title={`Move “${p.b.title}” to the trash`}
+                            onClick={async () => {
+                              await apiFetch(`/api/documents/${p.b.id}`, { method: 'DELETE' })
+                              setDupes({ ...dupes, pairs: dupes.pairs.filter((x) => x !== p) })
+                            }}
+                          >
+                            Trash right
+                          </button>
+                          <button
+                            className="ghost"
+                            title="These are different documents — stop suggesting this pair"
+                            onClick={async () => {
+                              await apiJson('/api/insights/duplicates/dismiss', {
+                                method: 'POST',
+                                body: JSON.stringify({ a: p.a.id, b: p.b.id }),
+                              })
+                              setDupes({ ...dupes, pairs: dupes.pairs.filter((x) => x !== p) })
+                            }}
+                          >
+                            Not a dupe
+                          </button>
                         </span>
                       </li>
                     ))}

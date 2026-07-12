@@ -9,6 +9,7 @@ from app.services.similarity import find_near_duplicates
 
 from app.deps import DB, CurrentUser
 from app.models import (
+    DismissedDuplicate,
     Blob,
     Correspondent,
     DocType,
@@ -177,7 +178,20 @@ async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
         )
     ).scalar_one()
 
-    pairs = find_near_duplicates([(r[0], r[1]) for r in rows])[:50]
+    dismissed = {
+        frozenset((row.doc_a, row.doc_b))
+        for row in (
+            await db.execute(
+                select(DismissedDuplicate).where(
+                    DismissedDuplicate.tenant_id == user.tenant_id
+                )
+            )
+        ).scalars()
+    }
+    pairs = [
+        p for p in find_near_duplicates([(r[0], r[1]) for r in rows])
+        if frozenset((p[0], p[1])) not in dismissed
+    ][:50]
     ids = {i for a, b, _ in pairs for i in (a, b)}
     docs = {}
     if ids:
@@ -203,3 +217,23 @@ async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
             if a in docs and b in docs
         ],
     }
+
+
+@router.post("/insights/duplicates/dismiss")
+async def dismiss_duplicate(body: dict, user: CurrentUser, db: DB) -> dict:
+    """Mark a pair as "not a duplicate" so the report stops resurfacing it."""
+    import uuid as _uuid
+
+    try:
+        a = _uuid.UUID(str(body.get("a")))
+        b = _uuid.UUID(str(body.get("b")))
+    except (ValueError, TypeError):
+        from fastapi import HTTPException, status as http_status
+
+        raise HTTPException(http_status.HTTP_422_UNPROCESSABLE_ENTITY, "a and b required")
+    lo, hi = sorted((a, b))
+    existing = await db.get(DismissedDuplicate, (user.tenant_id, lo, hi))
+    if existing is None:
+        db.add(DismissedDuplicate(tenant_id=user.tenant_id, doc_a=lo, doc_b=hi))
+        await db.flush()
+    return {"dismissed": True}

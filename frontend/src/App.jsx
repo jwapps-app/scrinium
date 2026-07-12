@@ -7,6 +7,8 @@ import Library from './pages/Library'
 import DocumentView from './pages/DocumentView'
 import Settings from './pages/Settings'
 import Insights from './pages/Insights'
+import OfflineDocs from './pages/OfflineDocs'
+import Review from './pages/Review'
 import SharedDocument from './pages/SharedDocument'
 
 function RequireAuth({ children }) {
@@ -61,6 +63,22 @@ export default function App() {
         element={
           <RequireAuth>
             <Insights />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/review"
+        element={
+          <RequireAuth>
+            <Review />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/offline"
+        element={
+          <RequireAuth>
+            <OfflineDocs />
           </RequireAuth>
         }
       />

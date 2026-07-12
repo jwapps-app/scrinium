@@ -27,6 +27,10 @@ export default function PdfViewer({
   zoom = 1,
   storageKey = null,
   onOutline = null,
+  annotations = [],
+  onSelectText = null,
+  onPositionChange = null,
+  resumePage = null,
 }) {
   const containerRef = useRef(null)
   const stateRef = useRef(null)
@@ -54,6 +58,7 @@ export default function PdfViewer({
     container.innerHTML = ''
     const st = {
       pdf: null,
+      annots: annotations,
       scale: 1,
       rendered: new Set(),
       rendering: new Set(),
@@ -104,6 +109,7 @@ export default function PdfViewer({
         }
         st.rendered.add(n)
         drawHighlights(n)
+        drawAnnotations(n)
         // Estimated slot heights drift as real pages land; once the focused
         // page itself has rendered, snap to its true position exactly once.
         if (st.focusTarget === n) {
@@ -141,6 +147,7 @@ export default function PdfViewer({
                   JSON.stringify({ page: i + 1, total: st.slots.length }),
                 )
               } catch { /* storage full/blocked: not worth breaking scroll */ }
+              if (onPositionChange) onPositionChange(i + 1)
             }
           }
         }
@@ -188,6 +195,26 @@ export default function PdfViewer({
     }
     st.drawHighlights = drawHighlights
 
+    function drawAnnotations(n) {
+      const slot = st.slots[n - 1]
+      if (!slot) return
+      slot.querySelectorAll('.pdf-annot').forEach((el) => el.remove())
+      for (const a of st.annots || []) {
+        if (a.page !== n) continue
+        for (const r of a.rects) {
+          const mark = document.createElement('div')
+          mark.className = 'pdf-annot'
+          mark.style.left = `${r.x * 100}%`
+          mark.style.top = `${r.y * 100}%`
+          mark.style.width = `${r.w * 100}%`
+          mark.style.height = `${r.h * 100}%`
+          if (a.color) mark.style.background = `color-mix(in srgb, ${a.color} 35%, transparent)`
+          slot.appendChild(mark)
+        }
+      }
+    }
+    st.drawAnnotations = drawAnnotations
+
     async function load() {
       try {
         const pdf = await pdfjsLib.getDocument(url).promise
@@ -220,9 +247,13 @@ export default function PdfViewer({
         }
         window.addEventListener('scroll', onScroll, { passive: true })
         window.addEventListener('resize', onScroll, { passive: true })
+        container.addEventListener('mouseup', st.onMouseUp)
         // Rebuild from a size change: return to the page being read.
         // Otherwise, a fresh open resumes where reading last stopped.
         let target = restorePage
+        if (!target && !focusPage && resumePage > 1 && resumePage <= pdf.numPages) {
+          target = resumePage
+        }
         if (!target && storageKey && !focusPage) {
           try {
             const saved = JSON.parse(localStorage.getItem(`readpos:${storageKey}`))
@@ -269,10 +300,48 @@ export default function PdfViewer({
     }
     load()
 
+    st.onMouseUp = () => {
+      if (!onSelectText) return
+      setTimeout(() => {
+        const sel = window.getSelection()
+        const quote = sel?.toString().trim()
+        if (!quote || quote.length < 3) {
+          onSelectText(null)
+          return
+        }
+        const range = sel.getRangeAt(0)
+        const slot = range.startContainer.parentElement?.closest('.pdf-page-slot')
+        if (!slot) return
+        const page = Number(slot.dataset.page)
+        const slotBox = slot.getBoundingClientRect()
+        const rects = []
+        for (const r of range.getClientRects()) {
+          if (r.width < 2 || r.height < 2) continue
+          rects.push({
+            x: (r.left - slotBox.left) / slotBox.width,
+            y: (r.top - slotBox.top) / slotBox.height,
+            w: r.width / slotBox.width,
+            h: r.height / slotBox.height,
+          })
+          if (rects.length >= 150) break
+        }
+        if (!rects.length) return
+        const last = range.getClientRects()[range.getClientRects().length - 1]
+        onSelectText({
+          page,
+          quote: quote.slice(0, 2000),
+          rects,
+          anchorX: last.right,
+          anchorY: last.bottom,
+        })
+      }, 0)
+    }
+
     return () => {
       cancelled = true
       window.removeEventListener('scroll', st.onScroll)
       window.removeEventListener('resize', st.onScroll)
+      container.removeEventListener('mouseup', st.onMouseUp)
       if (st.throttle) clearTimeout(st.throttle)
       st.pdf?.destroy()
     }
@@ -285,6 +354,16 @@ export default function PdfViewer({
     st.terms = highlightTerms
     for (const n of st.rendered) st.drawHighlights(n)
   }, [termsKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-draw saved highlights when the annotation list changes.
+  useEffect(() => {
+    const st = stateRef.current
+    if (!st) return
+    st.annots = annotations
+    if (st.drawAnnotations) {
+      for (const n of st.rendered) st.drawAnnotations(n)
+    }
+  }, [annotations]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scroll to the focused page. Instant, not smooth: rendering nearby pages
   // shifts layout, and Chrome cancels an in-flight smooth scroll on layout

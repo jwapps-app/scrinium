@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useLocation, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { apiJson, setTokens } from '../api'
 import { APP_NAME } from '../constants/branding'
 import ProgressBar, { formatEta } from './ProgressBar'
@@ -30,11 +30,55 @@ export function flattenTagTree(tags, collapsed = null) {
   return out
 }
 
+const SHORTCUTS = [
+  ['/', 'Focus search'],
+  ['g then l', 'Library'],
+  ['g then r', 'Review'],
+  ['g then i', 'Insights'],
+  ['?', 'This help'],
+]
+
 export default function Shell({ children }) {
   const [stats, setStats] = useState(null)
   const [tags, setTags] = useState([])
   const [views, setViews] = useState([])
   const [correspondents, setCorrespondents] = useState([])
+  const [showHelp, setShowHelp] = useState(false)
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    let prefix = null
+    let prefixTimer = null
+    function onKey(e) {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key === '/') {
+        e.preventDefault()
+        const search = document.querySelector('.searchbar input')
+        if (search) search.focus()
+        else navigate('/')
+      } else if (e.key === '?') {
+        setShowHelp((v) => !v)
+      } else if (e.key === 'Escape') {
+        setShowHelp(false)
+      } else if (prefix === 'g') {
+        prefix = null
+        if (e.key === 'l') navigate('/')
+        else if (e.key === 'r') navigate('/review')
+        else if (e.key === 'i') navigate('/insights')
+        else if (e.key === 's') navigate('/settings')
+      } else if (e.key === 'g') {
+        prefix = 'g'
+        clearTimeout(prefixTimer)
+        prefixTimer = setTimeout(() => {
+          prefix = null
+        }, 800)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [navigate])
+
   const [collapsedTags, setCollapsedTags] = useState(() => {
     try {
       return new Set(JSON.parse(localStorage.getItem('collapsed_tags')) || [])
@@ -177,6 +221,17 @@ export default function Shell({ children }) {
               {s.count != null && <span className="side-count">{s.count}</span>}
             </Link>
           ))}
+          {stats?.review > 0 && (
+            <Link
+              to="/review"
+              className={`side-link review-link ${
+                location.pathname === '/review' ? 'active' : ''
+              }`}
+            >
+              <span>To review</span>
+              <span className="side-count">{stats.review}</span>
+            </Link>
+          )}
           {stats && (
             <button
               className={`side-link side-button pause-toggle ${
@@ -357,6 +412,12 @@ export default function Shell({ children }) {
             Insights
           </Link>
           <Link
+            to="/offline"
+            className={`side-link ${location.pathname === '/offline' ? 'active' : ''}`}
+          >
+            Offline
+          </Link>
+          <Link
             to="/settings"
             className={`side-link ${location.pathname === '/settings' ? 'active' : ''}`}
           >
@@ -369,6 +430,24 @@ export default function Shell({ children }) {
       </aside>
       {open && <div className="scrim" onClick={() => setOpen(false)} />}
       <main className="content">{children}</main>
+
+      {showHelp && (
+        <div className="help-overlay" onClick={() => setShowHelp(false)}>
+          <div className="help-card" onClick={(e) => e.stopPropagation()}>
+            <strong>Keyboard shortcuts</strong>
+            <table>
+              <tbody>
+                {SHORTCUTS.map(([key, what]) => (
+                  <tr key={key}>
+                    <td><kbd>{key}</kbd></td>
+                    <td>{what}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -4,6 +4,7 @@ import { apiFetch, apiJson } from '../api'
 import StatusChip from '../components/StatusChip'
 import ProgressBar from '../components/ProgressBar'
 import PageOrganizer from '../components/PageOrganizer'
+import { isOffline, keepOffline, offlineFile, offlineMeta, removeOffline } from '../offline'
 import PdfViewer from '../components/PdfViewer'
 import Menu from '../components/Menu'
 import DocumentDetails from '../components/DocumentDetails'
@@ -22,6 +23,14 @@ export default function DocumentView() {
     () => localStorage.getItem('viewer_night') === '1',
   )
   const [focusOverride, setFocusOverride] = useState(null)
+  const [annotations, setAnnotations] = useState([])
+  const [pendingSelection, setPendingSelection] = useState(null)
+  const [showHighlights, setShowHighlights] = useState(false)
+  const [related, setRelated] = useState([])
+  const [serverPage, setServerPage] = useState(null)
+  const [positionReady, setPositionReady] = useState(false)
+  const [offlineKept, setOfflineKept] = useState(false)
+  const positionTimer = useRef(null)
   const [pageBusy, setPageBusy] = useState(false)
   const [error, setError] = useState('')
   const [editingTitle, setEditingTitle] = useState(false)
@@ -45,13 +54,80 @@ export default function DocumentView() {
       setDoc(data)
       setTitle(data.title)
     } catch (err) {
-      setError(err.message)
+      // Server unreachable? An offline copy still opens.
+      const meta = await offlineMeta(id).catch(() => null)
+      if (meta) {
+        setDoc({ ...meta, status: 'ready', tags: [], custom_values: {}, offline_only: true })
+        setTitle(meta.title)
+      } else {
+        setError(err.message)
+      }
     }
   }, [id])
 
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    apiJson(`/api/documents/${id}/annotations`).then(setAnnotations).catch(() => {})
+    apiJson(`/api/documents/${id}/related`)
+      .then((d) => setRelated(d.related))
+      .catch(() => {})
+    apiJson(`/api/documents/${id}/position`)
+      .then((d) => setServerPage(d.page))
+      .catch(() => {})
+      .finally(() => setPositionReady(true))
+    isOffline(id).then(setOfflineKept).catch(() => {})
+    return () => {
+      if (positionTimer.current) clearTimeout(positionTimer.current)
+    }
+  }, [id])
+
+  function positionChanged(page) {
+    if (positionTimer.current) clearTimeout(positionTimer.current)
+    positionTimer.current = setTimeout(() => {
+      apiJson(`/api/documents/${id}/position`, {
+        method: 'PUT',
+        body: JSON.stringify({ page }),
+      }).catch(() => {})
+    }, 4000)
+  }
+
+  async function saveHighlight() {
+    const sel = pendingSelection
+    if (!sel) return
+    setPendingSelection(null)
+    window.getSelection()?.removeAllRanges()
+    try {
+      const created = await apiJson(`/api/documents/${id}/annotations`, {
+        method: 'POST',
+        body: JSON.stringify({
+          page: sel.page,
+          quote: sel.quote,
+          rects: sel.rects,
+        }),
+      })
+      setAnnotations((prev) => [...prev, created])
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function toggleOffline() {
+    try {
+      if (offlineKept) {
+        await removeOffline(id)
+        setOfflineKept(false)
+      } else {
+        await keepOffline(doc)
+        setOfflineKept(true)
+        window.alert('Saved for offline use on this device.')
+      }
+    } catch (err) {
+      setError(err.message)
+    }
+  }
 
   // Poll while processing so the viewer (and progress) appear when OCR lands.
   useEffect(() => {
@@ -66,6 +142,11 @@ export default function DocumentView() {
     let cancelled = false
     apiFetch(`/api/documents/${id}/file`)
       .then((resp) => (resp.ok ? resp.blob() : Promise.reject(new Error('File unavailable'))))
+      .catch(async (err) => {
+        const cached = await offlineFile(id).catch(() => null)
+        if (cached) return cached.blob()
+        throw err
+      })
       .then((blob) => {
         if (cancelled) return
         if (urlRef.current) URL.revokeObjectURL(urlRef.current)
@@ -341,6 +422,13 @@ export default function DocumentView() {
           >
             ☾
           </button>
+          <button
+            className={showHighlights ? '' : 'ghost'}
+            onClick={() => setShowHighlights(!showHighlights)}
+            title="Highlights and notes"
+          >
+            ✺{annotations.length > 0 ? ` ${annotations.length}` : ''}
+          </button>
           {outline && (
             <Menu
               label="Contents"
@@ -392,6 +480,11 @@ export default function DocumentView() {
                 label: 'Edit pages…',
                 hint: 'rotate, delete, split',
                 onClick: () => setPageMode(true),
+              },
+              {
+                label: offlineKept ? 'Remove offline copy' : 'Keep offline',
+                hint: offlineKept ? 'stored on this device' : 'readable without the server',
+                onClick: toggleOffline,
               },
               {
                 label: 'Copy share link',
@@ -496,11 +589,95 @@ export default function DocumentView() {
         />
       )}
 
-      {fileUrl ? (
+      {pendingSelection && (
+        <button
+          className="hl-float"
+          style={{
+            left: Math.min(pendingSelection.anchorX, window.innerWidth - 120),
+            top: pendingSelection.anchorY + 8,
+          }}
+          onClick={saveHighlight}
+        >
+          ✺ Highlight
+        </button>
+      )}
+
+      {showHighlights && (
+        <aside className="hl-drawer">
+          <div className="hl-drawer-head">
+            <strong>Highlights ({annotations.length})</strong>
+            <button className="ghost" onClick={() => setShowHighlights(false)}>
+              ×
+            </button>
+          </div>
+          {annotations.length === 0 && (
+            <p className="settings-help">
+              Select text in the document and hit “Highlight”.
+            </p>
+          )}
+          <ul className="hl-list">
+            {annotations.map((a) => (
+              <li key={a.id} className="hl-item">
+                <blockquote
+                  onClick={() => {
+                    setFocusOverride(null)
+                    requestAnimationFrame(() => setFocusOverride(a.page))
+                  }}
+                  title={`Jump to page ${a.page}`}
+                >
+                  {a.quote.length > 220 ? `${a.quote.slice(0, 220)}…` : a.quote}
+                </blockquote>
+                <textarea
+                  rows={1}
+                  placeholder="Add a note…"
+                  defaultValue={a.note || ''}
+                  onBlur={(e) => {
+                    if (e.target.value !== (a.note || '')) {
+                      apiJson(`/api/annotations/${a.id}`, {
+                        method: 'PATCH',
+                        body: JSON.stringify({ note: e.target.value }),
+                      }).catch(() => {})
+                    }
+                  }}
+                />
+                <div className="hl-item-foot">
+                  <span className="settings-hint">p. {a.page}</span>
+                  <button
+                    className="ghost danger side-x"
+                    onClick={async () => {
+                      await apiFetch(`/api/annotations/${a.id}`, { method: 'DELETE' })
+                      setAnnotations((prev) => prev.filter((x) => x.id !== a.id))
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </aside>
+      )}
+
+      {related.length > 0 && !doc.deleted_at && (
+        <p className="related-strip">
+          <span className="settings-hint">Shares content with:</span>
+          {related.map((r) => (
+            <Link key={r.id} to={`/doc/${r.id}`}>
+              {r.title} <span className="settings-hint">{r.similarity}%</span>
+            </Link>
+          ))}
+        </p>
+      )}
+
+      {fileUrl && positionReady ? (
         <PdfViewer
           url={fileUrl}
           storageKey={id}
           onOutline={setOutline}
+          annotations={annotations}
+          onSelectText={setPendingSelection}
+          onPositionChange={positionChanged}
+          resumePage={serverPage}
           highlightTerms={matches?.terms || []}
           focusPage={focusPage}
           fitMode={fitMode}

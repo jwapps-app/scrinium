@@ -247,10 +247,16 @@ async def list_documents(
     date_from: date | None = None,
     date_to: date | None = None,
     sort: str = "newest",
+    needs_review: bool = False,
     offset: int = 0,
     limit: int = 50,
 ) -> DocumentList:
     conditions = [Document.tenant_id == user.tenant_id]
+    if needs_review:
+        # Triage bucket: finished OCR but nobody has filed it yet.
+        conditions.append(Document.status == DocumentStatus.READY)
+        conditions.append(Document.correspondent_id.is_(None))
+        conditions.append(Document.doc_type_id.is_(None))
     if status_filter == "trash":
         conditions.append(Document.deleted_at.is_not(None))
     else:
@@ -394,8 +400,21 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         int(remaining / rate_per_min * 60) if rate_per_min > 0 and remaining else None
     )
 
+    review_count = (
+        await db.execute(
+            select(func.count(Document.id)).where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+                Document.status == DocumentStatus.READY,
+                Document.correspondent_id.is_(None),
+                Document.doc_type_id.is_(None),
+            )
+        )
+    ).scalar_one()
+
     return {
         "total": sum(counts.values()),
+        "review": review_count,
         "ready": counts.get(DocumentStatus.READY, 0),
         "processing": remaining,
         "flagged": counts.get(DocumentStatus.FLAGGED, 0),
@@ -657,6 +676,46 @@ async def reprocess(
     await db.flush()
     await db.refresh(doc)
     return doc_out(doc)
+
+
+@router.get("/{doc_id}/related")
+async def related_documents(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> dict:
+    """Documents sharing substantial content with this one (fingerprint
+    proximity — catches excerpts, partial rescans, revisions)."""
+    from app.services.similarity import hamming
+
+    doc = await _get_owned(doc_id, user, db)
+    if not doc.simhash:
+        return {"related": []}
+    rows = (
+        await db.execute(
+            select(Document.id, Document.title, Document.page_count, Document.simhash)
+            .where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+                Document.id != doc.id,
+                Document.simhash.is_not(None),
+                Document.simhash != 0,
+            )
+        )
+    ).all()
+    scored = []
+    for rid, title, pages, h in rows:
+        dist = hamming(doc.simhash, h)
+        if dist <= 26:
+            scored.append((dist, rid, title, pages))
+    scored.sort()
+    return {
+        "related": [
+            {
+                "id": str(rid),
+                "title": title,
+                "page_count": pages,
+                "similarity": round((1 - dist / 64) * 100),
+            }
+            for dist, rid, title, pages in scored[:5]
+        ]
+    }
 
 
 @router.post("/merge")
