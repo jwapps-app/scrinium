@@ -677,6 +677,14 @@ textarea:hover {
   color: var(--muted);
 }
 
+/* Tag page action bar */
+.tag-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+
 /* Export part-size input */
 .part-size {
   display: inline-flex;

@@ -74,6 +74,45 @@ export default function TagsSection({ standalone = false }) {
     <section className={standalone ? 'tags-standalone' : 'settings-section'}>
       {!standalone && <h2>Tags</h2>}
       {notice && <p className="notice">{notice}</p>}
+
+      <div className="tag-actions">
+        <button
+          className="ghost"
+          onClick={async () => {
+            if (!window.confirm('Assign colors to every tag? Root tags get distinct colors; subtags become shades of their parent. You can still adjust any tag afterwards.')) return
+            try {
+              const result = await apiJson('/api/tags/auto-color', { method: 'POST' })
+              setNotice(`Colored ${result.colored} tags.`)
+              load()
+              window.dispatchEvent(new Event('library-changed'))
+            } catch (err) {
+              setError(err.message)
+            }
+          }}
+        >
+          Auto-color
+        </button>
+        {tags.some((t) => t.count === 0) && (
+          <button
+            className="ghost"
+            onClick={async () => {
+              setError('')
+              try {
+                const result = await apiJson('/api/tags/unused', { method: 'DELETE' })
+                load()
+                window.dispatchEvent(new Event('library-changed'))
+                if (result.removed === 0)
+                  setError('No unused tags to remove (tags with children stay until the children go).')
+              } catch (e) {
+                setError(e.message)
+              }
+            }}
+          >
+            Delete unused tags (0 documents)
+          </button>
+        )}
+      </div>
+
       <p className="settings-help">
         Tags can nest: give a tag a parent and it appears indented beneath it,
         like folders. Tagging a document with a child automatically applies
@@ -165,46 +204,6 @@ export default function TagsSection({ standalone = false }) {
             </li>
           ))}
         </ul>
-      )}
-
-      {tags.some((t) => t.count === 0) && (
-        <p>
-          <button
-            className="ghost"
-            onClick={async () => {
-              if (!window.confirm('Assign colors to every tag? Root tags get distinct colors; subtags become shades of their parent. You can still adjust any tag afterwards.')) return
-              try {
-                const result = await apiJson('/api/tags/auto-color', { method: 'POST' })
-                setNotice(`Colored ${result.colored} tags.`)
-                load()
-                window.dispatchEvent(new Event('library-changed'))
-              } catch (err) {
-                setError(err.message)
-              }
-            }}
-          >
-            Auto-color
-          </button>
-          <button
-            className="ghost"
-            onClick={async () => {
-              setError('')
-              try {
-                const result = await apiJson('/api/tags/unused', {
-                  method: 'DELETE',
-                })
-                load()
-                window.dispatchEvent(new Event('library-changed'))
-                if (result.removed === 0)
-                  setError('No unused tags to remove (tags with children stay until the children go).')
-              } catch (e) {
-                setError(e.message)
-              }
-            }}
-          >
-            Delete unused tags (0 documents)
-          </button>
-        </p>
       )}
 
       <form className="rule-form" onSubmit={create}>
