@@ -298,10 +298,14 @@ async def list_documents(
             Document.expires_on <= date.today() + timedelta(days=60)
         )
     if needs_review:
-        # Triage bucket: finished OCR but nobody has filed it yet.
+        # Triage bucket: finished OCR with NO organization at all — no
+        # tags, no correspondent, no type. Tagged docs (e.g. from folder
+        # drops) count as filed; a books library isn't asked to invent
+        # correspondents for everything.
         conditions.append(Document.status == DocumentStatus.READY)
         conditions.append(Document.correspondent_id.is_(None))
         conditions.append(Document.doc_type_id.is_(None))
+        conditions.append(~Document.tags.any())
     if status_filter == "trash":
         conditions.append(Document.deleted_at.is_not(None))
     else:
@@ -453,6 +457,7 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
                 Document.status == DocumentStatus.READY,
                 Document.correspondent_id.is_(None),
                 Document.doc_type_id.is_(None),
+                ~Document.tags.any(),
             )
         )
     ).scalar_one()

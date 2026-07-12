@@ -327,6 +327,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-12 (sorts + sidebar width):** Sort menu grew from 5 to 11 options: Tag A–Z (first tag name, correlated subquery), Correspondent A–Z, Type A–Z, Most pages, Largest file (original blob size), Expiring first — all nulls-last so unfiled docs sink. Desktop/iPad sidebar widened 220→260px (mobile drawer already matched). Coverage test hits every sort key.
 
+- **2026-07-12 (review-bucket definition, field report):** "To review" originally meant "no correspondent and no type" — in a tag-organized books library that's *every* document, so the count mirrored Completed. Redefined: needs review = ready with **no organization at all** (no tags, no correspondent, no type). Folder-dropped documents carry tags and count as filed; the bucket now holds only genuinely unfiled strays. Test updated: tagging alone clears a doc from the bucket.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

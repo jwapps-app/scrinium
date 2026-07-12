@@ -154,13 +154,11 @@ async def test_review_bucket(client, auth, pdf_factory):
     stats = (await client.get("/api/documents/stats", headers=auth)).json()
     assert stats["review"] >= 1
 
-    # assigning a correspondent clears it from the bucket
-    corr = (
-        await client.post("/api/correspondents", headers=auth, json={"name": _name("c")})
-    ).json()
+    # TAGGING alone counts as filed (a tag-organized library isn't asked
+    # to invent correspondents) — this clears it from the bucket
+    tag = (await client.post("/api/tags", headers=auth, json={"name": _name("rv")})).json()
     await client.patch(
-        f"/api/documents/{doc['id']}", headers=auth,
-        json={"correspondent_id": corr["id"], "doc_type_id": None},
+        f"/api/documents/{doc['id']}", headers=auth, json={"tag_ids": [tag["id"]]}
     )
     listed = (
         await client.get("/api/documents?needs_review=true&limit=200", headers=auth)
