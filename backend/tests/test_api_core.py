@@ -193,3 +193,56 @@ async def test_auto_color_tags(client, auth):
     def lum(hex_):
         return sum(int(hex_[i:i+2], 16) for i in (1, 3, 5))
     assert lum(child_c) > lum(root_c)
+
+
+def test_auto_color_single_root_fanout():
+    """One root with many children (the shape of a folder dump) must yield
+    hues spread across the whole wheel, not shades of one color."""
+    import uuid as u
+
+    from app.services.palette import assign_palette
+
+    root = u.uuid4()
+    kids = [u.uuid4() for _ in range(20)]
+    grandkids = [u.uuid4() for _ in range(3)]
+    nodes = [(root, None, "root")]
+    nodes += [(k, root, f"kid{i:02d}") for i, k in enumerate(kids)]
+    nodes += [(g, kids[0], f"g{i}") for i, g in enumerate(grandkids)]
+    palette = assign_palette(nodes)
+
+    hues = sorted(palette[k][0] for k in kids)
+    gaps = [hues[i + 1] - hues[i] for i in range(19)]
+    # 20 children of a single root: evenly spread ~18° apart
+    assert min(gaps) > 12, gaps
+    assert max(hues) - min(hues) > 300
+
+    # grandchildren stay inside their parent's slice and are lighter.
+    # kid00 sorts first: weight 4 (itself + 3 children) of 23 total under
+    # the root, so its slice is exactly [0°, 360 * 4/23].
+    slice_end = 360 * 4 / 23
+    for g in grandkids:
+        assert 0 <= palette[g][0] <= slice_end + 0.01
+        assert palette[g][2] > palette[kids[0]][2]
+
+
+def test_auto_color_small_roots_dont_steal_the_wheel():
+    """A big tree plus a couple of stray leaf roots (like the auto-created
+    Email tag): the big tree's branches must still get real hue variety."""
+    import uuid as u
+
+    from app.services.palette import assign_palette
+
+    main = u.uuid4()
+    stray1, stray2 = u.uuid4(), u.uuid4()
+    kids = [u.uuid4() for _ in range(20)]
+    nodes = [(main, None, "a-main"), (stray1, None, "email"), (stray2, None, "zmisc")]
+    nodes += [(k, main, f"kid{i:02d}") for i, k in enumerate(kids)]
+    # give each kid a few children so the main subtree carries the weight
+    for i, k in enumerate(kids):
+        for j in range(3):
+            nodes.append((u.uuid4(), k, f"kid{i:02d}-sub{j}"))
+    palette = assign_palette(nodes)
+
+    hues = sorted(palette[k][0] for k in kids)
+    gaps = [hues[i + 1] - hues[i] for i in range(len(hues) - 1)]
+    assert min(gaps) > 12, gaps  # still ~17° apart despite the stray roots

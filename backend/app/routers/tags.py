@@ -111,43 +111,23 @@ def _hsl_to_hex(h: float, s: float, l: float) -> str:
 
 @router.post("/auto-color")
 async def auto_color_tags(user: CurrentUser, db: DB) -> dict:
-    """Assign the whole tree a coherent palette: root tags get distinct
-    hues (golden-angle spacing, so any count stays well separated) and
-    every subtag is a lighter shade of its root's hue. Manual edits
-    afterwards stick — this only runs when asked."""
+    """Palette for the whole tree — see services/palette.py. Manual edits
+    afterwards stick; this only runs when asked."""
+    from app.services.palette import assign_palette
+
     tags = (
         (
-            await db.execute(
-                select(Tag).where(Tag.tenant_id == user.tenant_id).order_by(Tag.name)
-            )
+            await db.execute(select(Tag).where(Tag.tenant_id == user.tenant_id))
         )
         .scalars()
         .all()
     )
-    by_parent: dict = {}
+    palette = assign_palette([(t.id, t.parent_id, t.name.lower()) for t in tags])
     for tag in tags:
-        by_parent.setdefault(tag.parent_id, []).append(tag)
-
-    colored = 0
-
-    def walk(nodes, hue, depth, start_light):
-        nonlocal colored
-        for i, node in enumerate(nodes):
-            if depth == 0:
-                node_hue = (i * 137.508) % 360
-                light = 42.0
-            else:
-                node_hue = hue
-                # Children: same hue, progressively lighter; siblings vary
-                # slightly so adjacent chips stay tellable-apart.
-                light = min(start_light + depth * 9 + (i % 4) * 4, 78.0)
-            node.color = _hsl_to_hex(node_hue, 58, light)
-            colored += 1
-            walk(by_parent.get(node.id, []), node_hue, depth + 1, 42.0)
-
-    walk(by_parent.get(None, []), 0.0, 0, 42.0)
+        h, sat, light = palette[tag.id]
+        tag.color = _hsl_to_hex(h, sat, light)
     await db.flush()
-    return {"colored": colored}
+    return {"colored": len(tags)}
 
 
 @router.delete("/unused")
