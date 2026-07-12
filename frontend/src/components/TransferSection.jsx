@@ -6,6 +6,7 @@ import { APP_NAME } from '../constants/branding'
 export default function TransferSection() {
   const [imp, setImp] = useState(null)
   const [fmt, setFmt] = useState('folder')
+  const [partGb, setPartGb] = useState(10)
   const [exp, setExp] = useState(null)
   const [error, setError] = useState('')
 
@@ -96,11 +97,28 @@ export default function TransferSection() {
           <strong>Export the whole library</strong>
           <select value={fmt} onChange={(e) => setFmt(e.target.value)}>
             <option value="folder">Folder on the server (instant)</option>
-            <option value="zip">Zip parts (~10 GB each)</option>
+            <option value="zip">Zip archive parts</option>
           </select>
+          {fmt === 'zip' && (
+            <label className="part-size">
+              <input
+                type="number"
+                min="1"
+                max="500"
+                value={partGb}
+                onChange={(e) => setPartGb(e.target.value)}
+              />
+              <span>GB / part</span>
+            </label>
+          )}
           <button
             disabled={exp?.state === 'running'}
-            onClick={() => start('/api/export', { format: fmt })}
+            onClick={() =>
+              start('/api/export', {
+                format: fmt,
+                ...(fmt === 'zip' ? { part_gb: Number(partGb) || 10 } : {}),
+              })
+            }
           >
             {exp?.state === 'running' ? 'Exporting…' : 'Export'}
           </button>
@@ -112,7 +130,7 @@ export default function TransferSection() {
           a metadata manifest. <strong>Folder</strong> writes a real tree in
           the server&apos;s export share, hardlinked so even a huge library
           finishes in seconds with no extra disk. <strong>Zip parts</strong>{' '}
-          makes portable ~10 GB archives that split only at folder
+          makes portable archives of your chosen size that split only at folder
           boundaries — unzip them all into one place and the tree reassembles
           exactly. Never locked into {APP_NAME}.
         </p>

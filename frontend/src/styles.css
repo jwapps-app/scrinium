@@ -677,6 +677,19 @@ textarea:hover {
   color: var(--muted);
 }
 
+/* Export part-size input */
+.part-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.part-size input {
+  width: 4.2rem;
+}
+
 /* Tag management page */
 .tags-standalone .rule-list {
   max-width: 760px;
