@@ -173,3 +173,23 @@ async def test_tag_rename_and_clash(client, auth):
         f"/api/tags/{a['id']}", headers=auth, json={"name": b["name"]}
     )
     assert clash.status_code == 409
+
+
+async def test_auto_color_tags(client, auth):
+    root = (await client.post("/api/tags", headers=auth, json={"name": _name("ac-root")})).json()
+    child = (
+        await client.post(
+            "/api/tags", headers=auth,
+            json={"name": _name("ac-child"), "parent_id": root["id"]},
+        )
+    ).json()
+    r = await client.post("/api/tags/auto-color", headers=auth)
+    assert r.status_code == 200 and r.json()["colored"] >= 2
+    tags = {t["id"]: t for t in (await client.get("/api/tags", headers=auth)).json()}
+    root_c, child_c = tags[root["id"]]["color"], tags[child["id"]]["color"]
+    assert root_c and child_c and root_c != child_c
+    # child is a lighter shade: same hue family → higher lightness means
+    # a strictly larger max RGB component sum for our fixed saturation
+    def lum(hex_):
+        return sum(int(hex_[i:i+2], 16) for i in (1, 3, 5))
+    assert lum(child_c) > lum(root_c)

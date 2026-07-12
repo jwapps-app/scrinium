@@ -36,7 +36,9 @@
 
 html,
 body {
-  overflow-x: hidden;
+  /* clip (not hidden): kills sideways scroll without creating a scroll
+     container — overflow-x:hidden silently breaks position:sticky. */
+  overflow-x: clip;
 }
 
 body {
@@ -161,10 +163,20 @@ textarea:hover {
   overflow-y: auto;
   padding: 1rem 0.75rem;
   border-right: 1px solid var(--border);
-  background: var(--surface);
   display: flex;
   flex-direction: column;
   gap: 1.1rem;
+  /* Scrolling shadows: soft edges appear only when content continues
+     beyond the fold, so nobody mistakes the cut-off for the end. */
+  background:
+    linear-gradient(var(--surface) 30%, transparent) center top,
+    linear-gradient(transparent, var(--surface) 70%) center bottom,
+    radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.28), transparent) center top,
+    radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.28), transparent) center bottom;
+  background-repeat: no-repeat;
+  background-size: 100% 36px, 100% 36px, 100% 14px, 100% 14px;
+  background-attachment: local, local, scroll, scroll;
+  background-color: var(--surface);
 }
 
 .brand {
@@ -665,6 +677,29 @@ textarea:hover {
   color: var(--muted);
 }
 
+/* Tag management page */
+.tags-standalone .rule-list {
+  max-width: 760px;
+}
+
+@media (max-width: 800px) {
+  .tags-standalone .rule-row,
+  .settings-section .rule-row {
+    flex-wrap: wrap;
+    row-gap: 0.35rem;
+  }
+  .tags-standalone .rule-row select,
+  .settings-section .rule-row select {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .tags-standalone .rule-main,
+  .settings-section .rule-main {
+    flex: 1 1 60%;
+    min-width: 0;
+  }
+}
+
 /* Engine toggle in Settings */
 .engine-toggle {
   display: inline-flex;
@@ -986,6 +1021,9 @@ textarea:hover {
   .content {
     padding: calc(3rem + env(safe-area-inset-top, 0px)) 0.75rem 1rem;
   }
+  .toolbar {
+    top: env(safe-area-inset-top, 0px);
+  }
   .library,
   .viewer-page {
     padding: 0.5rem;
@@ -1029,6 +1067,13 @@ textarea:hover {
   gap: 0.5rem;
   flex-wrap: wrap;
   margin-bottom: 1rem;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 0.6rem 0;
 }
 
 .toolbar .searchbar {

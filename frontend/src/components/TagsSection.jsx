@@ -2,9 +2,10 @@ import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '../api'
 import { flattenTagTree } from './Shell'
 
-export default function TagsSection() {
+export default function TagsSection({ standalone = false }) {
   const [tags, setTags] = useState([])
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [newName, setNewName] = useState('')
   const [newParent, setNewParent] = useState('')
   const [renaming, setRenaming] = useState(null) // tag id
@@ -70,8 +71,9 @@ export default function TagsSection() {
   const tree = flattenTagTree(tags)
 
   return (
-    <section className="settings-section">
-      <h2>Tags</h2>
+    <section className={standalone ? 'tags-standalone' : 'settings-section'}>
+      {!standalone && <h2>Tags</h2>}
+      {notice && <p className="notice">{notice}</p>}
       <p className="settings-help">
         Tags can nest: give a tag a parent and it appears indented beneath it,
         like folders. Tagging a document with a child automatically applies
@@ -167,6 +169,22 @@ export default function TagsSection() {
 
       {tags.some((t) => t.count === 0) && (
         <p>
+          <button
+            className="ghost"
+            onClick={async () => {
+              if (!window.confirm('Assign colors to every tag? Root tags get distinct colors; subtags become shades of their parent. You can still adjust any tag afterwards.')) return
+              try {
+                const result = await apiJson('/api/tags/auto-color', { method: 'POST' })
+                setNotice(`Colored ${result.colored} tags.`)
+                load()
+                window.dispatchEvent(new Event('library-changed'))
+              } catch (err) {
+                setError(err.message)
+              }
+            }}
+          >
+            Auto-color
+          </button>
           <button
             className="ghost"
             onClick={async () => {

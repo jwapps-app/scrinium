@@ -9,6 +9,7 @@ import Settings from './pages/Settings'
 import Insights from './pages/Insights'
 import OfflineDocs from './pages/OfflineDocs'
 import Review from './pages/Review'
+import TagsPage from './pages/TagsPage'
 import SharedDocument from './pages/SharedDocument'
 
 function RequireAuth({ children }) {
@@ -63,6 +64,14 @@ export default function App() {
         element={
           <RequireAuth>
             <Insights />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/tags"
+        element={
+          <RequireAuth>
+            <TagsPage />
           </RequireAuth>
         }
       />

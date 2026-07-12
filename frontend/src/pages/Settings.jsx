@@ -2,11 +2,11 @@ import { useEffect, useState } from 'react'
 import { apiJson } from '../api'
 import { APP_NAME } from '../constants/branding'
 import RulesSection from '../components/RulesSection'
-import TagsSection from '../components/TagsSection'
 import OrganizeSection from '../components/OrganizeSection'
 import TransferSection from '../components/TransferSection'
 import AccountSection from '../components/AccountSection'
 import HealthSection from '../components/HealthSection'
+import { Link } from 'react-router-dom'
 import Shell from '../components/Shell'
 import SidecarSetup from '../components/SidecarSetup'
 
@@ -114,7 +114,16 @@ export default function Settings() {
         <SidecarSetup connected={sidecar?.healthy === true} />
         </section>
 
-        <TagsSection />
+        <section className="settings-section">
+          <h2>Tags</h2>
+          <p className="settings-help">
+            Rename, recolor, and restructure the tag tree on its own page —
+            with a big library it deserves the room.
+          </p>
+          <Link to="/tags" className="button-link">
+            Manage tags →
+          </Link>
+        </section>
 
         <OrganizeSection />
 
