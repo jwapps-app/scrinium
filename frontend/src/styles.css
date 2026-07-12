@@ -261,23 +261,45 @@ textarea:hover {
 
 .tag-caret {
   flex: none;
-  width: 1.1rem;
+  width: 1.9rem;
+  align-self: stretch;
   padding: 0.32rem 0;
   background: none;
   border: none;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.95rem;
+  line-height: 1;
   cursor: pointer;
   text-align: center;
+  border-radius: 6px;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .tag-caret:hover {
   color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
 }
 
 .tag-caret-spacer {
   flex: none;
-  width: 1.1rem;
+  width: 1.9rem;
+}
+
+/* Bigger tap target on touch devices where precision is worst. */
+@media (max-width: 800px) {
+  .tag-caret,
+  .tag-caret-spacer {
+    width: 2.5rem;
+  }
+  .tag-caret {
+    font-size: 1.1rem;
+    min-height: 2.6rem;  /* ~44px fingertip target */
+  }
+  /* Give the tag rows a bit more height so the whole row is easy to hit */
+  .side-tag-row .side-link {
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
 }
 
 /* Selectable text over the canvas (pdf.js TextLayer) */
