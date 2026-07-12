@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { apiFetch, apiJson } from '../api'
+import { apiFetch, apiJson, isTextNative } from '../api'
 import Menu from '../components/Menu'
 import ProgressBar from '../components/ProgressBar'
 import Shell from '../components/Shell'
@@ -139,13 +139,15 @@ export default function Library() {
       return
     }
     setQuery(q)
-    apiJson(`/api/search?q=${encodeURIComponent(q)}`)
+    apiJson(
+      `/api/search?q=${encodeURIComponent(q)}${tag ? `&tag_id=${tag}` : ''}`,
+    )
       .then((data) => {
         setResults(data.results)
         setSuggestions(data.suggestions || [])
       })
       .catch((err) => setError(err.message))
-  }, [q])
+  }, [q, tag])
 
   // Tunnels commonly cap request bodies (Cloudflare: 100 MB), so large
   // files go up as a session of 32 MB chunks assembled server-side.
@@ -570,6 +572,47 @@ export default function Library() {
                 </button>
                 <button
                   className="ghost"
+                  disabled={bulkBusy || (!wholeFilter && selected.size === 0) || (wholeFilter && !tag)}
+                  title="One print-ready PDF: cover, contents, and every selected document"
+                  onClick={async () => {
+                    const title = window.prompt(
+                      'Binder title:',
+                      tagName ? `${tagName} Binder` : 'Scrinium Binder',
+                    )
+                    if (title === null) return
+                    setBulkBusy(true)
+                    setError('')
+                    try {
+                      const resp = await apiFetch('/api/documents/binder', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(
+                          wholeFilter && tag
+                            ? { filter_tag_id: tag, title }
+                            : { ids: [...selected], title },
+                        ),
+                      })
+                      if (!resp.ok) {
+                        const body = await resp.json().catch(() => ({}))
+                        throw new Error(body.detail || `Binder failed (${resp.status})`)
+                      }
+                      const blob = await resp.blob()
+                      const a = document.createElement('a')
+                      a.href = URL.createObjectURL(blob)
+                      a.download = `${title}.pdf`
+                      a.click()
+                      URL.revokeObjectURL(a.href)
+                    } catch (err) {
+                      setError(err.message)
+                    } finally {
+                      setBulkBusy(false)
+                    }
+                  }}
+                >
+                  Binder
+                </button>
+                <button
+                  className="ghost"
                   disabled={bulkBusy || wholeFilter || selected.size < 2}
                   title="Combine the selected PDFs into one document (sources go to the trash)"
                   onClick={async () => {
@@ -613,6 +656,7 @@ export default function Library() {
           <section>
             <h2>
               {results.length} result{results.length === 1 ? '' : 's'} for “{q}”
+              {tag && tagName && <span className="scope-hint"> in {tagName}</span>}
             </h2>
             {results.length === 0 && suggestions.length > 0 && (
               <p className="did-you-mean">
@@ -700,7 +744,13 @@ export default function Library() {
                         {selected.has(d.id) ? '✓' : ''}
                       </span>
                     )}
-                    <Thumb id={d.id} className="thumb-card" />
+                    {isTextNative(d) ? (
+                      <span className="thumb-card type-badge">
+                        {d.original_filename.split('.').pop().toUpperCase()}
+                      </span>
+                    ) : (
+                      <Thumb id={d.id} className="thumb-card" />
+                    )}
                     <div className="card-body">
                       <span className="card-title">{d.title}</span>
                       <span className="card-meta">

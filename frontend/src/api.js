@@ -60,3 +60,10 @@ export async function apiJson(path, options = {}) {
   if (resp.status === 204) return null
   return resp.json()
 }
+
+const TEXT_SUFFIXES = ['.txt', '.md', '.epub', '.docx', '.xlsx', '.pptx', '.odt']
+export function isTextNative(doc) {
+  if (!doc?.original_filename || doc.has_archive) return false
+  const name = doc.original_filename.toLowerCase()
+  return TEXT_SUFFIXES.some((s) => name.endsWith(s))
+}

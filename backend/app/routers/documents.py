@@ -580,6 +580,56 @@ async def _custom_values(db, doc_id: uuid.UUID) -> dict[str, str]:
     return {str(field_id): value for field_id, value in rows}
 
 
+@router.get("/upgradeable")
+async def upgradeable_count(user: CurrentUser, db: DB) -> dict:
+    """Documents that finished on Tesseract (helper down at the time) and
+    could be re-OCR'd with Apple Vision."""
+    count = (
+        await db.execute(
+            select(func.count(Document.id)).where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+                Document.status == DocumentStatus.READY,
+                Document.ocr_engine == "tesseract",
+            )
+        )
+    ).scalar_one()
+    return {"count": count, "apple_configured": bool(app_settings.apple_ocr_url)}
+
+
+@router.post("/upgrade-ocr")
+async def upgrade_ocr(user: CurrentUser, db: DB) -> dict:
+    """Queue every Tesseract-finished document for Apple re-OCR at LOW
+    priority: fresh intake always claims first, so the upgrade fleet only
+    runs when the queue is otherwise idle."""
+    docs = (
+        await db.execute(
+            select(Document.id).where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+                Document.status == DocumentStatus.READY,
+                Document.ocr_engine == "tesseract",
+            )
+        )
+    ).scalars().all()
+    queued = 0
+    for doc_id in docs:
+        existing = (
+            await db.execute(
+                select(func.count(Job.id)).where(
+                    Job.document_id == doc_id,
+                    Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                )
+            )
+        ).scalar_one()
+        if existing:
+            continue
+        db.add(Job(document_id=doc_id, kind="ingest", mode="redo", priority=10))
+        queued += 1
+    await db.flush()
+    return {"queued": queued}
+
+
 @router.get("/{doc_id}", response_model=DocumentOut)
 async def get_document(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> DocumentOut:
     doc = await _get_owned(doc_id, user, db)
@@ -821,6 +871,82 @@ async def related_documents(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> dic
             for dist, rid, title, pages in scored[:5]
         ]
     }
+
+
+@router.get("/{doc_id}/text")
+async def document_text(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> dict:
+    """Extracted text — the reader view for text-native formats."""
+    doc = await _get_owned(doc_id, user, db)
+    return {"text": doc.text_content or "", "title": doc.title}
+
+
+@router.post("/binder")
+async def build_binder_pdf(body: dict, user: CurrentUser, db: DB):
+    """One print-ready PDF: cover + contents + the selected documents (or
+    everything under a tag). Searchable copies preferred."""
+    from app.services import binder as binder_service
+
+    ids = body.get("ids") or []
+    tag_id = body.get("filter_tag_id")
+    title = (body.get("title") or "").strip() or "Scrinium Binder"
+    if ids:
+        docs = [await _get_owned(uuid.UUID(str(r)), user, db) for r in ids[:300]]
+    elif tag_id:
+        docs = (
+            await db.execute(
+                select(Document)
+                .where(
+                    Document.tenant_id == user.tenant_id,
+                    Document.deleted_at.is_(None),
+                    Document.tags.any(Tag.id == uuid.UUID(str(tag_id))),
+                )
+                .order_by(func.lower(Document.title))
+                .limit(300)
+            )
+        ).scalars().all()
+    else:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "ids or filter_tag_id")
+
+    sources = []
+    total_bytes = 0
+    for doc in docs:
+        blob_id = doc.archive_blob_id or doc.original_blob_id
+        path = storage.blob_file(blob_id)
+        if not path.exists() or not (
+            doc.archive_blob_id or doc.original_filename.lower().endswith(".pdf")
+        ):
+            continue  # binder is PDFs only; skip text-native/missing
+        total_bytes += path.stat().st_size
+        if total_bytes > 2 * 1024**3:
+            raise HTTPException(
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                "Binder would exceed 2 GB — split it into volumes",
+            )
+        sources.append((doc.title, path))
+    if not sources:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No printable PDFs in the selection")
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        out_path = Path(tmp.name)
+    try:
+        total_pages = await asyncio.to_thread(
+            binder_service.build_binder, title, sources, out_path
+        )
+    except binder_service.BinderError as exc:
+        out_path.unlink(missing_ok=True)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    from starlette.background import BackgroundTask
+
+    safe_name = re.sub(r"[^\w\- ]", "", title) or "binder"
+    return FileResponse(
+        out_path,
+        media_type="application/pdf",
+        filename=f"{safe_name}.pdf",
+        content_disposition_type="attachment",
+        headers={"X-Total-Pages": str(total_pages)},
+        background=BackgroundTask(lambda: out_path.unlink(missing_ok=True)),
+    )
 
 
 @router.post("/download-zip")

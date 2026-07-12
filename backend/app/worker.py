@@ -60,7 +60,7 @@ async def claim_and_run() -> bool:
         result = await session.execute(
             select(Job)
             .where(Job.status == JobStatus.QUEUED)
-            .order_by(Job.created_at)
+            .order_by(Job.priority.desc(), Job.created_at)
             .limit(1)
             .with_for_update(skip_locked=True)
         )
@@ -151,6 +151,10 @@ async def maintenance_loop() -> None:
                 await _with_advisory_lock(MAIL_LOCK_KEY, _expiry_notice)
             except Exception:
                 logger.exception("expiry notice crashed; continuing")
+            try:
+                await _with_advisory_lock(WATCH_LOCK_KEY, _verify_blobs)
+            except Exception:
+                logger.exception("integrity sweep crashed; continuing")
             if settings.export_every_days > 0:
                 try:
                     await _with_advisory_lock(PURGE_LOCK_KEY, _scheduled_export)
@@ -266,6 +270,69 @@ async def maintenance_loop() -> None:
                 logger.exception("stale-job reclaim crashed; continuing")
 
         await asyncio.sleep(1)
+
+
+async def _verify_blobs(batch: int = 300) -> None:
+    """Bit-rot watchdog: re-hash a batch of blobs against their stored
+    sha256 each hour, oldest verification first — the whole store cycles
+    every few days. Mismatches are surfaced in Settings health and logged
+    loudly; they mean the bytes on disk are no longer the bytes ingested."""
+    import hashlib
+    import json as _json
+
+    from app.models import Blob
+    from app.services import storage as _storage
+    from app.services.app_state import get_value
+
+    async with SessionLocal() as session:
+        blobs = (
+            await session.execute(
+                select(Blob)
+                .order_by(Blob.verified_at.asc().nulls_first())
+                .limit(batch)
+            )
+        ).scalars().all()
+        if not blobs:
+            return
+
+        def check(items):
+            bad = []
+            for blob_id, sha in items:
+                path = _storage.blob_file(blob_id)
+                try:
+                    digest = hashlib.sha256()
+                    with open(path, "rb") as f:
+                        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                    if digest.hexdigest() != sha:
+                        bad.append(str(blob_id))
+                except OSError:
+                    bad.append(str(blob_id))
+            return bad
+
+        bad = await asyncio.to_thread(
+            check, [(b.id, b.sha256) for b in blobs]
+        )
+        now_ts = datetime.now(timezone.utc)
+        bad_set = set(bad)
+        for blob in blobs:
+            if str(blob.id) not in bad_set:
+                blob.verified_at = now_ts
+
+        raw = await get_value(session, "integrity_status")
+        try:
+            state = _json.loads(raw) if raw else {}
+        except ValueError:
+            state = {}
+        known_bad = set(state.get("corrupt", [])) | bad_set
+        state = {
+            "checked_at": now_ts.isoformat(),
+            "corrupt": sorted(known_bad),
+        }
+        await set_value(session, "integrity_status", _json.dumps(state))
+        await session.commit()
+        if bad:
+            logger.error("INTEGRITY: %d blob(s) failed sha256 verification: %s", len(bad), bad)
 
 
 async def _expiry_notice() -> None:

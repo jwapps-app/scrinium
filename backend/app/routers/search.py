@@ -3,6 +3,8 @@ from sqlalchemy import Float, cast, func, select
 from fastapi import APIRouter
 
 from app.deps import DB, CurrentUser
+import uuid
+
 from app.models import Correspondent, Document, Tag
 from app.schemas import SearchResponse, SearchResult
 
@@ -10,7 +12,13 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 
 @router.get("", response_model=SearchResponse)
-async def search(q: str, user: CurrentUser, db: DB, limit: int = 25) -> SearchResponse:
+async def search(
+    q: str,
+    user: CurrentUser,
+    db: DB,
+    limit: int = 25,
+    tag_id: str | None = None,
+) -> SearchResponse:
     q = q.strip()
     if not q:
         return SearchResponse(query=q, results=[])
@@ -32,6 +40,12 @@ async def search(q: str, user: CurrentUser, db: DB, limit: int = 25) -> SearchRe
                 Document.tenant_id == user.tenant_id,
                 Document.deleted_at.is_(None),
                 Document.search_vector.op("@@")(tsquery),
+                # Scoped search: restrict to the active tag filter.
+                *(
+                    [Document.tags.any(Tag.id == uuid.UUID(tag_id))]
+                    if tag_id
+                    else []
+                ),
             )
             .order_by(rank.desc())
             .limit(min(limit, 100))

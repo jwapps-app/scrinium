@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 ACCEPTED_SUFFIXES = {
     ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp",
+    # Text-native formats: no OCR — text extracted directly at intake.
+    ".txt", ".md", ".epub", ".docx", ".xlsx", ".pptx", ".odt",
 }
 
 
@@ -84,6 +86,14 @@ async def ingest_file(
     session.add(Blob(id=blob_id, sha256=sha256, size_bytes=size, mime_type=mime))
 
     # Capture-time OCR (iOS app): text arrives with the file, no server OCR.
+    # Text-native formats likewise skip OCR — their text extracts directly.
+    if ocr_text is None:
+        from app.services import textdocs
+
+        native = await asyncio.to_thread(textdocs.extract_text, source)
+        if native and native.strip():
+            ocr_text = native
+            ocr_engine = ocr_engine or "native"
     captured = ocr_text is not None and ocr_text.strip() != ""
     doc = Document(
         tenant_id=tenant_id,
@@ -100,6 +110,10 @@ async def ingest_file(
         doc.doc_date = extract_document_date(ocr_text)
     if tags:
         doc.tags = await with_ancestors(session, list(tags))
+    else:
+        # Initialize the collection: classify_document reads doc.tags, and
+        # an unloaded lazy collection cannot load outside a greenlet.
+        doc.tags = []
     session.add(doc)
     await session.flush()
     if not captured:

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { apiFetch, apiJson } from '../api'
+import { apiFetch, apiJson, isTextNative } from '../api'
 import StatusChip from '../components/StatusChip'
 import ProgressBar from '../components/ProgressBar'
 import PageOrganizer from '../components/PageOrganizer'
@@ -30,6 +30,7 @@ export default function DocumentView() {
   const [serverPage, setServerPage] = useState(null)
   const [positionReady, setPositionReady] = useState(false)
   const [offlineKept, setOfflineKept] = useState(false)
+  const [readerText, setReaderText] = useState(null)
   const positionTimer = useRef(null)
   const [pageBusy, setPageBusy] = useState(false)
   const [error, setError] = useState('')
@@ -139,6 +140,12 @@ export default function DocumentView() {
   // Fetch the file with auth and hand PDF.js a blob URL.
   useEffect(() => {
     if (!doc) return
+    if (isTextNative(doc)) {
+      apiJson(`/api/documents/${id}/text`)
+        .then((d) => setReaderText(d.text))
+        .catch(() => setReaderText(''))
+      return
+    }
     let cancelled = false
     apiFetch(`/api/documents/${id}/file`)
       .then((resp) => (resp.ok ? resp.blob() : Promise.reject(new Error('File unavailable'))))
@@ -669,7 +676,15 @@ export default function DocumentView() {
         </p>
       )}
 
-      {fileUrl && positionReady ? (
+      {readerText !== null && (
+        <article className="reader-view">
+          {readerText
+            ? readerText.split(/\n{2,}/).map((para, i) => <p key={i}>{para}</p>)
+            : <p className="settings-help">No text could be extracted — download the original to view it.</p>}
+        </article>
+      )}
+
+      {readerText === null && fileUrl && positionReady ? (
         <PdfViewer
           url={fileUrl}
           storageKey={id}

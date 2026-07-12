@@ -705,6 +705,40 @@ textarea:hover {
   }
 }
 
+/* Reader view (text-native formats) */
+.reader-view {
+  max-width: 44rem;
+  margin: 0 auto;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 1.05rem;
+  line-height: 1.65;
+  padding-bottom: 4rem;
+}
+
+.reader-view p {
+  margin: 0 0 1em;
+  white-space: pre-wrap;
+}
+
+/* File-type badge where a thumbnail can't exist */
+.type-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  background: var(--bg) !important;
+}
+
+.scope-hint {
+  color: var(--muted);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 /* TOTP + misc */
 .totp-qr {
   width: 180px;

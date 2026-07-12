@@ -155,12 +155,35 @@ async def system_health(user: CurrentUser, db: DB) -> dict:
     except OSError:
         disk = None
 
+    import json as _json
+
+    from app.models import Blob
+
+    verified, total_blobs = (
+        await db.execute(
+            select(
+                func.count(Blob.id).filter(Blob.verified_at.is_not(None)),
+                func.count(Blob.id),
+            )
+        )
+    ).one()
+    integrity_raw = await get_value(db, "integrity_status")
+    try:
+        integrity = _json.loads(integrity_raw) if integrity_raw else {}
+    except ValueError:
+        integrity = {}
+
     return {
         "queue": backlog,
         "running": running,
         "worker_alive": worker_alive,
         "worker_last_seen": last_seen_raw or None,
         "disk": disk,
+        "integrity": {
+            "verified": verified,
+            "total": total_blobs,
+            "corrupt": integrity.get("corrupt", []),
+        },
     }
 
 

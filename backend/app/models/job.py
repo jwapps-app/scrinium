@@ -41,6 +41,9 @@ class Job(Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Higher claims first; bulk OCR upgrades run at low priority so they
+    # never compete with fresh intake.
+    priority: Mapped[int] = mapped_column(default=100, server_default="100")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

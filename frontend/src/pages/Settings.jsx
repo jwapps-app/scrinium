@@ -13,6 +13,8 @@ import SidecarSetup from '../components/SidecarSetup'
 
 export default function Settings() {
   const [ocr, setOcr] = useState(null)
+  const [upgrade, setUpgrade] = useState(null)
+  const [upgrading, setUpgrading] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -20,6 +22,7 @@ export default function Settings() {
     async function poll() {
       try {
         const data = await apiJson('/api/settings/ocr')
+        apiJson('/api/documents/upgradeable').then(setUpgrade).catch(() => {})
         if (!cancelled) {
           setOcr(data)
           setError('')
@@ -103,6 +106,39 @@ export default function Settings() {
             <span className={`chip ${helperState.cls}`}>{helperState.label}</span>
           </div>
         </div>
+        {upgrade?.count > 0 && upgrade.apple_configured && ocr?.sidecar?.healthy && (
+          <div className="organize-block">
+            <div className="organize-head">
+              <strong>
+                {upgrade.count.toLocaleString()} documents used Tesseract
+              </strong>
+              <button
+                disabled={upgrading}
+                onClick={async () => {
+                  if (!window.confirm(`Queue ${upgrade.count.toLocaleString()} documents for Apple Vision re-OCR? They run at low priority — new documents always go first.`)) return
+                  setUpgrading(true)
+                  try {
+                    const r = await apiJson('/api/documents/upgrade-ocr', { method: 'POST' })
+                    setUpgrade({ ...upgrade, count: 0 })
+                    window.alert(`${r.queued.toLocaleString()} documents queued for upgrade.`)
+                    window.dispatchEvent(new Event('library-changed'))
+                  } catch (err) {
+                    setError(err.message)
+                  } finally {
+                    setUpgrading(false)
+                  }
+                }}
+              >
+                Upgrade with Apple Vision
+              </button>
+            </div>
+            <p className="settings-help">
+              These finished while the helper was unreachable (Mac asleep).
+              Upgrading re-reads them with Apple Vision whenever the queue is
+              otherwise idle.
+            </p>
+          </div>
+        )}
         <p className="settings-help">
           The Apple Vision helper is a small program that runs on a Mac and
           gives {APP_NAME} Apple-quality OCR for documents processed on the

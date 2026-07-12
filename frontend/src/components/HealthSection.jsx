@@ -47,6 +47,16 @@ export default function HealthSection() {
       cls: health.queue > 0 ? 'chip-processing' : 'chip-ready',
     },
   ]
+  if (health.integrity && health.integrity.total > 0) {
+    const bad = health.integrity.corrupt.length
+    chips.push({
+      label: 'Integrity',
+      value: bad
+        ? `${bad} corrupt!`
+        : `${health.integrity.verified.toLocaleString()}/${health.integrity.total.toLocaleString()} verified`,
+      cls: bad ? 'chip-flagged' : 'chip-ready',
+    })
+  }
   if (health.disk) {
     const lowDisk = health.disk.free_gb < 10
     chips.push({
