@@ -143,3 +143,44 @@ async def shared_file(
     return FileResponse(
         path, media_type=media_type, filename=filename, content_disposition_type=dispo
     )
+
+
+@router.get("/share-links")
+async def all_share_links(user: CurrentUser, db: DB) -> list[dict]:
+    """Every active link in the library — the audit surface for the one
+    feature that exposes documents to the outside."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    rows = (
+        await db.execute(
+            select(ShareLink, Document.title)
+            .join(Document, ShareLink.document_id == Document.id)
+            .where(Document.tenant_id == user.tenant_id)
+            .order_by(ShareLink.created_at.desc())
+        )
+    ).all()
+    now = _dt.now(_tz.utc)
+    return [
+        {
+            "id": str(link.id),
+            "document_id": str(link.document_id),
+            "document_title": title,
+            "url_path": f"/share/{link.token}",
+            "expires_at": link.expires_at.isoformat() if link.expires_at else None,
+            "created_at": link.created_at.isoformat(),
+        }
+        for link, title in rows
+        if link.expires_at is None or link.expires_at > now
+    ]
+
+
+@router.delete("/share-links/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_one_link(link_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
+    link = await db.get(ShareLink, link_id)
+    if link is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found")
+    doc = await db.get(Document, link.document_id)
+    if doc is None or doc.tenant_id != user.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found")
+    await db.delete(link)
+    await db.flush()

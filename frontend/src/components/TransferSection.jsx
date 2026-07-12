@@ -66,7 +66,7 @@ export default function TransferSection() {
 
       <div className="organize-block">
         <div className="organize-head">
-          <strong>Import from Paperless-ngx</strong>
+          <strong>Import / restore</strong>
           <button
             disabled={!imp?.export_found || impStatus?.state === 'running'}
             onClick={() => start('/api/import/paperless')}
@@ -75,11 +75,12 @@ export default function TransferSection() {
           </button>
         </div>
         <p className="settings-help">
-          Run Paperless&apos;s <code>document_exporter</code>, copy the export
-          folder (or a zip of it) into <code>{imp?.import_dir || '…'}</code> on
-          the server, then hit Import. Documents, titles, dates, tags (with
-          colors), correspondents, types, and notes carry over; duplicates are
-          skipped, so re-running is safe.
+          Drop an export into <code>{imp?.import_dir || '…'}</code> on the
+          server and hit Import — a Paperless-ngx export (from{' '}
+          <code>document_exporter</code>) or a Scrinium export from
+          another install both work; the format is detected automatically.
+          Titles, dates, tags, correspondents, types, and notes carry over;
+          duplicates are skipped, so re-running is safe.
         </p>
         <p className="settings-help">
           {imp?.export_found

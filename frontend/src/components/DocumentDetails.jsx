@@ -78,6 +78,20 @@ export default function DocumentDetails({ doc, onChange }) {
       </label>
 
       <label className="detail">
+        <span className="detail-label">Expires</span>
+        <input
+          type="date"
+          defaultValue={doc.expires_on || ''}
+          onBlur={(e) => {
+            const current = doc.expires_on || ''
+            if (e.target.value !== current) {
+              patch(e.target.value ? { expires_on: e.target.value } : { clear_expires: true })
+            }
+          }}
+        />
+      </label>
+
+      <label className="detail">
         <span className="detail-label">From</span>
         <select
           value={doc.correspondent_id || ''}

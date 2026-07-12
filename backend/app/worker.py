@@ -147,6 +147,10 @@ async def maintenance_loop() -> None:
                 await _with_advisory_lock(WATCH_LOCK_KEY, _retention)
             except Exception:
                 logger.exception("retention sweep crashed; continuing")
+            try:
+                await _with_advisory_lock(MAIL_LOCK_KEY, _expiry_notice)
+            except Exception:
+                logger.exception("expiry notice crashed; continuing")
             if settings.export_every_days > 0:
                 try:
                     await _with_advisory_lock(PURGE_LOCK_KEY, _scheduled_export)
@@ -220,6 +224,40 @@ async def maintenance_loop() -> None:
                 logger.exception("stale-job reclaim crashed; continuing")
 
         await asyncio.sleep(1)
+
+
+async def _expiry_notice() -> None:
+    """Once a day: if documents lapse within 30 days, say so on the phone."""
+    from datetime import date, timedelta as _td
+
+    from app.services.app_state import get_value
+
+    async with SessionLocal() as session:
+        today = date.today().isoformat()
+        if await get_value(session, "expiry_notice_date") == today:
+            return
+        count = (
+            await session.execute(
+                select(func.count(Document.id)).where(
+                    Document.deleted_at.is_(None),
+                    Document.expires_on.is_not(None),
+                    Document.expires_on <= date.today() + _td(days=30),
+                    Document.expires_on >= date.today(),
+                )
+            )
+        ).scalar_one()
+        await set_value(session, "expiry_notice_date", today)
+        if count:
+            tenant_id = (
+                await session.execute(select(Tenant.id).order_by(Tenant.created_at))
+            ).scalars().first()
+            if tenant_id is not None:
+                await push.notify_tenant(
+                    session, tenant_id, settings.app_name,
+                    f"{count} document{'s' if count != 1 else ''} expire within 30 days.",
+                    {"expiring": True},
+                )
+        await session.commit()
 
 
 async def _scheduled_export() -> None:

@@ -221,6 +221,15 @@ export default function Shell({ children }) {
               {s.count != null && <span className="side-count">{s.count}</span>}
             </Link>
           ))}
+          {stats?.expiring > 0 && (
+            <Link
+              to="/?expiring=1&sort=expires"
+              className="side-link expiring-link"
+            >
+              <span>Expiring soon</span>
+              <span className="side-count">{stats.expiring}</span>
+            </Link>
+          )}
           {stats?.review > 0 && (
             <Link
               to="/review"

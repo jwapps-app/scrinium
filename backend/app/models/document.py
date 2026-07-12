@@ -92,6 +92,8 @@ class Document(Base):
     page_count: Mapped[int | None] = mapped_column(nullable=True)
     # Freeform user notes, outside the OCR text.
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When this document lapses (policies, passports, certifications).
+    expires_on: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     # 64-bit content fingerprint for near-duplicate detection.
     simhash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     text_content: Mapped[str | None] = mapped_column(Text, nullable=True)

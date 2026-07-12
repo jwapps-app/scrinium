@@ -128,6 +128,13 @@ async def _run_import(tenant_id) -> None:
 
     manifest = json.loads((source / "manifest.json").read_text())
 
+    # A Scrinium export manifest is a dict with a "documents" list; a
+    # Paperless export is a bare Django-fixture list. One Import button,
+    # both formats.
+    if isinstance(manifest, dict) and "documents" in manifest:
+        await _restore_scrinium(tenant_id, source, manifest)
+        return
+
     tag_rows = {}
     corr_rows = {}
     type_rows = {}
@@ -246,5 +253,106 @@ async def _run_import(tenant_id) -> None:
     )
     logger.info(
         "paperless import finished: %d imported, %d duplicates skipped, %d failed",
+        imported, skipped, failed,
+    )
+
+
+async def _restore_scrinium(tenant_id, source: Path, manifest: dict) -> None:
+    """Restore from our own export: originals re-ingested with their
+    titles, dates, tags, correspondents, types, and notes. Text is pulled
+    from the exported searchable copy when present, so restored documents
+    are searchable immediately without re-OCR (archives themselves can be
+    rebuilt later with Re-OCR). Duplicates skip — re-running is safe."""
+    import subprocess
+
+    from app.models import Correspondent, DocType, Document
+    from sqlalchemy import select as _select
+
+    docs = manifest.get("documents", [])
+    total = len(docs)
+    imported = skipped = failed = 0
+    await _status("running", done=0, total=total, note="restoring Scrinium export")
+
+    async with SessionLocal() as session:
+        async def get_or_create(model, name):
+            row = (
+                await session.execute(
+                    _select(model).where(
+                        model.tenant_id == tenant_id, model.name == name
+                    )
+                )
+            ).scalars().first()
+            if row is None:
+                row = model(tenant_id=tenant_id, name=name)
+                session.add(row)
+                await session.flush()
+            return row
+
+        for i, entry in enumerate(docs):
+            rel = entry.get("original")
+            path = (source / rel) if rel else None
+            if path is None or not path.exists():
+                failed += 1
+                continue
+            try:
+                tag_objs = []
+                for tag_name in entry.get("tags") or []:
+                    from app.models import Tag as _Tag
+
+                    tag_objs.append(await get_or_create(_Tag, tag_name))
+
+                text = None
+                pages = entry.get("page_count")
+                archive_rel = entry.get("archive")
+                if archive_rel and (source / archive_rel).exists():
+                    result = subprocess.run(
+                        ["pdftotext", "-layout", str(source / archive_rel), "-"],
+                        capture_output=True, text=True, timeout=300,
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        text = result.stdout
+
+                title = entry.get("title") or path.stem
+                doc = await intake.ingest_file(
+                    session, tenant_id, path,
+                    entry.get("original_filename") or path.name,
+                    ocr_text=text,
+                    ocr_engine=entry.get("ocr_engine") if text else None,
+                    page_count=pages if text else None,
+                    tags=tag_objs or None,
+                )
+                doc.title = title
+                if entry.get("doc_date"):
+                    doc.doc_date = datetime.fromisoformat(entry["doc_date"]).date()
+                if entry.get("notes"):
+                    doc.notes = entry["notes"]
+                if entry.get("correspondent"):
+                    doc.correspondent_id = (
+                        await get_or_create(Correspondent, entry["correspondent"])
+                    ).id
+                if entry.get("doc_type"):
+                    doc.doc_type_id = (
+                        await get_or_create(DocType, entry["doc_type"])
+                    ).id
+                await session.commit()
+                imported += 1
+            except intake.DuplicateDocument:
+                await session.rollback()
+                skipped += 1
+            except Exception:
+                await session.rollback()
+                failed += 1
+                logger.exception("restore: %s failed", rel)
+            if (i + 1) % 10 == 0 or i + 1 == total:
+                await _status(
+                    "running", done=i + 1, total=total,
+                    imported=imported, skipped=skipped, failed=failed,
+                )
+
+    await _status(
+        "done", total=total, imported=imported, skipped=skipped, failed=failed
+    )
+    logger.info(
+        "scrinium restore finished: %d imported, %d skipped, %d failed",
         imported, skipped, failed,
     )

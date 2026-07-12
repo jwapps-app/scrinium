@@ -5,6 +5,7 @@ import RulesSection from '../components/RulesSection'
 import OrganizeSection from '../components/OrganizeSection'
 import TransferSection from '../components/TransferSection'
 import AccountSection from '../components/AccountSection'
+import ShareLinksSection from '../components/ShareLinksSection'
 import HealthSection from '../components/HealthSection'
 import { Link } from 'react-router-dom'
 import Shell from '../components/Shell'
@@ -130,6 +131,8 @@ export default function Settings() {
         <RulesSection />
 
         <TransferSection />
+
+        <ShareLinksSection />
 
         <AccountSection />
       </div>

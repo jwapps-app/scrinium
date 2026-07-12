@@ -677,6 +677,35 @@ textarea:hover {
   color: var(--muted);
 }
 
+/* TOTP + misc */
+.totp-qr {
+  width: 180px;
+  height: 180px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  margin-bottom: 0.4rem;
+}
+
+.did-you-mean {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+button.linklike {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 0;
+  font-size: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.expiring-link {
+  color: var(--warn);
+}
+
 /* Tag page action bar */
 .tag-actions {
   display: flex;

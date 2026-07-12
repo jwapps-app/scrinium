@@ -40,6 +40,7 @@ export default function Library() {
   const [docTypes, setDocTypes] = useState([])
   const [correspondents, setCorrespondents] = useState([])
   const [results, setResults] = useState(null)
+  const [suggestions, setSuggestions] = useState([])
   const [query, setQuery] = useState(params.get('q') || '')
   const [uploading, setUploading] = useState(false)
   const [uploadNote, setUploadNote] = useState('')
@@ -69,6 +70,7 @@ export default function Library() {
     setParam('view', v)
   }
   const q = params.get('q')
+  const expiring = params.get('expiring') === '1'
 
   function setParam(key, value) {
     const next = new URLSearchParams(params)
@@ -90,6 +92,7 @@ export default function Library() {
       if (correspondent) search.set('correspondent_id', correspondent)
       if (doctype) search.set('doc_type_id', doctype)
       if (engine) search.set('engine', engine)
+      if (expiring) search.set('expiring', 'true')
       if (from) search.set('date_from', from)
       if (to) search.set('date_to', to)
       search.set('sort', sort)
@@ -100,7 +103,7 @@ export default function Library() {
     } catch (err) {
       setError(err.message)
     }
-  }, [status, tag, correspondent, doctype, engine, sort, from, to])
+  }, [status, tag, correspondent, doctype, engine, sort, from, to, expiring])
 
   useEffect(() => {
     load()
@@ -131,7 +134,10 @@ export default function Library() {
     }
     setQuery(q)
     apiJson(`/api/search?q=${encodeURIComponent(q)}`)
-      .then((data) => setResults(data.results))
+      .then((data) => {
+        setResults(data.results)
+        setSuggestions(data.suggestions || [])
+      })
       .catch((err) => setError(err.message))
   }, [q])
 
@@ -518,6 +524,42 @@ export default function Library() {
                 />
                 <button
                   className="ghost"
+                  disabled={bulkBusy || (!wholeFilter && selected.size === 0) || (wholeFilter && !tag)}
+                  title={wholeFilter ? 'Download everything with this tag as a zip' : 'Download the selected documents as a zip'}
+                  onClick={async () => {
+                    setBulkBusy(true)
+                    setError('')
+                    try {
+                      const resp = await apiFetch('/api/documents/download-zip', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(
+                          wholeFilter && tag
+                            ? { filter_tag_id: tag }
+                            : { ids: [...selected] },
+                        ),
+                      })
+                      if (!resp.ok) {
+                        const body = await resp.json().catch(() => ({}))
+                        throw new Error(body.detail || `Download failed (${resp.status})`)
+                      }
+                      const blob = await resp.blob()
+                      const a = document.createElement('a')
+                      a.href = URL.createObjectURL(blob)
+                      a.download = tagName ? `${tagName}.zip` : 'documents.zip'
+                      a.click()
+                      URL.revokeObjectURL(a.href)
+                    } catch (err) {
+                      setError(err.message)
+                    } finally {
+                      setBulkBusy(false)
+                    }
+                  }}
+                >
+                  Download
+                </button>
+                <button
+                  className="ghost"
                   disabled={bulkBusy || wholeFilter || selected.size < 2}
                   title="Combine the selected PDFs into one document (sources go to the trash)"
                   onClick={async () => {
@@ -562,6 +604,26 @@ export default function Library() {
             <h2>
               {results.length} result{results.length === 1 ? '' : 's'} for “{q}”
             </h2>
+            {results.length === 0 && suggestions.length > 0 && (
+              <p className="did-you-mean">
+                Did you mean{' '}
+                {suggestions.map((sug, i) => (
+                  <span key={sug}>
+                    {i > 0 && ' or '}
+                    <button
+                      className="linklike"
+                      onClick={() => {
+                        setQuery(sug)
+                        setParam('q', sug)
+                      }}
+                    >
+                      {sug}
+                    </button>
+                  </span>
+                ))}
+                ?
+              </p>
+            )}
             <ul className="doc-list">
               {results.map((r) => (
                 <li key={r.id}>

@@ -12,6 +12,7 @@ class SetupRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    totp: str | None = None
 
 
 class RefreshRequest(BaseModel):
@@ -67,6 +68,7 @@ class DocumentOut(BaseModel):
     progress: float | None = None  # 0..1 while OCR is running
     phase: str | None = None  # preparing | ocr | finishing, while running
     doc_date: date | None = None
+    expires_on: date | None = None
     correspondent_id: uuid.UUID | None = None
     correspondent_name: str | None = None
     doc_type_id: uuid.UUID | None = None
@@ -89,6 +91,8 @@ class DocumentUpdate(BaseModel):
     tag_ids: list[uuid.UUID] | None = None
     doc_date: date | None = None
     clear_doc_date: bool = False
+    expires_on: date | None = None
+    clear_expires: bool = False
     correspondent_id: uuid.UUID | None = None
     clear_correspondent: bool = False
     doc_type_id: uuid.UUID | None = None
@@ -211,6 +215,7 @@ class SearchResult(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     results: list[SearchResult]
+    suggestions: list[str] = []
 
 
 class NamedEntityOut(BaseModel):

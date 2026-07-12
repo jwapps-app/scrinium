@@ -77,6 +77,7 @@ async def _progress_map(
 SORTS = {
     "newest": Document.created_at.desc(),
     "oldest": Document.created_at.asc(),
+    "expires": Document.expires_on.asc().nulls_last(),
     "docdate": func.coalesce(Document.doc_date, func.date(Document.created_at)).desc(),
     "title": func.lower(Document.title).asc(),
     "updated": Document.updated_at.desc(),
@@ -248,10 +249,16 @@ async def list_documents(
     date_to: date | None = None,
     sort: str = "newest",
     needs_review: bool = False,
+    expiring: bool = False,
     offset: int = 0,
     limit: int = 50,
 ) -> DocumentList:
     conditions = [Document.tenant_id == user.tenant_id]
+    if expiring:
+        conditions.append(Document.expires_on.is_not(None))
+        conditions.append(
+            Document.expires_on <= date.today() + timedelta(days=60)
+        )
     if needs_review:
         # Triage bucket: finished OCR but nobody has filed it yet.
         conditions.append(Document.status == DocumentStatus.READY)
@@ -412,9 +419,21 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         )
     ).scalar_one()
 
+    expiring_count = (
+        await db.execute(
+            select(func.count(Document.id)).where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+                Document.expires_on.is_not(None),
+                Document.expires_on <= date.today() + timedelta(days=60),
+            )
+        )
+    ).scalar_one()
+
     return {
         "total": sum(counts.values()),
         "review": review_count,
+        "expiring": expiring_count,
         "ready": counts.get(DocumentStatus.READY, 0),
         "processing": remaining,
         "flagged": counts.get(DocumentStatus.FLAGGED, 0),
@@ -633,6 +652,11 @@ async def update_document(
     if body.notes is not None:
         doc.notes = body.notes.strip() or None
 
+    if body.clear_expires:
+        doc.expires_on = None
+    elif body.expires_on is not None:
+        doc.expires_on = body.expires_on
+
     if body.custom_values is not None:
         for field_id, value in body.custom_values.items():
             field = await db.get(CustomField, field_id)
@@ -716,6 +740,86 @@ async def related_documents(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> dic
             for dist, rid, title, pages in scored[:5]
         ]
     }
+
+
+@router.post("/download-zip")
+async def download_zip(body: dict, user: CurrentUser, db: DB):
+    """Zip of selected documents (ids) or everything under a tag
+    (filter_tag_id) — searchable copies when available, pretty names,
+    tag-path folders for tag downloads."""
+    from app.services.export import folder_for, sanitize
+
+    ids = body.get("ids") or []
+    tag_id = body.get("filter_tag_id")
+    if ids:
+        docs = [await _get_owned(uuid.UUID(str(r)), user, db) for r in ids[:200]]
+    elif tag_id:
+        docs = (
+            await db.execute(
+                select(Document)
+                .where(
+                    Document.tenant_id == user.tenant_id,
+                    Document.deleted_at.is_(None),
+                    Document.tags.any(Tag.id == uuid.UUID(str(tag_id))),
+                )
+                .limit(1000)
+            )
+        ).scalars().all()
+    else:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "ids or filter_tag_id")
+    if not docs:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Nothing to download")
+
+    parents = {}
+    if tag_id:
+        all_tags = (
+            await db.execute(select(Tag).where(Tag.tenant_id == user.tenant_id))
+        ).scalars().all()
+        parents = {t.id: (t.name, t.parent_id) for t in all_tags}
+
+    total_bytes = 0
+    entries = []
+    used: dict[str, int] = {}
+    for doc in docs:
+        blob_id = doc.archive_blob_id or doc.original_blob_id
+        path = storage.blob_file(blob_id)
+        if not path.exists():
+            continue
+        total_bytes += path.stat().st_size
+        if total_bytes > 4 * 1024**3:
+            raise HTTPException(
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                "Selection exceeds 4 GB — use the library export instead",
+            )
+        ext = ".pdf" if doc.archive_blob_id else (Path(doc.original_filename).suffix.lower() or ".bin")
+        base = sanitize(doc.title)
+        folder = folder_for(doc, parents) if tag_id else ""
+        key = f"{folder}/{base}".lower()
+        used[key] = used.get(key, 0) + 1
+        if used[key] > 1:
+            base = f"{base} ({used[key]})"
+        arc = f"{folder}/{base}{ext}" if folder else f"{base}{ext}"
+        entries.append((arc, path))
+    if not entries:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Files missing from store")
+
+    import zipfile as _zipfile
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        zip_path = Path(tmp.name)
+    with _zipfile.ZipFile(zip_path, "w", _zipfile.ZIP_STORED) as zf:
+        for arc, path in entries:
+            zf.write(path, arc)
+
+    from starlette.background import BackgroundTask
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename="documents.zip",
+        content_disposition_type="attachment",
+        background=BackgroundTask(lambda: zip_path.unlink(missing_ok=True)),
+    )
 
 
 @router.post("/merge")

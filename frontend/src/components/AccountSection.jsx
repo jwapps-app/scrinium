@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import QRCode from 'qrcode'
 import { apiFetch, apiJson } from '../api'
 
 /** Settings card: change password, manage accounts. */
@@ -8,6 +9,11 @@ export default function AccountSection() {
   const [notice, setNotice] = useState('')
   const [pw, setPw] = useState({ current: '', next: '' })
   const [newUser, setNewUser] = useState({ email: '', password: '' })
+  const [totpEnabled, setTotpEnabled] = useState(null)
+  const [enroll, setEnroll] = useState(null) // {secret, otpauth_url, qr}
+  const [enrollCode, setEnrollCode] = useState('')
+  const [disable, setDisable] = useState({ password: '', code: '' })
+  const [showDisable, setShowDisable] = useState(false)
 
   const load = useCallback(() => {
     apiJson('/api/auth/users').then(setUsers).catch((e) => setError(e.message))
@@ -15,7 +21,53 @@ export default function AccountSection() {
 
   useEffect(() => {
     load()
+    apiJson('/api/auth/totp').then((d) => setTotpEnabled(d.enabled)).catch(() => {})
   }, [load])
+
+  async function startEnroll() {
+    setError('')
+    try {
+      const data = await apiJson('/api/auth/totp/setup', { method: 'POST' })
+      const qr = await QRCode.toDataURL(data.otpauth_url, { width: 220, margin: 1 })
+      setEnroll({ ...data, qr })
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function confirmEnroll(e) {
+    e.preventDefault()
+    setError('')
+    try {
+      await apiJson('/api/auth/totp/enable', {
+        method: 'POST',
+        body: JSON.stringify({ code: enrollCode }),
+      })
+      setEnroll(null)
+      setEnrollCode('')
+      setTotpEnabled(true)
+      setNotice('Two-factor is on. You will need a code at every sign-in.')
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function confirmDisable(e) {
+    e.preventDefault()
+    setError('')
+    try {
+      await apiJson('/api/auth/totp/disable', {
+        method: 'POST',
+        body: JSON.stringify({ password: disable.password, code: disable.code }),
+      })
+      setShowDisable(false)
+      setDisable({ password: '', code: '' })
+      setTotpEnabled(false)
+      setNotice('Two-factor is off.')
+    } catch (err) {
+      setError(err.message)
+    }
+  }
 
   async function changePassword(e) {
     e.preventDefault()
@@ -91,6 +143,73 @@ export default function AccountSection() {
           <button type="submit">Change password</button>
         </div>
       </form>
+
+      <div className="organize-block">
+        <div className="organize-head">
+          <strong>Two-factor authentication</strong>
+          {totpEnabled === false && !enroll && (
+            <button className="ghost" onClick={startEnroll}>
+              Enable
+            </button>
+          )}
+          {totpEnabled === true && !showDisable && (
+            <button className="ghost danger" onClick={() => setShowDisable(true)}>
+              Disable
+            </button>
+          )}
+        </div>
+        <p className="settings-help">
+          {totpEnabled
+            ? 'On — sign-in requires a code from your authenticator app.'
+            : 'Add a 6-digit code from an authenticator app (1Password, Apple Passwords, Google Authenticator…) to every sign-in. If the device is ever lost, two-factor can only be removed with direct database access.'}
+        </p>
+        {enroll && (
+          <form className="rule-form" onSubmit={confirmEnroll}>
+            <img src={enroll.qr} alt="TOTP QR code" className="totp-qr" />
+            <p className="settings-help">
+              Scan with your authenticator, or enter the key manually:{' '}
+              <code>{enroll.secret}</code>
+            </p>
+            <div className="rule-form-row">
+              <input
+                placeholder="6-digit code from the app"
+                value={enrollCode}
+                onChange={(e) => setEnrollCode(e.target.value)}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                required
+              />
+              <button type="submit">Turn on</button>
+              <button type="button" className="ghost" onClick={() => setEnroll(null)}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+        {showDisable && (
+          <form className="rule-form" onSubmit={confirmDisable}>
+            <div className="rule-form-row">
+              <input
+                type="password"
+                placeholder="Password"
+                value={disable.password}
+                onChange={(e) => setDisable({ ...disable, password: e.target.value })}
+                required
+              />
+              <input
+                placeholder="Current 6-digit code"
+                value={disable.code}
+                onChange={(e) => setDisable({ ...disable, code: e.target.value })}
+                inputMode="numeric"
+                required
+              />
+              <button type="submit" className="ghost danger">
+                Turn off
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
 
       {users.length > 0 && (
         <ul className="rule-list">

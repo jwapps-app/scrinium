@@ -6,6 +6,8 @@ import { APP_NAME, APP_TAGLINE } from '../constants/branding'
 export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [totp, setTotp] = useState('')
+  const [needsTotp, setNeedsTotp] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const navigate = useNavigate()
@@ -27,9 +29,17 @@ export default function Login() {
       const resp = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, ...(totp ? { totp } : {}) }),
       })
-      if (!resp.ok) throw new Error((await resp.json()).detail || 'Login failed')
+      if (!resp.ok) {
+        const detail = (await resp.json()).detail || 'Login failed'
+        if (detail === 'totp_required') {
+          setNeedsTotp(true)
+          setError('')
+          return
+        }
+        throw new Error(detail === 'Bad one-time code' ? detail : detail)
+      }
       setTokens(await resp.json())
       navigate('/', { replace: true })
     } catch (err) {
@@ -68,6 +78,21 @@ export default function Login() {
           autoComplete="current-password"
           required
         />
+        {needsTotp && (
+          <input
+            type="text"
+            name="one-time-code"
+            id="login-totp"
+            placeholder="6-digit code"
+            value={totp}
+            onChange={(e) => setTotp(e.target.value)}
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            pattern="[0-9 ]*"
+            autoFocus
+            required
+          />
+        )}
         {error && <p className="error">{error}</p>}
         <button type="submit" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
