@@ -98,9 +98,12 @@ export default function TransferSection() {
           </button>
         </div>
         <p className="settings-help">
-          Writes a zip with every original, every searchable archive, and a
-          manifest of all metadata into the server&apos;s data folder. Your
-          documents are never locked into {APP_NAME}.
+          Writes a zip into the server&apos;s data folder with your documents
+          in browsable folders built from their tag hierarchy — e.g.{' '}
+          <code>originals/Taxes/2023/W2.pdf</code> — plus a parallel{' '}
+          <code>searchable/</code> tree of the OCR&apos;d copies and a
+          manifest of all metadata. Your documents are never locked into{' '}
+          {APP_NAME}.
         </p>
         <p className="settings-help">
           {progress(exp)}
