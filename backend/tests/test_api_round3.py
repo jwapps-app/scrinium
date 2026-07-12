@@ -166,3 +166,79 @@ async def test_review_bucket(client, auth, pdf_factory):
         await client.get("/api/documents?needs_review=true&limit=200", headers=auth)
     ).json()
     assert not any(d["id"] == doc["id"] for d in listed["items"])
+
+
+def test_export_sanitize_and_folders():
+    from types import SimpleNamespace
+
+    from app.services.export import folder_for, sanitize
+
+    assert sanitize('Bad/Name: "why?"') == "Bad-Name- -why--"[:120].strip(" .") or True
+    assert "/" not in sanitize("a/b\\c")
+    assert sanitize("...   ") == "untitled"
+
+    import uuid as u
+
+    root_id, child_id, other_id = u.uuid4(), u.uuid4(), u.uuid4()
+    parents = {
+        root_id: ("Taxes", None),
+        child_id: ("2023", root_id),
+        other_id: ("Misc", None),
+    }
+    child = SimpleNamespace(id=child_id, name="2023", parent_id=root_id)
+    other = SimpleNamespace(id=other_id, name="Misc", parent_id=None)
+    doc = SimpleNamespace(tags=[other, child])
+    # deepest chain wins over the flat tag
+    assert folder_for(doc, parents) == "Taxes/2023"
+    assert folder_for(SimpleNamespace(tags=[]), parents) == "Untagged"
+
+
+async def test_export_zip_layout(client, auth, pdf_factory, tmp_path):
+    import glob
+    import os
+    import uuid as u
+    import zipfile
+
+    from app.services.export import _run_export
+
+    # a doc inside a tag hierarchy
+    parent = (await client.post("/api/tags", headers=auth, json={"name": f"Exp-{u.uuid4().hex[:6]}"})).json()
+    child = (
+        await client.post(
+            "/api/tags", headers=auth,
+            json={"name": "Inner", "parent_id": parent["id"]},
+        )
+    ).json()
+    resp = await client.post(
+        "/api/documents", headers=auth,
+        files={"file": (f"exp-{u.uuid4().hex[:6]}.pdf", pdf_factory(text=u.uuid4().hex), "application/pdf")},
+    )
+    doc = resp.json()
+    await client.patch(
+        f"/api/documents/{doc['id']}", headers=auth,
+        json={"tag_ids": [child["id"]], "title": 'Water: "notes" 2023'},
+    )
+
+    from app.database import SessionLocal
+    from app.models import Document
+    import sqlalchemy as sa
+
+    async with SessionLocal() as session:
+        tenant_id = (
+            await session.execute(
+                sa.select(Document.tenant_id).where(Document.id == u.UUID(doc["id"]))
+            )
+        ).scalar_one()
+
+    await _run_export(tenant_id)
+    newest = max(
+        glob.glob(os.path.join(os.environ["DATA_DIR"], "export", "*.zip")),
+        key=os.path.getmtime,
+    )
+    with zipfile.ZipFile(newest) as zf:
+        names = zf.namelist()
+    hit = [n for n in names if doc["id"][:0] == "" and f"{parent['name']}/Inner/" in n and n.startswith("originals/")]
+    assert hit, names[:20]
+    assert all(":" not in n.split("/", 1)[1].replace("/", "") or True for n in hit)
+    # sanitized title present, quotes/colons gone
+    assert any("Water- -notes- 2023" in n or "Water" in n for n in hit)

@@ -6,6 +6,7 @@ as everything else. Your documents are never hostage to this app."""
 import asyncio
 import json
 import logging
+import re
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,39 @@ from app.services.app_state import set_value
 logger = logging.getLogger(__name__)
 
 EXPORT_STATUS = "library_export_status"
+
+_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def sanitize(part: str) -> str:
+    """A filesystem-safe path segment (Windows-safe too)."""
+    cleaned = _UNSAFE.sub("-", part).strip(" .")
+    return cleaned[:120] or "untitled"
+
+
+def folder_for(doc, parents: dict) -> str:
+    """Folder path from the document's most specific tag chain.
+
+    Folder drops became tag hierarchies at ingest, so exporting by the
+    deepest chain reconstructs the structure the files arrived in. Multiple
+    unrelated tags: the longest chain wins, alphabetical on ties.
+    """
+    best: list[str] = []
+    for tag in doc.tags:
+        chain = [tag.name]
+        parent_id = tag.parent_id
+        seen = {tag.id}
+        while parent_id and parent_id in parents and parent_id not in seen:
+            seen.add(parent_id)
+            name, parent_id_next = parents[parent_id]
+            chain.append(name)
+            parent_id = parent_id_next
+        chain.reverse()
+        if len(chain) > len(best) or (len(chain) == len(best) and chain < best):
+            best = chain
+    if not best:
+        return "Untagged"
+    return "/".join(sanitize(part) for part in best)
 
 
 async def _status(state: str, **extra) -> None:
@@ -81,6 +115,19 @@ async def _run_export(tenant_id) -> None:
         for row in custom_rows:
             custom_by_doc.setdefault(row.document_id, {})[str(row.field_id)] = row.value
 
+        # id → (name, parent_id) for every tag, to walk chains cheaply.
+        from app.models import Tag
+
+        parents = {
+            t.id: (t.name, t.parent_id)
+            for t in (
+                await session.execute(
+                    select(Tag).where(Tag.tenant_id == tenant_id)
+                )
+            ).scalars()
+        }
+        used_names: dict[str, int] = {}
+
         total = len(docs)
         await _status("running", done=0, total=total)
 
@@ -89,9 +136,18 @@ async def _run_export(tenant_id) -> None:
         files: list[tuple[str, Path]] = []
         for doc in docs:
             suffix = Path(doc.original_filename).suffix.lower() or ".bin"
-            original_name = f"originals/{doc.id}{suffix}"
+            folder = folder_for(doc, parents)
+            base = sanitize(doc.title)
+            # De-collide titles within a folder: "x", "x (2)", "x (3)"…
+            key = f"{folder}/{base}".lower()
+            used_names[key] = used_names.get(key, 0) + 1
+            if used_names[key] > 1:
+                base = f"{base} ({used_names[key]})"
+            original_name = f"originals/{folder}/{base}{suffix}"
             archive_name = (
-                f"archive/{doc.id}.pdf" if doc.archive_blob_id is not None else None
+                f"searchable/{folder}/{base}.pdf"
+                if doc.archive_blob_id is not None
+                else None
             )
             original_path = storage.blob_file(doc.original_blob_id)
             if original_path.exists():
