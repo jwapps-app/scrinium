@@ -14,7 +14,7 @@ from sqlalchemy import and_, func, or_, select, text
 from app.config import settings
 from app.database import SessionLocal, engine
 from app.models import Document, DocumentStatus, Job, JobStatus, Tenant
-from app.services.app_state import PROCESSING_PAUSED, get_flag, set_value
+from app.services.app_state import PROCESSING_PAUSED, get_flag, get_value, set_value
 from app.services import similarity
 from app.services.deletion import purge_expired, sweep_upload_sessions
 from app.services.export import run_export
@@ -180,6 +180,17 @@ async def maintenance_loop() -> None:
                             )
                         )
                     ).scalar_one()
+                    # High-water mark of the queue, reset when it drains, so
+                    # the overall progress bar tracks the CURRENT import wave
+                    # rather than lifetime completion — a fresh 100-doc batch
+                    # reads 0→100%, not "99% because the library is huge".
+                    peak_raw = await get_value(session, "queue_peak")
+                    peak = int(peak_raw) if peak_raw and peak_raw.isdigit() else 0
+                    if backlog == 0:
+                        peak = 0
+                    elif backlog > peak:
+                        peak = backlog
+                    await set_value(session, "queue_peak", str(peak))
                     # A real batch just finished — worth a ping. Small
                     # trickles (a couple of uploads) stay quiet.
                     if prev_backlog is not None and prev_backlog >= 10 and backlog == 0:

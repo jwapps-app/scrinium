@@ -267,7 +267,7 @@ textarea:hover {
   background: none;
   border: none;
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: 1.25rem;
   line-height: 1;
   cursor: pointer;
   text-align: center;
@@ -292,7 +292,7 @@ textarea:hover {
     width: 2.5rem;
   }
   .tag-caret {
-    font-size: 1.1rem;
+    font-size: 1.45rem;
     min-height: 2.6rem;  /* ~44px fingertip target */
   }
   /* Give the tag rows a bit more height so the whole row is easy to hit */

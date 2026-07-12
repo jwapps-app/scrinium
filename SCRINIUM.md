@@ -345,6 +345,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-12 (overall progress bar, field report):** The bottom "all progress" bar read empty at 990/14,649 done. Cause: it was a *within-session* burndown from the highest queue count seen since page load — on a fresh visit peak==current, so it always started at 0 and reset every session (useless for a multi-day import). Replaced with an **absolute** measure: completed ÷ total live docs, persistent across reloads, matching the sidebar's "Completed N / All M", with a "X% complete · N of M" caption. Per-file bars were already correct. Verified: 20/22 → 91% bar.
 
+- **2026-07-12 (caret size + batch-relative progress, field report):** Tag disclosure carets enlarged again (glyph 1.25rem desktop / 1.45rem mobile ≈ 23px, 40×42px tap target) — the earlier bump wasn't enough. **Overall progress rethought:** lifetime `completed/total` meant a future 100-doc import into a 14.6k library would read 99%, not track the new batch. Now a server-persisted queue high-water mark (`queue_peak` in app_settings, updated in the worker pulse, reset when the queue hits zero) drives `done = peak − remaining`, so the bar measures the CURRENT wave: a fresh 100-doc batch reads 0→100%; the current first import still reads ~7% (its peak ≈ total). Caption "N% of this batch · done of peak". Verified: climbed 17→83% with denominator locked at peak, resets only at true drain (held correctly by a live job).
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

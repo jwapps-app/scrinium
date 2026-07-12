@@ -137,13 +137,15 @@ export default function Shell({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Overall progress = completed ÷ total (all live docs). Absolute and
-  // persistent — matches the sidebar's "Completed N / All M", survives page
-  // reloads, and climbs monotonically as the library finishes (dips slightly
-  // only when a fresh batch is ingested, which is honest).
+  // Overall progress tracks the CURRENT import wave, not lifetime: the
+  // server keeps a high-water mark of the queue (peak) that resets when the
+  // queue drains, so `done = peak - remaining` measures this batch. A fresh
+  // 100-doc import reads 0→100% instead of "99% because the library is big".
+  // Persisted server-side, so it survives reloads.
   const remaining = stats?.processing || 0
-  const totalLive = stats?.total || 0
-  const overall = totalLive > 0 ? (stats.ready || 0) / totalLive : 0
+  const peak = stats?.queue_peak || 0
+  const done = Math.max(0, peak - remaining)
+  const overall = peak > 0 ? done / peak : 0
   const overallPct = Math.round(overall * 100)
 
   // Anti-flicker: between jobs the running list momentarily empties, and at
@@ -327,8 +329,8 @@ export default function Shell({ children }) {
                   </div>
                   <ProgressBar value={overall} />
                   <div className="proc-sub">
-                    {overallPct}% complete · {(stats?.ready || 0).toLocaleString()} of{' '}
-                    {totalLive.toLocaleString()}
+                    {overallPct}% of this batch · {done.toLocaleString()} of{' '}
+                    {peak.toLocaleString()}
                   </div>
                 </div>
               )}

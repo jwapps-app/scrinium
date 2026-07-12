@@ -30,7 +30,7 @@ from app.services import deletion, intake, storage, thumbnails
 from app.services import pages as pages_service
 from app.services.intake import DuplicateDocument
 from app.services.dates import extract_document_date
-from app.services.app_state import PROCESSING_PAUSED, get_flag, set_flag
+from app.services.app_state import PROCESSING_PAUSED, get_flag, get_value, set_flag
 from app.services.intake import ACCEPTED_SUFFIXES
 from app.services.tag_tree import with_ancestors
 
@@ -556,6 +556,7 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         "pages_per_min": round(pages_per_min, 1),
         "queue_pages_remaining": remaining_pages,
         "queue_eta_seconds": queue_eta,
+        "queue_peak": int(await get_value(db, "queue_peak") or 0),
     }
 
 
