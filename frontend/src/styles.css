@@ -1046,12 +1046,13 @@ button.linklike {
 @media (max-width: 800px) {
   .hamburger {
     display: block;
+    z-index: 51;
   }
   .sidebar {
     position: fixed;
     left: 0;
     top: 0;
-    z-index: 20;
+    z-index: 50;
     width: min(260px, 82vw);
     padding-top: calc(1rem + env(safe-area-inset-top, 0px));
     transform: translateX(-100%);
@@ -1065,14 +1066,11 @@ button.linklike {
     display: block;
     position: fixed;
     inset: 0;
-    z-index: 10;
+    z-index: 49;
     background: rgba(0, 0, 0, 0.4);
   }
   .content {
     padding: calc(3rem + env(safe-area-inset-top, 0px)) 0.75rem 1rem;
-  }
-  .toolbar {
-    top: env(safe-area-inset-top, 0px);
   }
   .library,
   .viewer-page {
@@ -1117,13 +1115,6 @@ button.linklike {
   gap: 0.5rem;
   flex-wrap: wrap;
   margin-bottom: 1rem;
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: color-mix(in srgb, var(--bg) 85%, transparent);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  padding: 0.6rem 0;
 }
 
 .toolbar .searchbar {
@@ -1860,6 +1851,8 @@ button.linklike {
   top: calc(100% + 4px);
   z-index: 41;
   min-width: 220px;
+  max-height: 55vh;
+  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1867,6 +1860,28 @@ button.linklike {
   padding: 4px;
   display: flex;
   flex-direction: column;
+}
+
+/* On phones an anchored dropdown can hang off-screen (and a 300-tag list
+   needs room anyway): present menus as a bottom sheet instead. */
+@media (max-width: 800px) {
+  .menu-backdrop {
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 70;
+  }
+  .menu-pop {
+    position: fixed;
+    left: 0.5rem;
+    right: 0.5rem;
+    top: auto;
+    bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+    z-index: 71;
+    max-height: 60vh;
+    box-shadow: var(--shadow-md);
+  }
+  .menu-item {
+    padding: 0.6rem 0.7rem;
+  }
 }
 
 .menu-item {

@@ -329,6 +329,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-12 (review-bucket definition, field report):** "To review" originally meant "no correspondent and no type" — in a tag-organized books library that's *every* document, so the count mirrored Completed. Redefined: needs review = ready with **no organization at all** (no tags, no correspondent, no type). Folder-dropped documents carry tags and count as filed; the bucket now holds only genuinely unfiled strays. Test updated: tagging alone clears a doc from the bucket.
 
+- **2026-07-12 (mobile fixes, field report):** Sticky library toolbar **removed** — tried it, John reversed it, and it was also the culprit rendering on top of the open mobile drawer (its z-index tied the drawer's layer). Drawer layering hardened (sidebar 50 / scrim 49 / hamburger 51) so no page chrome can overlay it again. **Mobile menus became bottom sheets**: the anchored dropdown (`right: 0`, 220px min-width) hung off-screen left when its trigger sat near the screen's left edge — Tag/Type in the bulk bar were unreadable. On ≤800px menus now pin to the bottom of the screen, full-width, dimmed backdrop, scrollable to 60vh (which a several-hundred-tag list needs regardless). Desktop dropdowns also gained max-height + scroll.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.
