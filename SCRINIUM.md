@@ -333,6 +333,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-12 (iOS input polish):** Two PWA papercuts. iOS force-zooms (and leaves the viewport widened) when a focused control's font is under 16px — mobile form controls now hold 16px, so search taps stop zooming. And iOS renders *nothing* inside an empty `<input type=date>` (desktop shows mm/dd/yyyy), so the toolbar date filters gained visible FROM/TO labels.
 
+- **2026-07-12 (big-book resilience, field report):** Two related failures from the 15k import. **(1) OCR "timed out after 7200 seconds":** a giant book fell back to in-container Tesseract (Mac asleep at claim time) and legitimately needed >2h — the fixed timeout killed a healthy run. Replaced with a **stall watchdog**: the run lives as long as the page-progress file keeps changing; killed only after `OCR_STALL_MINUTES` (30) of silence or the `OCR_MAX_HOURS` (24) backstop. Stall-kills skip the remedy chain (retrying a wedge is pointless) and drop to text-only rescue. **(2) Health strip "worker not responding" during heavy sweeps:** false alarm — sha256/copy of gigabyte books and the 30k-file watch-tree walk ran synchronously on the event loop, starving the liveness pulse (and progress commits) for minutes. Hashing, blob copies, separator scans, and the directory walk now run in threads; health also accepts a fresh *job* heartbeat as proof of life and tolerates 120s pulse lag. Tests 79→82 (watchdog kills stalls, spares progressing runs, stall-kill skips remedies).
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # with WORKER_CONCURRENCY, total concurrent OCR fan-out (and load on the
     # Vision sidecar) stays bounded rather than pages_per_doc × docs.
     ocr_jobs: int = 3
+    # OCR watchdog: kill a run only when page progress stalls this long
+    # (wedged Ghostscript), not on a fixed clock — a 2,000-page book on
+    # Tesseract may healthily grind for hours. Hard ceiling as a backstop.
+    ocr_stall_minutes: int = 30
+    ocr_max_hours: int = 24
 
     worker_poll_seconds: float = 2.0
     # Documents processed at once per worker container. Raise to fill the

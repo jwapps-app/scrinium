@@ -126,9 +126,25 @@ async def system_health(user: CurrentUser, db: DB) -> dict:
             seen = datetime.fromisoformat(last_seen_raw)
             worker_alive = (
                 datetime.now(timezone.utc) - seen
-            ).total_seconds() < 60
+            ).total_seconds() < 120
         except ValueError:
             pass
+    if not worker_alive:
+        # The pulse can lag during heavy sweeps; a job actively stamping
+        # its heartbeat is equally good proof of life.
+        from datetime import timedelta as _td
+
+        beating = (
+            await db.execute(
+                select(func.count(Job.id)).where(
+                    Job.status == JobStatus.RUNNING,
+                    Job.heartbeat_at
+                    >= datetime.now(timezone.utc) - _td(seconds=120),
+                )
+            )
+        ).scalar_one()
+        if beating:
+            worker_alive = True
 
     try:
         usage = shutil.disk_usage(settings.data_dir)

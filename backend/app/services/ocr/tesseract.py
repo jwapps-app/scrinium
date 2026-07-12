@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+import time
 from pathlib import Path
 
 from app.config import settings
@@ -67,27 +68,68 @@ def pdfa_fallback_commands(cmd: list[str]) -> list[tuple[str, list[str]]]:
     return [("pdfa", cmd), ("pdfa-rgb", rgb), ("force-raster", force)]
 
 
+def _run_watched(attempt: list[str], workdir: Path):
+    """Run one ocrmypdf attempt under a stall watchdog instead of a fixed
+    timeout: as long as the progress file keeps changing, the run may take
+    as long as the book demands. Kill only after `ocr_stall_minutes` of
+    silence (wedged), or the `ocr_max_hours` backstop."""
+    progress_file = workdir / "progress"
+    stall_limit = settings.ocr_stall_minutes * 60
+    hard_limit = settings.ocr_max_hours * 3600
+    stdout_path = workdir / ".ocr-stdout"
+    stderr_path = workdir / ".ocr-stderr"
+
+    with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
+        proc = subprocess.Popen(
+            attempt, stdout=out, stderr=err, env=progress_env(workdir)
+        )
+        started = time.monotonic()
+        last_progress = started
+        last_snapshot = None
+        while True:
+            code = proc.poll()
+            if code is not None:
+                break
+            time.sleep(10)
+            try:
+                snapshot = progress_file.read_text()
+            except OSError:
+                snapshot = None
+            if snapshot != last_snapshot:
+                last_snapshot = snapshot
+                last_progress = time.monotonic()
+            now = time.monotonic()
+            if now - last_progress > stall_limit or now - started > hard_limit:
+                proc.kill()
+                proc.wait(timeout=60)
+                reason = (
+                    f"no OCR progress for {settings.ocr_stall_minutes} minutes"
+                    if now - started <= hard_limit
+                    else f"exceeded the {settings.ocr_max_hours}h ceiling"
+                )
+                return 137, f"killed: {reason}"
+    stderr_text = stderr_path.read_text(errors="replace")
+    return proc.returncode, stderr_text
+
+
 def run_ocrmypdf(cmd: list[str], workdir: Path) -> None:
     """Run ocrmypdf, escalating through the remedy chain. Raises OCRError
     if every attempt fails (the caller then tries text-only extraction)."""
     last_error = ""
     last_code = 0
     for label, attempt in pdfa_fallback_commands(cmd):
-        result = subprocess.run(
-            attempt,
-            capture_output=True,
-            text=True,
-            timeout=7200,
-            env=progress_env(workdir),
-        )
-        if result.returncode == 0:
+        returncode, stderr_text = _run_watched(attempt, workdir)
+        if returncode == 0:
             if label != "pdfa":
                 logger.warning("ocrmypdf succeeded via fallback '%s'", label)
             return
-        last_error = result.stderr.strip()[:2000]
-        last_code = result.returncode
+        last_error = stderr_text.strip()[:2000]
+        last_code = returncode
         if any(sig in last_error.lower() for sig in UNFIXABLE):
             break  # no escalation can fix this
+        if returncode == 137 and "killed:" in last_error:
+            # A stalled run won't behave differently under the remedies.
+            break
         logger.warning("ocrmypdf attempt '%s' failed; escalating", label)
     raise OCRError(f"ocrmypdf exited {last_code}: {last_error}")
 

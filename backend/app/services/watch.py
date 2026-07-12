@@ -16,6 +16,7 @@ bad file never stops the sweep, and the consumer simply idles until
 Scrinium's first user/tenant exists.
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -132,11 +133,13 @@ async def scan_once() -> int:
     if not watch.is_dir():
         return 0
 
-    candidates = [
-        path
-        for path in _candidates(watch)
-        if time.time() - path.stat().st_mtime >= SETTLE_SECONDS
-    ]
+    candidates = await asyncio.to_thread(
+        lambda: [
+            path
+            for path in _candidates(watch)
+            if time.time() - path.stat().st_mtime >= SETTLE_SECONDS
+        ]
+    )
     if not candidates:
         return 0
     # Cap per sweep: with a huge dump (tens of thousands of files), ingesting

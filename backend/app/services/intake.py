@@ -1,9 +1,12 @@
 """Shared document intake: dedup, blob storage, document + job creation.
 
 Used by the upload endpoint and the watched-folder consumer so every ingest
-path behaves identically.
+path behaves identically. Heavy file work (hashing, copying gigabyte books)
+runs in threads — the event loop also carries heartbeats and progress
+commits, and blocking it makes the whole worker look dead.
 """
 
+import asyncio
 import logging
 import mimetypes
 import uuid
@@ -46,7 +49,7 @@ async def ingest_file(
 ) -> Document:
     """Store `source` as a new document. Raises DuplicateDocument on a
     content-hash match within the tenant. Does not commit."""
-    sha256 = storage.sha256_of(source)
+    sha256 = await asyncio.to_thread(storage.sha256_of, source)
     existing = (
         (
             await session.execute(
@@ -61,7 +64,7 @@ async def ingest_file(
     if existing is not None:
         raise DuplicateDocument(existing.id)
 
-    blob_id, _, size = storage.store_file(source)
+    blob_id, _, size = await asyncio.to_thread(storage.store_file, source)
     mime = mime or mimetypes.guess_type(filename)[0] or "application/octet-stream"
     session.add(Blob(id=blob_id, sha256=sha256, size_bytes=size, mime_type=mime))
 
@@ -112,7 +115,7 @@ async def ingest_with_split(
 
     segments = None
     try:
-        segments = split_on_separators(source)
+        segments = await asyncio.to_thread(split_on_separators, source)
     except Exception:  # detection is best-effort, never blocks intake
         logger.exception("separator detection failed for %s", filename)
     if not segments:
