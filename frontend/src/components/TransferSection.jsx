@@ -138,7 +138,7 @@ export default function TransferSection() {
         <p className="settings-help">
           {progress(exp)}
           {exp?.state === 'done' &&
-            `Last export: ${exp.total} documents, ${exp.size_mb} MB — ${exp.path}`}
+            `Last export: ${exp.total} documents${exp.size_mb ? `, ${exp.size_mb} MB` : ''} — ${exp.path}`}
         </p>
       </div>
     </section>
