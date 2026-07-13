@@ -10,7 +10,7 @@ from typing import Annotated
 import aiofiles
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 
 from app.deps import DB, CurrentUser
 from app.models import Blob, Document, DocumentStatus, Job, JobStatus, Tag
@@ -415,8 +415,13 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
 
     now = datetime.now(timezone.utc)
 
-    # Every currently-running job → one live bar. Ordered by start time so
-    # the bars keep stable slots instead of reshuffling as progress changes.
+    # Only genuinely-active jobs get a bar: a live lane stamps its heartbeat
+    # every ~15s, so a fresh beat (or a just-claimed job not yet beating)
+    # means real work. This hides orphaned RUNNING rows left by a container
+    # restart — they freeze with a stale heartbeat and would otherwise show
+    # as extra bars (">3 files at once") until the periodic reclaim requeues
+    # them minutes later.
+    alive = now - timedelta(seconds=60)
     running_rows = (
         await db.execute(
             select(Job, Document.title)
@@ -424,6 +429,10 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
             .where(
                 Job.status == JobStatus.RUNNING,
                 Document.tenant_id == user.tenant_id,
+                or_(
+                    Job.heartbeat_at >= alive,
+                    and_(Job.heartbeat_at.is_(None), Job.started_at >= alive),
+                ),
             )
             .order_by(Job.started_at)
         )

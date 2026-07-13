@@ -280,3 +280,52 @@ async def test_upgrade_count_drops_after_queueing(client, auth, pdf_factory):
     after = (await client.get("/api/documents/upgradeable", headers=auth)).json()["count"]
     # the just-queued docs no longer count
     assert after <= before - 2
+
+
+async def test_running_list_hides_stale_orphans(client, auth, pdf_factory):
+    """A RUNNING job with a stale heartbeat (orphaned by a container
+    restart) must not show as an active bar — otherwise the panel reads
+    ">N files at once"."""
+    import datetime as dt
+    import uuid as u
+
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models import Document, Job
+
+    async def make(hb_delta, started_delta):
+        d = (
+            await client.post(
+                "/api/documents", headers=auth,
+                files={"file": (f"orph-{u.uuid4().hex[:5]}.pdf", pdf_factory(text=u.uuid4().hex), "application/pdf")},
+            )
+        ).json()
+        now = dt.datetime.now(dt.timezone.utc)
+        async with SessionLocal() as s:
+            await s.execute(
+                sa.update(Job).where(Job.document_id == u.UUID(d["id"])).values(
+                    status="running",
+                    heartbeat_at=(now + hb_delta) if hb_delta is not None else None,
+                    started_at=now + started_delta,
+                    pages_done=5, pages_total=50, phase="ocr",
+                )
+            )
+            await s.execute(
+                sa.update(Document).where(Document.id == u.UUID(d["id"])).values(status="processing")
+            )
+            await s.commit()
+        return d["id"]
+
+    fresh = await make(dt.timedelta(seconds=-5), dt.timedelta(seconds=-30))    # beating
+    orphan = await make(dt.timedelta(seconds=-300), dt.timedelta(seconds=-600))  # stale
+
+    stats = (await client.get("/api/documents/stats", headers=auth)).json()
+    shown = {r["id"] for r in stats["running"]}
+    assert fresh in shown
+    assert orphan not in shown  # stale orphan filtered out
+
+    # cleanup so other tests aren't polluted
+    async with SessionLocal() as s:
+        await s.execute(sa.update(Job).where(Job.status == "running").values(status="done"))
+        await s.commit()

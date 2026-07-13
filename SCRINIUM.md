@@ -349,6 +349,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-12 (restart-proof wave progress, field report):** Overall bar rewound to "0 of 90" on container restart mid-batch (was 10 of 100). Cause: `done = peak − remaining` — the peak re-anchored to the post-restart backlog during the reclaim window. Reworked to anchor on the **cumulative completed count**: the worker persists `wave_baseline` (the `ready` count when the wave started) and `wave_total` (high-water of done+remaining); `wave_done = ready_now − baseline`. Both are durable DB facts, so a restart cannot move them backward — 10 of 100 stays 10 of 100. Cleared when the queue drains, so the next batch re-anchors at 0 of N. Verified: 2-of-6 held exactly across a worker restart, then climbed to 4-of-6.
 
+- **2026-07-13 (>N processing bars, field report):** Panel occasionally showed 4 files at once at concurrency 3 (self-corrected in minutes). Cause: the running-jobs list showed *every* RUNNING job, including orphans a stack restart left flagged RUNNING with a fresh-at-the-time heartbeat (startup reclaim spares those for replica-safety; the periodic 5-min reclaim requeues them later). The three frozen "finishing…" bars were the tell. Fix: the displayed `running` list now includes only genuinely-active jobs — `heartbeat_at` within 60s, or just-claimed (null heartbeat, started <60s ago). Orphans go stale in ~30s and drop off immediately; real lanes beat every 15s so always pass. `running_count` ("N files at once") is now honest too. Verified: 2 RUNNING in DB (1 orphan) → panel shows 1.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.
