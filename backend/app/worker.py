@@ -496,7 +496,9 @@ async def main() -> None:
         settings.watch_dir or "disabled",
     )
     try:
-        await reclaim_interrupted_jobs()
+        # Single container → reclaim every RUNNING job at startup (all are
+        # orphans; this worker owns none yet). Replicas → heartbeat-only.
+        await reclaim_interrupted_jobs(0 if settings.worker_single else None)
         await asyncio.gather(
             maintenance_loop(),
             *(processor_loop(i) for i in range(concurrency)),

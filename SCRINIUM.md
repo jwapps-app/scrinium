@@ -351,6 +351,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-13 (>N processing bars, field report):** Panel occasionally showed 4 files at once at concurrency 3 (self-corrected in minutes). Cause: the running-jobs list showed *every* RUNNING job, including orphans a stack restart left flagged RUNNING with a fresh-at-the-time heartbeat (startup reclaim spares those for replica-safety; the periodic 5-min reclaim requeues them later). The three frozen "finishing…" bars were the tell. Fix: the displayed `running` list now includes only genuinely-active jobs — `heartbeat_at` within 60s, or just-claimed (null heartbeat, started <60s ago). Orphans go stale in ~30s and drop off immediately; real lanes beat every 15s so always pass. `running_count` ("N files at once") is now honest too. Verified: 2 RUNNING in DB (1 orphan) → panel shows 1.
 
+- **2026-07-13 (orphan reclaim at source, follow-up):** The display filter hid restart-orphans but they lingered in the DB (periodic reclaim only every 5 min); "4 files at once" kept recurring around restarts. Root fix: `WORKER_SINGLE=1` (default) — for the normal single-container deployment, the worker owns no jobs at startup, so it now reclaims **every** RUNNING job immediately (`reclaim_interrupted_jobs(0)`), instead of sparing fresh-heartbeat ones. That heartbeat-sparing only matters for multiple worker replicas (`WORKER_SINGLE=0`). Verified: a planted fresh-heartbeat orphan is requeued on restart ("requeued 1"). Combined with the 60s display filter, orphans are gone at both source and symptom.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

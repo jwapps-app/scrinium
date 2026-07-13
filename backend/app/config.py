@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # idle time each doc spends waiting on the OCR round-trip; keep modest
     # so ocrmypdf/Ghostscript don't oversubscribe CPU.
     worker_concurrency: int = 1
+    # True for the normal single-worker-container deployment: on startup the
+    # worker owns no jobs yet, so ANY job still marked RUNNING is an orphan
+    # from the previous life and is reclaimed at once. Set False only when
+    # running multiple worker replicas (then rely on heartbeat staleness).
+    worker_single: bool = True
     max_upload_mb: int = 500
 
     # Document-date extraction: MDY (US) or DMY for ambiguous 03/04/2024
