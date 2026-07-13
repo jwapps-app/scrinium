@@ -347,6 +347,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-12 (caret size + batch-relative progress, field report):** Tag disclosure carets enlarged again (glyph 1.25rem desktop / 1.45rem mobile ≈ 23px, 40×42px tap target) — the earlier bump wasn't enough. **Overall progress rethought:** lifetime `completed/total` meant a future 100-doc import into a 14.6k library would read 99%, not track the new batch. Now a server-persisted queue high-water mark (`queue_peak` in app_settings, updated in the worker pulse, reset when the queue hits zero) drives `done = peak − remaining`, so the bar measures the CURRENT wave: a fresh 100-doc batch reads 0→100%; the current first import still reads ~7% (its peak ≈ total). Caption "N% of this batch · done of peak". Verified: climbed 17→83% with denominator locked at peak, resets only at true drain (held correctly by a live job).
 
+- **2026-07-12 (restart-proof wave progress, field report):** Overall bar rewound to "0 of 90" on container restart mid-batch (was 10 of 100). Cause: `done = peak − remaining` — the peak re-anchored to the post-restart backlog during the reclaim window. Reworked to anchor on the **cumulative completed count**: the worker persists `wave_baseline` (the `ready` count when the wave started) and `wave_total` (high-water of done+remaining); `wave_done = ready_now − baseline`. Both are durable DB facts, so a restart cannot move them backward — 10 of 100 stays 10 of 100. Cleared when the queue drains, so the next batch re-anchors at 0 of N. Verified: 2-of-6 held exactly across a worker restart, then climbed to 4-of-6.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.

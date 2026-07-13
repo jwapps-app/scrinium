@@ -180,17 +180,34 @@ async def maintenance_loop() -> None:
                             )
                         )
                     ).scalar_one()
-                    # High-water mark of the queue, reset when it drains, so
-                    # the overall progress bar tracks the CURRENT import wave
-                    # rather than lifetime completion — a fresh 100-doc batch
-                    # reads 0→100%, not "99% because the library is huge".
-                    peak_raw = await get_value(session, "queue_peak")
-                    peak = int(peak_raw) if peak_raw and peak_raw.isdigit() else 0
+                    # Current-wave progress, anchored to the cumulative
+                    # completed count so it NEVER moves backward on a restart
+                    # (done = ready_now - baseline; both are durable facts, so
+                    # 10-of-100 stays 10-of-100 across a container bounce).
+                    ready_now = (
+                        await session.execute(
+                            select(func.count(Document.id)).where(
+                                Document.status == DocumentStatus.READY,
+                                Document.deleted_at.is_(None),
+                            )
+                        )
+                    ).scalar_one()
+                    base_raw = await get_value(session, "wave_baseline")
+                    total_raw = await get_value(session, "wave_total")
+                    wave_total = int(total_raw) if (total_raw or "").isdigit() else 0
                     if backlog == 0:
-                        peak = 0
-                    elif backlog > peak:
-                        peak = backlog
-                    await set_value(session, "queue_peak", str(peak))
+                        # Wave finished — clear the anchor; the next batch
+                        # re-anchors at whatever's already completed.
+                        await set_value(session, "wave_baseline", "")
+                        await set_value(session, "wave_total", "0")
+                    else:
+                        baseline = (
+                            int(base_raw) if (base_raw or "").isdigit() else ready_now
+                        )
+                        done = max(0, ready_now - baseline)
+                        wave_total = max(wave_total, done + backlog)
+                        await set_value(session, "wave_baseline", str(baseline))
+                        await set_value(session, "wave_total", str(wave_total))
                     # A real batch just finished — worth a ping. Small
                     # trickles (a couple of uploads) stay quiet.
                     if prev_backlog is not None and prev_backlog >= 10 and backlog == 0:

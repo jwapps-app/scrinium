@@ -137,15 +137,15 @@ export default function Shell({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Overall progress tracks the CURRENT import wave, not lifetime: the
-  // server keeps a high-water mark of the queue (peak) that resets when the
-  // queue drains, so `done = peak - remaining` measures this batch. A fresh
-  // 100-doc import reads 0→100% instead of "99% because the library is big".
-  // Persisted server-side, so it survives reloads.
+  // Overall progress tracks the CURRENT import wave. `wave_done` is the
+  // cumulative count of documents completed since the wave anchored, over
+  // `wave_total` (the wave's high-water size) — both server-persisted and
+  // derived from durable counts, so a container restart never rewinds it
+  // (10 of 100 stays 10 of 100).
   const remaining = stats?.processing || 0
-  const peak = stats?.queue_peak || 0
-  const done = Math.max(0, peak - remaining)
-  const overall = peak > 0 ? done / peak : 0
+  const done = stats?.wave_done || 0
+  const waveTotal = stats?.wave_total || 0
+  const overall = waveTotal > 0 ? done / waveTotal : 0
   const overallPct = Math.round(overall * 100)
 
   // Anti-flicker: between jobs the running list momentarily empties, and at
@@ -330,7 +330,7 @@ export default function Shell({ children }) {
                   <ProgressBar value={overall} />
                   <div className="proc-sub">
                     {overallPct}% of this batch · {done.toLocaleString()} of{' '}
-                    {peak.toLocaleString()}
+                    {waveTotal.toLocaleString()}
                   </div>
                 </div>
               )}

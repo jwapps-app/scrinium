@@ -540,6 +540,16 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         )
     ).scalar_one()
 
+    # Current-wave progress: cumulative completed since the wave anchored,
+    # over the wave's high-water size. Restart-proof (see worker pulse).
+    base_raw = await get_value(db, "wave_baseline")
+    wave_total = int(await get_value(db, "wave_total") or 0)
+    if (base_raw or "").isdigit() and remaining > 0:
+        wave_done = max(0, counts.get(DocumentStatus.READY, 0) - int(base_raw))
+        wave_total = max(wave_total, wave_done + remaining)
+    else:
+        wave_done = 0
+
     return {
         "total": sum(counts.values()),
         "review": review_count,
@@ -556,7 +566,8 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         "pages_per_min": round(pages_per_min, 1),
         "queue_pages_remaining": remaining_pages,
         "queue_eta_seconds": queue_eta,
-        "queue_peak": int(await get_value(db, "queue_peak") or 0),
+        "wave_done": wave_done,
+        "wave_total": wave_total,
     }
 
 
