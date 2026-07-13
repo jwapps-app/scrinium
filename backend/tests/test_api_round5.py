@@ -245,3 +245,38 @@ async def test_integrity_sweep_flags_corruption(client, auth, pdf_factory):
 
     health = (await client.get("/api/settings/health", headers=auth)).json()
     assert str(blob_id) in health["integrity"]["corrupt"]
+
+
+async def test_upgrade_count_drops_after_queueing(client, auth, pdf_factory):
+    """Pressing Upgrade queues the docs, so the advisor count goes to 0 and
+    only ticks up when a new Tesseract doc appears (not the queued ones)."""
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models import Document, Job
+
+    ids = []
+    for i in range(2):
+        d = (
+            await client.post(
+                "/api/documents", headers=auth,
+                files={"file": (f"uc{i}-{uuid.uuid4().hex[:5]}.pdf", pdf_factory(text=uuid.uuid4().hex), "application/pdf")},
+            )
+        ).json()
+        ids.append(d["id"])
+    async with SessionLocal() as session:
+        for did in ids:
+            await session.execute(
+                sa.update(Document).where(Document.id == uuid.UUID(did)).values(status="ready", ocr_engine="tesseract")
+            )
+            await session.execute(
+                sa.update(Job).where(Job.document_id == uuid.UUID(did)).values(status="done")
+            )
+        await session.commit()
+
+    before = (await client.get("/api/documents/upgradeable", headers=auth)).json()["count"]
+    assert before >= 2
+    await client.post("/api/documents/upgrade-ocr", headers=auth)
+    after = (await client.get("/api/documents/upgradeable", headers=auth)).json()["count"]
+    # the just-queued docs no longer count
+    assert after <= before - 2

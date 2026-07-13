@@ -627,6 +627,12 @@ async def _custom_values(db, doc_id: uuid.UUID) -> dict[str, str]:
 async def upgradeable_count(user: CurrentUser, db: DB) -> dict:
     """Documents that finished on Tesseract (helper down at the time) and
     could be re-OCR'd with Apple Vision."""
+    # Exclude docs already queued/running for (re-)OCR — pressing Upgrade
+    # queues them, so the count drops to 0 immediately and only ticks up
+    # when a genuinely new Tesseract-processed doc appears later.
+    active_jobs = select(Job.document_id).where(
+        Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])
+    )
     count = (
         await db.execute(
             select(func.count(Document.id)).where(
@@ -634,6 +640,7 @@ async def upgradeable_count(user: CurrentUser, db: DB) -> dict:
                 Document.deleted_at.is_(None),
                 Document.status == DocumentStatus.READY,
                 Document.ocr_engine == "tesseract",
+                ~Document.id.in_(active_jobs),
             )
         )
     ).scalar_one()
