@@ -1720,7 +1720,10 @@ button.linklike {
 }
 
 .organize-block {
+  margin-top: 1.4rem;
   margin-bottom: 1.4rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--border);
 }
 
 .organize-head {
