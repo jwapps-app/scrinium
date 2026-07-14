@@ -571,6 +571,9 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         "paused": await get_flag(db, PROCESSING_PAUSED),
         "running": running,
         "running_count": len(running),
+        # Real processing-lane count, so the UI can label/pad honestly rather
+        # than latching a transient peak from just-reclaimed restart orphans.
+        "concurrency": max(1, app_settings.worker_concurrency),
         "rate_per_min": round(rate_per_min, 2),
         "pages_per_min": round(pages_per_min, 1),
         "queue_pages_remaining": remaining_pages,

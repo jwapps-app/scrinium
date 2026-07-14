@@ -157,10 +157,17 @@ export default function Shell({ children }) {
   //    a while, then leaves for good.
   const running = stats?.running || []
   const active = running.length > 0 || remaining > 0
+  // Real lane count from the worker. Restart orphans can briefly inflate the
+  // running list past this; clamp so a transient spike can't pin the panel at
+  // "N files at once" for the whole (never-quiet) batch.
+  const slots = Math.max(1, stats?.concurrency || 1)
   const slotsRef = useRef(0)
   const quietSinceRef = useRef(null)
   if (active) {
-    slotsRef.current = Math.max(slotsRef.current, running.length, 1)
+    slotsRef.current = Math.min(
+      slots,
+      Math.max(slotsRef.current, running.length, 1),
+    )
     quietSinceRef.current = null
   } else {
     if (quietSinceRef.current === null) quietSinceRef.current = Date.now()
