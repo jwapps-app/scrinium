@@ -217,7 +217,15 @@ export default function PdfViewer({
 
     async function load() {
       try {
-        const pdf = await pdfjsLib.getDocument(url).promise
+        // Read the bytes ourselves and hand PDF.js an in-memory buffer rather
+        // than letting it re-fetch `url`. PDF.js's transport issues Range
+        // requests, which intermittently come back as "Unexpected server
+        // response (0)" against blob: URLs for some PDFs (notably iOS
+        // UIGraphicsPDFRenderer scans). The file already lives behind this
+        // object URL, so a plain full fetch is instant and avoids that path.
+        const data = await (await fetch(url)).arrayBuffer()
+        if (cancelled) return
+        const pdf = await pdfjsLib.getDocument({ data }).promise
         if (cancelled) return
         st.pdf = pdf
         const first = await pdf.getPage(1)

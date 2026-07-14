@@ -64,7 +64,12 @@ export default function PageOrganizer({ url, busy, onAction, onClose }) {
 
     ;(async () => {
       try {
-        const pdf = await pdfjsLib.getDocument(url).promise
+        // Parse from in-memory bytes, not PDF.js's own re-fetch of the blob
+        // URL — its Range requests intermittently fail ("Unexpected server
+        // response (0)") on blob: URLs for some PDFs. See PdfViewer.
+        const data = await (await fetch(url)).arrayBuffer()
+        if (cancelled) return
+        const pdf = await pdfjsLib.getDocument({ data }).promise
         if (cancelled) return
         st.pdf = pdf
         setCount(pdf.numPages)
