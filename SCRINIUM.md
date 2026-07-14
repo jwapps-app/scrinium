@@ -353,6 +353,8 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-13 (orphan reclaim at source, follow-up):** The display filter hid restart-orphans but they lingered in the DB (periodic reclaim only every 5 min); "4 files at once" kept recurring around restarts. Root fix: `WORKER_SINGLE=1` (default) — for the normal single-container deployment, the worker owns no jobs at startup, so it now reclaims **every** RUNNING job immediately (`reclaim_interrupted_jobs(0)`), instead of sparing fresh-heartbeat ones. That heartbeat-sparing only matters for multiple worker replicas (`WORKER_SINGLE=0`). Verified: a planted fresh-heartbeat orphan is requeued on restart ("requeued 1"). Combined with the 60s display filter, orphans are gone at both source and symptom.
 
+- **2026-07-13 (one brand color):** The accent changed identity between themes — deep burgundy `#9a3412` in light, bright orange `#fb923c` in dark. John chose to commit to **burgundy** everywhere. Dark mode now uses a lightened same-family rust-burgundy `#c85a38` (legible on the dark stone bg, white button text) instead of orange. Light mode unchanged. One warm-rust identity across both themes.
+
 ## Open Questions / Deferred
 
 - Notarized menu-bar app vs. plain binary + script for v1 of the sidecar.
