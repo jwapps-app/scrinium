@@ -17,15 +17,43 @@ export default function Compare() {
   const offsetRef = useRef(0) // B.page - A.page, captured when locking
   const [locked, setLocked] = useState(true)
   const [titles, setTitles] = useState({ a: '', b: '' })
+  const [remaining, setRemaining] = useState(null)
 
   useEffect(() => {
+    offsetRef.current = 0 // fresh pair — no page offset until you re-lock
     apiJson(`/api/documents/${a}`)
       .then((d) => setTitles((t) => ({ ...t, a: d.title })))
-      .catch(() => {})
+      .catch(() => setTitles((t) => ({ ...t, a: 'Document' })))
     apiJson(`/api/documents/${b}`)
       .then((d) => setTitles((t) => ({ ...t, b: d.title })))
-      .catch(() => {})
+      .catch(() => setTitles((t) => ({ ...t, b: 'Document' })))
   }, [a, b])
+
+  useEffect(() => {
+    apiJson('/api/insights/duplicates')
+      .then((d) => setRemaining((d.pairs || []).length))
+      .catch(() => {})
+  }, [])
+
+  // After resolving a pair, jump straight to the next one so you can cycle
+  // through the whole set without returning to Insights each time.
+  async function advance() {
+    try {
+      const data = await apiJson('/api/insights/duplicates')
+      const next = (data.pairs || []).find(
+        (p) =>
+          ![p.a.id, p.b.id].includes(a) && ![p.a.id, p.b.id].includes(b),
+      )
+      if (next) {
+        setRemaining((data.pairs || []).length)
+        navigate(`/compare/${next.a.id}/${next.b.id}`, { replace: true })
+      } else {
+        navigate('/insights')
+      }
+    } catch {
+      navigate('/insights')
+    }
+  }
 
   const drive = useCallback(
     (fromRef, toRef, sign) => {
@@ -56,14 +84,14 @@ export default function Compare() {
 
   async function trash(id) {
     await apiFetch(`/api/documents/${id}`, { method: 'DELETE' })
-    navigate('/insights')
+    await advance()
   }
   async function notDupe() {
     await apiJson('/api/insights/duplicates/dismiss', {
       method: 'POST',
       body: JSON.stringify({ a, b }),
     })
-    navigate('/insights')
+    await advance()
   }
 
   return (
@@ -83,6 +111,9 @@ export default function Compare() {
         >
           {locked ? '🔒 Scroll locked' : '🔓 Scroll free'}
         </button>
+        {remaining != null && (
+          <span className="compare-count">{remaining} to review</span>
+        )}
         <div className="compare-acts">
           <button className="ghost" onClick={() => trash(a)}>
             Trash left

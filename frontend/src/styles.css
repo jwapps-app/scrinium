@@ -2184,6 +2184,11 @@ button.linklike {
   gap: 0.4rem;
   flex-wrap: wrap;
 }
+.compare-count {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 .compare-lock {
   border: 1px solid var(--border);
   background: transparent;
@@ -2215,11 +2220,15 @@ button.linklike {
   flex: 1;
   display: grid;
   grid-template-columns: 1fr 1fr;
+  /* Bound the row to the container height so each pane's scroller can scroll
+     instead of stretching to fit all pages. */
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 .compare-pane {
   position: relative;
   min-width: 0;
+  min-height: 0;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -2229,6 +2238,7 @@ button.linklike {
 }
 .compare-scroller {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 0.5rem;
