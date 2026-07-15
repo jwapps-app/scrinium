@@ -17,6 +17,25 @@ BASE_CMD = [
 ]
 
 
+def test_rotate_flags_toggle(monkeypatch):
+    monkeypatch.setattr(T.settings, "rotate_pages", True)
+    monkeypatch.setattr(T.settings, "rotate_pages_threshold", 5.0)
+    flags = T.rotate_flags()
+    assert flags == ["--rotate-pages", "--rotate-pages-threshold", "5.0"]
+
+    monkeypatch.setattr(T.settings, "rotate_pages", False)
+    assert T.rotate_flags() == []
+
+
+def test_rotate_flags_survive_force_raster_fallback(monkeypatch):
+    # The rebuild-from-raster fallback drops mode flags but must keep rotation.
+    monkeypatch.setattr(T.settings, "rotate_pages", True)
+    cmd = BASE_CMD[:6] + T.rotate_flags() + BASE_CMD[6:]
+    chain = T.pdfa_fallback_commands(cmd)
+    force = dict(chain)["force-raster"]
+    assert "--rotate-pages" in force
+
+
 def test_remedy_chain_shape():
     chain = T.pdfa_fallback_commands(BASE_CMD)
     labels = [label for label, _ in chain]

@@ -31,6 +31,19 @@ class OCRError(Exception):
 
 ALL_MODE_FLAGS = {"--skip-text", "--redo-ocr", "--force-ocr"}
 
+
+def rotate_flags() -> list[str]:
+    """Per-page auto-rotation flags, shared by both engines. OSD detects each
+    page's orientation and ocrmypdf rotates only those above the confidence
+    threshold, leaving correctly-oriented pages untouched."""
+    if not settings.rotate_pages:
+        return []
+    return [
+        "--rotate-pages",
+        "--rotate-pages-threshold",
+        str(settings.rotate_pages_threshold),
+    ]
+
 # Signatures of failures no retry can fix — stop the chain immediately.
 UNFIXABLE = ("encrypted", "password-protected", "usage:", "no such file")
 
@@ -229,6 +242,7 @@ class TesseractProvider:
             "--jobs", str(settings.ocr_jobs),
             "--language", settings.ocr_languages,
             "--quiet",
+            *rotate_flags(),
         ]
         if original.suffix.lower() in IMAGE_SUFFIXES:
             cmd += ["--image-dpi", "300"]

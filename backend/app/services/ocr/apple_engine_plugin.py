@@ -94,7 +94,16 @@ class AppleVisionEngine(OcrEngine):
 
     @staticmethod
     def get_orientation(input_file: Path, options: Namespace) -> OrientationConfidence:
-        return OrientationConfidence(angle=0, confidence=0.0)
+        # Vision doesn't expose page orientation, so borrow Tesseract's OSD —
+        # the same detector ocrmypdf uses for its built-in engine — so that
+        # --rotate-pages can straighten sideways scans before Vision reads
+        # them. Detection is Tesseract; recognition stays Apple Vision.
+        try:
+            from ocrmypdf._exec.tesseract import get_orientation as _osd
+
+            return _osd(input_file, engine_mode=None, timeout=30.0)
+        except Exception:
+            return OrientationConfidence(angle=0, confidence=0.0)
 
     @staticmethod
     def generate_hocr(

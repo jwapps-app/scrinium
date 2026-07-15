@@ -23,6 +23,7 @@ from app.services.ocr.tesseract import (
     OCRError,
     extract_text,
     process_with_fallbacks,
+    rotate_flags,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class AppleVisionProvider:
             "--jobs", str(settings.ocr_jobs),
             "--language", settings.ocr_languages,
             "--quiet",
+            *rotate_flags(),
         ]
         if original.suffix.lower() in IMAGE_SUFFIXES:
             cmd += ["--image-dpi", "300"]

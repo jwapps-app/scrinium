@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     # more than ~300 DPI. 0 disables downsampling entirely. Runtime-adjustable
     # via Settings (app_state ARCHIVE_MAX_DPI).
     archive_max_dpi: int = 300
+    # Auto-straighten sideways scans: ocrmypdf runs Tesseract OSD per page and
+    # rotates only the pages that need it. An upright page reports "rotate 0"
+    # regardless of confidence, so the threshold only gates non-zero rotations
+    # and can't flip a good text page; the ocrmypdf default (14) misses genuine
+    # rotations that score ~12, and even 8 dropped one at pipeline DPI, so 5
+    # reliably catches all four orientations (verified) while leaving upright
+    # pages alone. Only sparse/ambiguous pages risk a spurious flip.
+    rotate_pages: bool = True
+    rotate_pages_threshold: float = 5.0
     # OCR watchdog: kill a run only when page progress stalls this long
     # (wedged Ghostscript), not on a fixed clock — a 2,000-page book on
     # Tesseract may healthily grind for hours. Hard ceiling as a backstop.
