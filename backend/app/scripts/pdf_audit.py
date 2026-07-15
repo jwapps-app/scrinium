@@ -29,7 +29,7 @@ import csv as csvmod
 import subprocess
 import sys
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,12 +70,19 @@ def human(n: float) -> str:
     return f"{n:.1f} TB"
 
 
+PROBE_TIMEOUT = 60  # seconds per file; set from --timeout
+
+
 def probe(path: Path) -> tuple[int | None, int, str | None]:
     """Return (max_dpi, image_count, error) for a PDF via `pdfimages -list`."""
     try:
         out = subprocess.run(
             ["pdfimages", "-list", str(path)],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=PROBE_TIMEOUT,
+            # DEVNULL, not the console: an encrypted/malformed PDF makes
+            # pdfimages prompt for a password on stdin and block forever.
+            # With no stdin it gets EOF and fails fast instead.
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return None, 0, f"{type(exc).__name__}: {str(exc)[:80]}"
@@ -201,19 +208,29 @@ async def main() -> None:
     ap.add_argument("--top", type=int, default=25, help="how many worst offenders to list")
     ap.add_argument("--limit", type=int, default=None, help="only scan the N newest docs (sampling)")
     ap.add_argument("--workers", type=int, default=6, help="parallel pdfimages probes")
+    ap.add_argument("--timeout", type=int, default=60, help="per-file pdfimages timeout (s)")
     ap.add_argument("--csv", type=str, default=None, help="write per-document detail to this path")
     args = ap.parse_args()
 
-    print("Loading document list…", file=sys.stderr)
-    jobs = await collect(args.limit)
-    print(f"Probing {len(jobs)} PDF blobs with {args.workers} workers…", file=sys.stderr)
+    global PROBE_TIMEOUT
+    PROBE_TIMEOUT = args.timeout
 
+    print("Loading document list…", file=sys.stderr, flush=True)
+    jobs = await collect(args.limit)
+    total = len(jobs)
+    print(f"Probing {total} PDF blobs with {args.workers} workers…",
+          file=sys.stderr, flush=True)
+
+    # Report as each probe COMPLETES (unordered), so one slow/bad file can't
+    # stall the whole run's output. Tick often enough to show life on any size.
+    tick = 100 if total > 1000 else 25
     rows: list[Row] = []
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        for i, row in enumerate(pool.map(analyze, jobs), 1):
-            rows.append(row)
-            if i % 500 == 0:
-                print(f"  …{i}/{len(jobs)}", file=sys.stderr)
+        futures = [pool.submit(analyze, j) for j in jobs]
+        for i, fut in enumerate(as_completed(futures), 1):
+            rows.append(fut.result())
+            if i % tick == 0 or i == total:
+                print(f"  …{i}/{total}", file=sys.stderr, flush=True)
 
     report(rows, args.target, args.top, args.csv)
 
