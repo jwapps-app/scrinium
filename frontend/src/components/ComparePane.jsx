@@ -22,6 +22,10 @@ const ComparePane = forwardRef(function ComparePane({ docId, onScroll }, ref) {
   // True while WE are setting scrollTop, so the resulting scroll event is
   // recognized as our own echo and not fed back to the parent as a user scroll.
   const programmaticRef = useRef(false)
+  // Always call the latest onScroll: the scroll listener is bound once (per
+  // docId), but the parent swaps this callback when the lock toggles.
+  const onScrollRef = useRef(onScroll)
+  onScrollRef.current = onScroll
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -138,7 +142,7 @@ const ComparePane = forwardRef(function ComparePane({ docId, onScroll }, ref) {
         programmaticRef.current = false // our own echo — don't loop it back
         return
       }
-      onScroll?.()
+      onScrollRef.current?.()
     }
     scroller.addEventListener('scroll', handleScroll, { passive: true })
     build()
