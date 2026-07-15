@@ -2189,6 +2189,38 @@ button.linklike {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+/* Single-pane variant (weak-OCR review reuses the compare shell) */
+.compare-panes.single {
+  grid-template-columns: 1fr;
+}
+.compare-titles.single {
+  grid-template-columns: 1fr;
+}
+.compare-titles.single span:first-child {
+  border-right: none;
+}
+.compare-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  text-align: center;
+  padding: 2rem;
+}
+.compare-error {
+  margin: 0;
+  padding: 0.4rem 0.75rem;
+}
+.insight-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.insight-head h2 {
+  margin: 0;
+}
 .compare-lock {
   border: 1px solid var(--border);
   background: transparent;

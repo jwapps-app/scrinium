@@ -118,6 +118,7 @@ async def insights(user: CurrentUser, db: DB) -> dict:
             .where(
                 *live,
                 Document.status == "ready",
+                Document.weak_ocr_dismissed.is_(False),
                 Document.page_count > 0,
                 Document.text_content.is_not(None),
                 func.length(Document.text_content)
@@ -151,6 +152,81 @@ async def insights(user: CurrentUser, db: DB) -> dict:
             for i, t, p, l in low_yield_rows
         ],
     }
+
+
+def _weak_ocr_conditions(user):
+    """Ready docs whose OCR yielded suspiciously little text per page and that
+    haven't been dismissed as fine-as-is."""
+    return (
+        Document.tenant_id == user.tenant_id,
+        Document.deleted_at.is_(None),
+        Document.status == "ready",
+        Document.weak_ocr_dismissed.is_(False),
+        Document.page_count > 0,
+        Document.text_content.is_not(None),
+        func.length(Document.text_content) < Document.page_count * 150,
+    )
+
+
+@router.get("/insights/weak-ocr")
+async def weak_ocr(user: CurrentUser, db: DB, limit: int = 200) -> dict:
+    """The full weak-OCR worklist for the review flow (worst first)."""
+    cond = _weak_ocr_conditions(user)
+    total = (
+        await db.execute(select(func.count(Document.id)).where(*cond))
+    ).scalar_one()
+    rows = (
+        await db.execute(
+            select(
+                Document.id,
+                Document.title,
+                Document.page_count,
+                func.length(Document.text_content),
+                Document.ocr_engine,
+            )
+            .where(*cond)
+            .order_by(func.length(Document.text_content) / Document.page_count)
+            .limit(limit)
+        )
+    ).all()
+    return {
+        "count": total,
+        "items": [
+            {
+                "id": str(i),
+                "title": t,
+                "pages": p,
+                "chars_per_page": round(l / p) if p else 0,
+                "engine": eng,
+            }
+            for i, t, p, l, eng in rows
+        ],
+    }
+
+
+@router.post("/insights/weak-ocr/dismiss")
+async def dismiss_weak_ocr(body: dict, user: CurrentUser, db: DB) -> dict:
+    """Mark a document's scan as acceptable so it leaves the weak-OCR list."""
+    import uuid as _uuid
+
+    from fastapi import HTTPException, status as http_status
+
+    try:
+        doc_id = _uuid.UUID(str(body.get("id")))
+    except (ValueError, TypeError):
+        raise HTTPException(http_status.HTTP_422_UNPROCESSABLE_ENTITY, "id required")
+    doc = (
+        await db.execute(
+            select(Document).where(
+                Document.id == doc_id, Document.tenant_id == user.tenant_id
+            )
+        )
+    ).scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(http_status.HTTP_404_NOT_FOUND, "Document not found")
+    doc.weak_ocr_dismissed = True
+    await db.flush()
+    return {"dismissed": True}
 
 
 @router.get("/insights/duplicates")

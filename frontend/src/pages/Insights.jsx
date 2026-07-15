@@ -274,10 +274,16 @@ export default function Insights() {
 
             {data.low_yield?.length > 0 && (
               <section className="insight-section">
-                <h2>Weak OCR — worth a better scan?</h2>
+                <div className="insight-head">
+                  <h2>Weak OCR — worth a better scan?</h2>
+                  <Link className="ghost-link" to="/weak-ocr">
+                    Review →
+                  </Link>
+                </div>
                 <p className="settings-help">
                   These finished OCR but yielded almost no text per page —
                   usually a very low-quality scan or a mostly-image document.
+                  Review to Re-OCR, delete, or dismiss them one by one.
                 </p>
                 <ul className="dup-list">
                   {data.low_yield.map((d) => (
@@ -288,6 +294,24 @@ export default function Insights() {
                       <span className="dup-docs">
                         <Link to={`/doc/${d.id}`}>{d.title}</Link>
                         <span className="settings-hint">{d.pages} pp</span>
+                      </span>
+                      <span className="dup-actions">
+                        <button
+                          className="ghost"
+                          title="The scan is fine — stop flagging it"
+                          onClick={async () => {
+                            await apiJson('/api/insights/weak-ocr/dismiss', {
+                              method: 'POST',
+                              body: JSON.stringify({ id: d.id }),
+                            })
+                            setData({
+                              ...data,
+                              low_yield: data.low_yield.filter((x) => x !== d),
+                            })
+                          }}
+                        >
+                          Looks fine
+                        </button>
                       </span>
                     </li>
                   ))}

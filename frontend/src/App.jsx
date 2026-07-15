@@ -6,6 +6,7 @@ import Setup from './pages/Setup'
 import Library from './pages/Library'
 import DocumentView from './pages/DocumentView'
 import Compare from './pages/Compare'
+import WeakOcr from './pages/WeakOcr'
 import Settings from './pages/Settings'
 import Insights from './pages/Insights'
 import OfflineDocs from './pages/OfflineDocs'
@@ -57,6 +58,14 @@ export default function App() {
         element={
           <RequireAuth>
             <Compare />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/weak-ocr"
+        element={
+          <RequireAuth>
+            <WeakOcr />
           </RequireAuth>
         }
       />
