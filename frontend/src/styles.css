@@ -2221,6 +2221,19 @@ button.linklike {
 .insight-head h2 {
   margin: 0;
 }
+.reclaim-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.reclaim-dpi {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
 .compare-lock {
   border: 1px solid var(--border);
   background: transparent;

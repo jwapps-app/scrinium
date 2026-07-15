@@ -59,6 +59,47 @@ export default function Insights() {
 
   const maxMonthly = data ? Math.max(1, ...data.monthly.map((m) => m.count)) : 1
 
+  async function setReclaimDpi(dpi) {
+    const prev = storage
+    setStorage({ ...storage, target_dpi: dpi }) // optimistic
+    try {
+      await apiJson('/api/settings/archive-dpi', {
+        method: 'POST',
+        body: JSON.stringify({ dpi }),
+      })
+    } catch (err) {
+      setStorage(prev)
+      setError(err.message)
+    }
+  }
+
+  async function reclaim() {
+    if (
+      !window.confirm(
+        `Shrink oversized archives to ${storage.target_dpi} DPI? Originals are never touched, and each archive is only replaced when the result is genuinely smaller. Runs at the lowest priority — new documents and OCR always go first.`,
+      )
+    )
+      return
+    setCompressing(true)
+    let queued = 0
+    try {
+      for (let i = 0; i < 1000; i++) {
+        const r = await apiJson('/api/documents/downsample-archives', {
+          method: 'POST',
+        })
+        queued += r.queued
+        if (r.queued === 0 || r.remaining === 0) break
+      }
+      setStorage({ ...storage, count: 0 })
+      window.alert(`${queued.toLocaleString()} archives queued for downsampling.`)
+      window.dispatchEvent(new Event('library-changed'))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setCompressing(false)
+    }
+  }
+
   return (
     <Shell>
       <div className="library">
@@ -219,12 +260,38 @@ export default function Insights() {
             {storage?.enabled && storage.count > 0 && (
               <section className="insight-section">
                 <h2>Reclaim space</h2>
+                <div className="organize-head">
+                  <strong>
+                    {storage.count.toLocaleString()} archives to check
+                  </strong>
+                  <div className="reclaim-controls">
+                    <label className="reclaim-dpi">
+                      <span>Cap at</span>
+                      <select
+                        value={String(storage.target_dpi)}
+                        disabled={compressing}
+                        onChange={(e) => setReclaimDpi(Number(e.target.value))}
+                      >
+                        <option value="150">150 DPI</option>
+                        <option value="200">200 DPI</option>
+                        <option value="300">300 DPI</option>
+                        <option value="400">400 DPI</option>
+                        <option value="600">600 DPI</option>
+                      </select>
+                    </label>
+                    <button disabled={compressing} onClick={reclaim}>
+                      {compressing ? 'Queueing…' : 'Reclaim space'}
+                    </button>
+                  </div>
+                </div>
                 <p className="settings-help">
-                  Scanned pages above {storage.target_dpi} DPI carry more
-                  resolution than a document library needs. Downsampling caps
-                  them at {storage.target_dpi} DPI — originals are never touched,
-                  each archive is only replaced when the result is genuinely
-                  smaller, and it runs at the lowest priority behind new work.
+                  Every archive is checked and any images above the cap are
+                  downsampled — so this count is what will be scanned, not what
+                  will shrink (archives already at or below the cap are skipped).
+                  Originals are never touched, an archive is only replaced when
+                  the result is genuinely smaller, and it runs at the lowest
+                  priority behind new work. This is the same cap applied to new
+                  documents (change it here or in Settings).
                   {storage.non_pdfa > 0 && (
                     <>
                       {' '}
@@ -235,40 +302,6 @@ export default function Insights() {
                     </>
                   )}
                 </p>
-                <button
-                  disabled={compressing}
-                  onClick={async () => {
-                    if (
-                      !window.confirm(
-                        `Shrink oversized archives to ${storage.target_dpi} DPI? Runs in the background — new documents and OCR always go first.`,
-                      )
-                    )
-                      return
-                    setCompressing(true)
-                    let queued = 0
-                    try {
-                      for (let i = 0; i < 1000; i++) {
-                        const r = await apiJson(
-                          '/api/documents/downsample-archives',
-                          { method: 'POST' },
-                        )
-                        queued += r.queued
-                        if (r.queued === 0 || r.remaining === 0) break
-                      }
-                      setStorage({ ...storage, count: 0 })
-                      window.alert(
-                        `${queued.toLocaleString()} archives queued for downsampling.`,
-                      )
-                      window.dispatchEvent(new Event('library-changed'))
-                    } catch (err) {
-                      setError(err.message)
-                    } finally {
-                      setCompressing(false)
-                    }
-                  }}
-                >
-                  {compressing ? 'Queueing…' : 'Reclaim space'}
-                </button>
               </section>
             )}
 
