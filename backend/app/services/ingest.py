@@ -205,7 +205,9 @@ async def process_job(session: AsyncSession, job: Job) -> None:
         )
         document.archive_blob_id = outcome.blob_id
         document.archive_pdfa = outcome.archive_pdfa
-        document.archive_dpi = outcome.archive_dpi
+        # 0 (not None) when the archive has no raster images, so it reads as
+        # "measured, nothing to downsample" rather than an unmeasured candidate.
+        document.archive_dpi = outcome.archive_dpi or 0
     if outcome.thumb is not None:
         old_thumb_id = document.thumbnail_blob_id
         t_id, t_sha, t_size = outcome.thumb

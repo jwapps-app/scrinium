@@ -748,9 +748,11 @@ async def upgrade_ocr(user: CurrentUser, db: DB) -> dict:
     return {"queued": queued}
 
 
-def _downsample_eligible(tenant_id):
-    """READY docs that have an archive and no active job — candidates for the
-    archive-downsample backfill."""
+def _downsample_eligible(tenant_id, target_dpi: int):
+    """READY docs with an archive, no active job, and either an unmeasured DPI
+    (backlog to check) or a DPI above the cap. Docs already known to be at or
+    below the cap — including every born-compressed new document — are excluded,
+    so the count reflects real candidates, not the whole library."""
     active_jobs = select(Job.document_id).where(
         Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])
     )
@@ -760,17 +762,24 @@ def _downsample_eligible(tenant_id):
         Document.status == DocumentStatus.READY,
         Document.archive_blob_id.is_not(None),
         ~Document.id.in_(active_jobs),
+        or_(
+            Document.archive_dpi.is_(None),
+            Document.archive_dpi > target_dpi,
+        ),
     )
 
 
 @router.get("/downsample-candidates")
 async def downsample_candidates(user: CurrentUser, db: DB) -> dict:
-    """Documents whose archive could be re-checked against the DPI cap. This is
-    an upper bound — each job re-measures and skips anything already at or below
-    the cap — so it counts every OCR'd doc not currently queued."""
+    """Documents whose archive is unmeasured or above the cap — the real
+    downsample candidates. Docs already at/below the cap (every born-compressed
+    new document) are excluded, so this doesn't tick up on each new scan."""
+    dpi = await resolve_archive_dpi(db)
     count = (
         await db.execute(
-            select(func.count(Document.id)).where(*_downsample_eligible(user.tenant_id))
+            select(func.count(Document.id)).where(
+                *_downsample_eligible(user.tenant_id, dpi)
+            )
         )
     ).scalar_one()
     non_pdfa = (
@@ -782,7 +791,6 @@ async def downsample_candidates(user: CurrentUser, db: DB) -> dict:
             )
         )
     ).scalar_one()
-    dpi = await resolve_archive_dpi(db)
     return {
         "count": count, "target_dpi": dpi, "enabled": dpi > 0, "non_pdfa": non_pdfa
     }
@@ -804,7 +812,7 @@ async def downsample_archives(
     ids = (
         await db.execute(
             select(Document.id)
-            .where(*_downsample_eligible(user.tenant_id))
+            .where(*_downsample_eligible(user.tenant_id, dpi))
             .limit(limit)
         )
     ).scalars().all()
@@ -815,7 +823,9 @@ async def downsample_archives(
     # drop out of the eligible set, so this is the true remainder.
     remaining = (
         await db.execute(
-            select(func.count(Document.id)).where(*_downsample_eligible(user.tenant_id))
+            select(func.count(Document.id)).where(
+                *_downsample_eligible(user.tenant_id, dpi)
+            )
         )
     ).scalar_one()
     return {"queued": len(ids), "remaining": remaining, "target_dpi": dpi}
