@@ -6,7 +6,13 @@ from fastapi import APIRouter, HTTPException, status
 from app.config import settings
 from app.deps import DB, CurrentUser
 from app.models import AppSetting
-from app.services.app_state import OCR_ENGINE_OVERRIDE, get_value, set_value
+from app.services.app_state import (
+    ARCHIVE_MAX_DPI,
+    OCR_ENGINE_OVERRIDE,
+    get_value,
+    resolve_archive_dpi,
+    set_value,
+)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -91,6 +97,39 @@ async def set_ocr_engine(body: dict, user: CurrentUser, db: DB) -> dict:
         )
     await set_value(db, OCR_ENGINE_OVERRIDE, engine)
     return {"engine": engine or settings.ocr_engine, "engine_override": engine}
+
+
+@router.get("/archive-dpi")
+async def archive_dpi_settings(user: CurrentUser, db: DB) -> dict:
+    override = await get_value(db, ARCHIVE_MAX_DPI)
+    return {
+        "dpi": await resolve_archive_dpi(db),
+        "dpi_env": settings.archive_max_dpi,
+        "dpi_override": override,
+    }
+
+
+@router.post("/archive-dpi")
+async def set_archive_dpi(body: dict, user: CurrentUser, db: DB) -> dict:
+    """Runtime cap on archive image DPI. 0 disables downsampling; empty string
+    returns to the env default. Applies to OCR and downsample jobs from now on."""
+    raw = body.get("dpi")
+    if raw in (None, ""):
+        await set_value(db, ARCHIVE_MAX_DPI, "")
+        return {"dpi": await resolve_archive_dpi(db), "dpi_override": ""}
+    try:
+        dpi = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "DPI must be a whole number")
+    if dpi < 0 or dpi > 1200:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "DPI must be between 0 and 1200")
+    if 0 < dpi < 150:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Below 150 DPI degrades legibility and OCR — use 0 to disable instead",
+        )
+    await set_value(db, ARCHIVE_MAX_DPI, str(dpi))
+    return {"dpi": dpi, "dpi_override": str(dpi)}
 
 
 @router.get("/health")

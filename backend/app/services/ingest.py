@@ -19,10 +19,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import Blob, Document, DocumentStatus, Job, JobStatus
-from app.services import push, similarity, storage, thumbnails
+from app.services import compress, push, similarity, storage, thumbnails
 from app.services.classify import classify_document
 from app.services.dates import extract_document_date
-from app.services.app_state import OCR_ENGINE_OVERRIDE, get_value
+from app.services.app_state import (
+    OCR_ENGINE_OVERRIDE,
+    get_value,
+    resolve_archive_dpi,
+)
 from app.services.ocr import get_provider
 
 logger = logging.getLogger(__name__)
@@ -48,7 +52,12 @@ class IngestOutcome:
 
 
 def _run_ocr(
-    original: Path, suffix: str, mode: str, workdir: Path, engine: str | None = None
+    original: Path,
+    suffix: str,
+    mode: str,
+    workdir: Path,
+    engine: str | None = None,
+    max_dpi: int = 0,
 ) -> IngestOutcome:
     provider = get_provider(engine)
     # Blob paths are opaque (no extension); providers dispatch on suffix,
@@ -57,19 +66,30 @@ def _run_ocr(
     source.symlink_to(original)
     result = provider.process(source, workdir, mode)
 
+    archive_path = result.archive_path
+    # Born-compressed: cap archive image DPI at ingest so new docs don't need a
+    # later backfill. Only shrinks images above the cap; fail-soft keeps the
+    # full-res archive if the rebuild isn't a clean, smaller win.
+    if archive_path is not None and max_dpi > 0:
+        dpi = compress.max_image_dpi(archive_path)
+        if dpi is not None and dpi > max_dpi:
+            reduced = workdir / "archive_reduced.pdf"
+            if compress.downsample_archive(archive_path, reduced, max_dpi):
+                archive_path = reduced
+
     thumb_dir = workdir / "thumbwork"
     thumb_dir.mkdir()
-    thumb_path = thumbnails.make_thumbnail(result.archive_path or source, thumb_dir)
+    thumb_path = thumbnails.make_thumbnail(archive_path or source, thumb_dir)
     thumb = storage.store_file(thumb_path) if thumb_path else None
 
-    if result.archive_path is None:
+    if archive_path is None:
         pages = _page_count(source) if suffix.lower() == ".pdf" else 1
         return IngestOutcome(
             None, None, None, result.text, result.engine, pages, thumb
         )
-    pages = _page_count(result.archive_path)
+    pages = _page_count(archive_path)
     # Copy the archive into the blob store before the tempdir vanishes.
-    blob_id, sha256, size = storage.store_file(result.archive_path)
+    blob_id, sha256, size = storage.store_file(archive_path)
     return IngestOutcome(
         blob_id, sha256, size, result.text, result.engine, pages, thumb
     )
@@ -82,12 +102,15 @@ async def _run_with_progress(
     suffix: str,
     workdir: Path,
     engine: str | None = None,
+    max_dpi: int = 0,
 ) -> IngestOutcome:
     """Run OCR in a thread while mirroring the plugin's page counter (see
     ocr/progress_plugin.py) onto the job row so the UI can show a real bar."""
     progress_file = workdir / "progress"
     task = asyncio.create_task(
-        asyncio.to_thread(_run_ocr, original, suffix, job.mode, workdir, engine)
+        asyncio.to_thread(
+            _run_ocr, original, suffix, job.mode, workdir, engine, max_dpi
+        )
     )
     last: tuple[str, int, int] | None = None
     last_beat = 0.0
@@ -135,11 +158,13 @@ async def process_job(session: AsyncSession, job: Job) -> None:
     suffix = Path(document.original_filename).suffix
     # Runtime Settings toggle wins over the OCR_ENGINE env default.
     engine_override = await get_value(session, OCR_ENGINE_OVERRIDE)
+    max_dpi = await resolve_archive_dpi(session)
     try:
         with tempfile.TemporaryDirectory(prefix="ingest-") as tmp:
             workdir = Path(tmp)
             outcome = await _run_with_progress(
-                session, job, original, suffix, workdir, engine_override or None
+                session, job, original, suffix, workdir,
+                engine_override or None, max_dpi,
             )
     except Exception as exc:
         logger.warning("OCR failed for document %s: %s", document.id, exc)

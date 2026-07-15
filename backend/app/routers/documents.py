@@ -30,7 +30,13 @@ from app.services import deletion, intake, storage, thumbnails
 from app.services import pages as pages_service
 from app.services.intake import DuplicateDocument
 from app.services.dates import extract_document_date
-from app.services.app_state import PROCESSING_PAUSED, get_flag, get_value, set_flag
+from app.services.app_state import (
+    PROCESSING_PAUSED,
+    get_flag,
+    get_value,
+    resolve_archive_dpi,
+    set_flag,
+)
 from app.services.intake import ACCEPTED_SUFFIXES
 from app.services.tag_tree import with_ancestors
 
@@ -690,6 +696,68 @@ async def upgrade_ocr(user: CurrentUser, db: DB) -> dict:
         queued += 1
     await db.flush()
     return {"queued": queued}
+
+
+def _downsample_eligible(tenant_id):
+    """READY docs that have an archive and no active job — candidates for the
+    archive-downsample backfill."""
+    active_jobs = select(Job.document_id).where(
+        Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])
+    )
+    return (
+        Document.tenant_id == tenant_id,
+        Document.deleted_at.is_(None),
+        Document.status == DocumentStatus.READY,
+        Document.archive_blob_id.is_not(None),
+        ~Document.id.in_(active_jobs),
+    )
+
+
+@router.get("/downsample-candidates")
+async def downsample_candidates(user: CurrentUser, db: DB) -> dict:
+    """Documents whose archive could be re-checked against the DPI cap. This is
+    an upper bound — each job re-measures and skips anything already at or below
+    the cap — so it counts every OCR'd doc not currently queued."""
+    count = (
+        await db.execute(
+            select(func.count(Document.id)).where(*_downsample_eligible(user.tenant_id))
+        )
+    ).scalar_one()
+    dpi = await resolve_archive_dpi(db)
+    return {"count": count, "target_dpi": dpi, "enabled": dpi > 0}
+
+
+@router.post("/downsample-archives")
+async def downsample_archives(
+    user: CurrentUser, db: DB, limit: int = 1000
+) -> dict:
+    """Queue archive-downsample jobs at the LOWEST priority so they run behind
+    fresh intake and OCR upgrades. Batched: queues up to `limit` documents per
+    call and returns `remaining` still to do — call again until it hits 0."""
+    dpi = await resolve_archive_dpi(db)
+    if dpi <= 0:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Archive downsampling is disabled — set the DPI cap first.",
+        )
+    ids = (
+        await db.execute(
+            select(Document.id)
+            .where(*_downsample_eligible(user.tenant_id))
+            .limit(limit)
+        )
+    ).scalars().all()
+    for doc_id in ids:
+        db.add(Job(document_id=doc_id, kind="downsample", mode="skip", priority=5))
+    await db.flush()
+    # Recompute after flush: the jobs we just queued now count as active and
+    # drop out of the eligible set, so this is the true remainder.
+    remaining = (
+        await db.execute(
+            select(func.count(Document.id)).where(*_downsample_eligible(user.tenant_id))
+        )
+    ).scalar_one()
+    return {"queued": len(ids), "remaining": remaining, "target_dpi": dpi}
 
 
 @router.get("/{doc_id}", response_model=DocumentOut)

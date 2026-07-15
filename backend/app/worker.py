@@ -14,8 +14,15 @@ from sqlalchemy import and_, func, or_, select, text
 from app.config import settings
 from app.database import SessionLocal, engine
 from app.models import Document, DocumentStatus, Job, JobStatus, Tenant
-from app.services.app_state import PROCESSING_PAUSED, get_flag, get_value, set_value
+from app.services.app_state import (
+    PROCESSING_PAUSED,
+    get_flag,
+    get_value,
+    resolve_archive_dpi,
+    set_value,
+)
 from app.services import similarity
+from app.services.compress import process_downsample_job
 from app.services.deletion import purge_expired, sweep_upload_sessions
 from app.services.export import run_export
 from app.services.ingest import process_job
@@ -68,8 +75,15 @@ async def claim_and_run() -> bool:
         if job is None:
             await session.rollback()
             return False
-        logger.info("processing job %s (document %s, mode %s)", job.id, job.document_id, job.mode)
-        await process_job(session, job)
+        logger.info(
+            "processing job %s (document %s, kind %s, mode %s)",
+            job.id, job.document_id, job.kind, job.mode,
+        )
+        if job.kind == "downsample":
+            target = await resolve_archive_dpi(session)
+            await process_downsample_job(session, job, target)
+        else:
+            await process_job(session, job)
         return True
 
 

@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # with WORKER_CONCURRENCY, total concurrent OCR fan-out (and load on the
     # Vision sidecar) stays bounded rather than pages_per_doc × docs.
     ocr_jobs: int = 3
+    # Cap archive-image resolution at this DPI: OCR output (and the backfill
+    # job) downsamples images above it, since a document library never needs
+    # more than ~300 DPI. 0 disables downsampling entirely. Runtime-adjustable
+    # via Settings (app_state ARCHIVE_MAX_DPI).
+    archive_max_dpi: int = 300
     # OCR watchdog: kill a run only when page progress stalls this long
     # (wedged Ghostscript), not on a fixed clock — a 2,000-page book on
     # Tesseract may healthily grind for hours. Hard ceiling as a backstop.

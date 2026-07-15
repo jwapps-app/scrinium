@@ -15,6 +15,8 @@ export default function Settings() {
   const [ocr, setOcr] = useState(null)
   const [upgrade, setUpgrade] = useState(null)
   const [upgrading, setUpgrading] = useState(false)
+  const [downsample, setDownsample] = useState(null)
+  const [compressing, setCompressing] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -23,6 +25,9 @@ export default function Settings() {
       try {
         const data = await apiJson('/api/settings/ocr')
         apiJson('/api/documents/upgradeable').then(setUpgrade).catch(() => {})
+        apiJson('/api/documents/downsample-candidates')
+          .then((d) => !cancelled && setDownsample(d))
+          .catch(() => {})
         if (!cancelled) {
           setOcr(data)
           setError('')
@@ -149,6 +154,78 @@ export default function Settings() {
           server environment.
         </p>
         <SidecarSetup connected={sidecar?.healthy === true} />
+        </section>
+
+        <section className="settings-section">
+          <h2>Storage</h2>
+          <div className="settings-rows">
+            <div className="settings-row">
+              <span>Archive resolution cap</span>
+              <strong>
+                {downsample
+                  ? downsample.enabled
+                    ? `${downsample.target_dpi} DPI`
+                    : 'Downsampling off'
+                  : '…'}
+              </strong>
+            </div>
+          </div>
+          {downsample?.enabled && downsample.count > 0 && (
+            <div className="organize-block">
+              <div className="organize-head">
+                <strong>
+                  {downsample.count.toLocaleString()} archives to check
+                </strong>
+                <button
+                  disabled={compressing}
+                  onClick={async () => {
+                    if (
+                      !window.confirm(
+                        `Shrink oversized archives to ${downsample.target_dpi} DPI? Originals are never touched, and each archive is only replaced when the result is genuinely smaller. Runs at the lowest priority — new documents and OCR always go first.`,
+                      )
+                    )
+                      return
+                    setCompressing(true)
+                    let queued = 0
+                    try {
+                      // Batched endpoint: loop until nothing remains eligible.
+                      for (let i = 0; i < 1000; i++) {
+                        const r = await apiJson(
+                          '/api/documents/downsample-archives',
+                          { method: 'POST' },
+                        )
+                        queued += r.queued
+                        if (r.queued === 0 || r.remaining === 0) break
+                      }
+                      setDownsample({ ...downsample, count: 0 })
+                      window.alert(
+                        `${queued.toLocaleString()} archives queued for downsampling. They shrink in the background as the queue idles.`,
+                      )
+                      window.dispatchEvent(new Event('library-changed'))
+                    } catch (err) {
+                      setError(err.message)
+                    } finally {
+                      setCompressing(false)
+                    }
+                  }}
+                >
+                  {compressing ? 'Queueing…' : 'Reclaim space'}
+                </button>
+              </div>
+              <p className="settings-help">
+                Caps scanned-image resolution at {downsample.target_dpi} DPI —
+                plenty for reading, search, and print. Each job re-checks the
+                archive and skips anything already at or below the cap, so this
+                is safe to run repeatedly. A bad result is always recoverable by
+                re-OCR from the untouched original.
+              </p>
+            </div>
+          )}
+          <p className="settings-help">
+            New documents are capped at this resolution automatically. The
+            cap is set with <code>ARCHIVE_MAX_DPI</code> in the server
+            environment (0 disables it).
+          </p>
         </section>
 
         <section className="settings-section">

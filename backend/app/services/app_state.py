@@ -2,10 +2,12 @@
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import AppSetting
 
 PROCESSING_PAUSED = "processing_paused"
 OCR_ENGINE_OVERRIDE = "ocr_engine_override"
+ARCHIVE_MAX_DPI = "archive_max_dpi"
 
 
 async def get_flag(session: AsyncSession, key: str, default: bool = False) -> bool:
@@ -36,3 +38,12 @@ async def set_value(session: AsyncSession, key: str, value: str) -> None:
     else:
         row.value = value
     await session.flush()
+
+
+async def resolve_archive_dpi(session: AsyncSession) -> int:
+    """The active archive-DPI cap: runtime Settings override wins over the
+    ARCHIVE_MAX_DPI env default. 0 means downsampling is disabled."""
+    override = (await get_value(session, ARCHIVE_MAX_DPI)).strip()
+    if override.isdigit():
+        return int(override)
+    return settings.archive_max_dpi
