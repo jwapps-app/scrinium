@@ -19,6 +19,17 @@ function Snippet({ text }) {
 }
 
 const ENGINES = ['tesseract', 'apple', 'native']
+function fmtBytes(n) {
+  if (!n) return null
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  while (n >= 1024 && i < u.length - 1) {
+    n /= 1024
+    i++
+  }
+  return `${i === 0 ? n : n.toFixed(1)} ${u[i]}`
+}
+
 const SORTS = [
   ['newest', 'Newest added'],
   ['oldest', 'Oldest added'],
@@ -29,6 +40,7 @@ const SORTS = [
   ['doctype', 'Type A–Z'],
   ['pages', 'Most pages'],
   ['size', 'Largest file'],
+  ['dpi', 'Highest resolution'],
   ['expires', 'Expiring first'],
   ['updated', 'Recently updated'],
 ]
@@ -758,6 +770,8 @@ export default function Library() {
                       <span className="card-meta">
                         {d.correspondent_name ? `${d.correspondent_name} · ` : ''}
                         {d.page_count ? `${d.page_count} pp · ` : ''}
+                        {fmtBytes(d.size_bytes) ? `${fmtBytes(d.size_bytes)} · ` : ''}
+                        {d.archive_dpi ? `${d.archive_dpi} DPI · ` : ''}
                         {displayDate(d)}
                       </span>
                       <StatusChip status={d.status} progress={d.progress} phase={d.phase} />
@@ -794,6 +808,8 @@ export default function Library() {
                       <span className="doc-meta">
                         {d.correspondent_name ? `${d.correspondent_name} · ` : ''}
                         {d.page_count ? `${d.page_count} pp · ` : ''}
+                        {fmtBytes(d.size_bytes) ? `${fmtBytes(d.size_bytes)} · ` : ''}
+                        {d.archive_dpi ? `${d.archive_dpi} DPI · ` : ''}
                         {displayDate(d)}
                       </span>
                       {d.status === 'processing' && d.progress != null && (

@@ -50,6 +50,7 @@ class IngestOutcome:
     page_count: int | None
     thumb: tuple[uuid.UUID, str, int] | None = None  # (blob_id, sha256, size)
     archive_pdfa: bool | None = None  # PDF/A conformance of the stored archive
+    archive_dpi: int | None = None  # highest embedded-image DPI of the archive
 
 
 def _run_ocr(
@@ -90,12 +91,14 @@ def _run_ocr(
         )
     pages = _page_count(archive_path)
     # Measure the final archive's PDF/A status (ocrmypdf usually emits PDF/A,
-    # but its force-raster fallback and a plain-PDF downsample do not).
+    # but its force-raster fallback and a plain-PDF downsample do not) and its
+    # image resolution (surfaced/sortable in the library).
     pdfa = compress.is_pdfa(archive_path)
+    dpi = compress.max_image_dpi(archive_path)
     # Copy the archive into the blob store before the tempdir vanishes.
     blob_id, sha256, size = storage.store_file(archive_path)
     return IngestOutcome(
-        blob_id, sha256, size, result.text, result.engine, pages, thumb, pdfa
+        blob_id, sha256, size, result.text, result.engine, pages, thumb, pdfa, dpi
     )
 
 
@@ -202,6 +205,7 @@ async def process_job(session: AsyncSession, job: Job) -> None:
         )
         document.archive_blob_id = outcome.blob_id
         document.archive_pdfa = outcome.archive_pdfa
+        document.archive_dpi = outcome.archive_dpi
     if outcome.thumb is not None:
         old_thumb_id = document.thumbnail_blob_id
         t_id, t_sha, t_size = outcome.thumb

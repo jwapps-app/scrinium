@@ -257,6 +257,30 @@ export default function Insights() {
               </section>
             )}
 
+            {data.largest?.length > 0 && (
+              <section className="insight-section">
+                <h2>Largest documents</h2>
+                <p className="settings-help">
+                  Biggest on-disk footprint (original + archive). Sort the whole
+                  library by size or resolution from the library toolbar.
+                </p>
+                <ul className="dup-list">
+                  {data.largest.map((d) => (
+                    <li key={d.id} className="dup-pair">
+                      <span className="dup-similarity">{fmtBytes(d.bytes)}</span>
+                      <span className="dup-docs">
+                        <Link to={`/doc/${d.id}`}>{d.title}</Link>
+                        <span className="settings-hint">
+                          {d.pages ? `${d.pages} pp` : ''}
+                          {d.dpi ? ` · ${d.dpi} DPI` : ''}
+                        </span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
             {storage?.enabled && storage.count > 0 && (
               <section className="insight-section">
                 <h2>Reclaim space</h2>

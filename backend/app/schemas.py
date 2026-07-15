@@ -63,6 +63,8 @@ class DocumentOut(BaseModel):
     error: str | None
     ocr_engine: str | None
     page_count: int | None
+    archive_dpi: int | None = None
+    size_bytes: int | None = None  # total on-disk footprint (original + archive)
     has_archive: bool = False
     has_thumbnail: bool = False
     progress: float | None = None  # 0..1 while OCR is running

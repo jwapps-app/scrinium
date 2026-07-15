@@ -250,6 +250,7 @@ async def process_downsample_job(
 
     archive_path = storage.blob_file(document.archive_blob_id)
     dpi = await asyncio.to_thread(max_image_dpi, archive_path)
+    document.archive_dpi = dpi  # backfill the measured resolution either way
     if dpi is None or dpi <= target_dpi:
         # Already lean — nothing to rebuild, but record the archive's current
         # PDF/A status so the indicator is accurate across the whole library.
@@ -288,6 +289,7 @@ async def process_downsample_job(
     )
     document.archive_blob_id = blob_id
     document.archive_pdfa = result == "pdfa"
+    document.archive_dpi = target_dpi  # capped to the target
     job.status = JobStatus.DONE
     job.finished_at = datetime.now(timezone.utc)
     await session.commit()

@@ -68,6 +68,8 @@ class Document(Base):
     # Whether the archive is PDF/A-conformant. None = unknown/no archive;
     # False marks the plain PDFs that couldn't be made PDF/A.
     archive_pdfa: Mapped[bool | None] = mapped_column(nullable=True)
+    # Highest embedded-image DPI in the archive (None = not yet measured).
+    archive_dpi: Mapped[int | None] = mapped_column(nullable=True)
     # Dismissed from the weak-OCR review ("the scan is fine as-is").
     weak_ocr_dismissed: Mapped[bool] = mapped_column(
         default=False, server_default="false"

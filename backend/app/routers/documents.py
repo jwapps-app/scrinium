@@ -62,8 +62,11 @@ def doc_out(
     doc: Document,
     progress: tuple[float, str | None] | None = None,
     custom_values: dict[str, str] | None = None,
+    size_bytes: int | None = None,
 ) -> DocumentOut:
     out = DocumentOut.model_validate(doc)
+    if size_bytes is not None:
+        out.size_bytes = size_bytes
     out.has_archive = doc.archive_blob_id is not None
     out.has_thumbnail = doc.thumbnail_blob_id is not None
     out.correspondent_name = doc.correspondent.name if doc.correspondent else None
@@ -132,14 +135,18 @@ SORTS = {
         .nulls_last()
     ),
     "pages": Document.page_count.desc().nulls_last(),
+    # Total on-disk footprint: original + archive blob.
     "size": (
-        select(Blob.size_bytes)
-        .where(Blob.id == Document.original_blob_id)
+        select(func.coalesce(func.sum(Blob.size_bytes), 0))
+        .where(
+            (Blob.id == Document.original_blob_id)
+            | (Blob.id == Document.archive_blob_id)
+        )
         .correlate(Document)
         .scalar_subquery()
         .desc()
-        .nulls_last()
     ),
+    "dpi": Document.archive_dpi.desc().nulls_last(),
 }
 
 
@@ -384,9 +391,38 @@ async def list_documents(
     ).scalars().all()
     running = [d.id for d in docs if d.status == DocumentStatus.PROCESSING]
     progress = await _progress_map(db, running)
+    sizes = await _size_map(db, docs)
     return DocumentList(
-        items=[doc_out(d, progress.get(d.id)) for d in docs], total=total
+        items=[
+            doc_out(d, progress.get(d.id), size_bytes=sizes.get(d.id))
+            for d in docs
+        ],
+        total=total,
     )
+
+
+async def _size_map(db, docs) -> dict:
+    """document_id -> total on-disk bytes (original + archive blob)."""
+    blob_ids = set()
+    for d in docs:
+        if d.original_blob_id:
+            blob_ids.add(d.original_blob_id)
+        if d.archive_blob_id:
+            blob_ids.add(d.archive_blob_id)
+    if not blob_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(Blob.id, Blob.size_bytes).where(Blob.id.in_(blob_ids))
+        )
+    ).all()
+    by_blob = {bid: (sz or 0) for bid, sz in rows}
+    out = {}
+    for d in docs:
+        out[d.id] = by_blob.get(d.original_blob_id, 0) + by_blob.get(
+            d.archive_blob_id, 0
+        )
+    return out
 
 
 @router.get("/stats")

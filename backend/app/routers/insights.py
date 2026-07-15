@@ -131,10 +131,46 @@ async def insights(user: CurrentUser, db: DB) -> dict:
         )
     ).all()
 
+    # Biggest documents by total on-disk footprint (original + archive) — the
+    # storage hogs, with resolution so you can judge reclaim potential.
+    footprint = (
+        select(func.coalesce(func.sum(Blob.size_bytes), 0))
+        .where(
+            (Blob.id == Document.original_blob_id)
+            | (Blob.id == Document.archive_blob_id)
+        )
+        .correlate(Document)
+        .scalar_subquery()
+    )
+    largest_rows = (
+        await db.execute(
+            select(
+                Document.id,
+                Document.title,
+                Document.page_count,
+                Document.archive_dpi,
+                footprint.label("bytes"),
+            )
+            .where(*live)
+            .order_by(footprint.desc())
+            .limit(12)
+        )
+    ).all()
+
     return {
         "documents": totals[0],
         "pages": int(totals[1]),
         "storage_bytes": int(storage_bytes),
+        "largest": [
+            {
+                "id": str(i),
+                "title": t,
+                "pages": p,
+                "dpi": dpi,
+                "bytes": int(b or 0),
+            }
+            for i, t, p, dpi, b in largest_rows
+        ],
         "monthly": [{"month": m, "count": c} for m, c in monthly_rows],
         "correspondents": await top(Correspondent, Document.correspondent_id),
         "doc_types": await top(DocType, Document.doc_type_id),
