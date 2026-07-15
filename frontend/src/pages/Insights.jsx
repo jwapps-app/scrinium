@@ -90,8 +90,15 @@ export default function Insights() {
         queued += r.queued
         if (r.queued === 0 || r.remaining === 0) break
       }
-      setStorage({ ...storage, count: 0 })
-      window.alert(`${queued.toLocaleString()} archives queued for downsampling.`)
+      // Refetch the real count (queued docs drop out until their jobs finish);
+      // the section stays put so you can lower the DPI and run it again later.
+      const fresh = await apiJson('/api/documents/downsample-candidates').catch(
+        () => null,
+      )
+      if (fresh) setStorage(fresh)
+      window.alert(
+        `${queued.toLocaleString()} archives queued for downsampling. Lower the DPI and run it again once these finish to shrink further.`,
+      )
       window.dispatchEvent(new Event('library-changed'))
     } catch (err) {
       setError(err.message)
@@ -281,12 +288,14 @@ export default function Insights() {
               </section>
             )}
 
-            {storage?.enabled && storage.count > 0 && (
+            {storage?.enabled && (
               <section className="insight-section">
                 <h2>Reclaim space</h2>
                 <div className="organize-head">
                   <strong>
-                    {storage.count.toLocaleString()} archives to check
+                    {storage.count > 0
+                      ? `${storage.count.toLocaleString()} archives to check`
+                      : 'No archives waiting'}
                   </strong>
                   <div className="reclaim-controls">
                     <label className="reclaim-dpi">
@@ -303,7 +312,10 @@ export default function Insights() {
                         <option value="600">600 DPI</option>
                       </select>
                     </label>
-                    <button disabled={compressing} onClick={reclaim}>
+                    <button
+                      disabled={compressing || storage.count === 0}
+                      onClick={reclaim}
+                    >
                       {compressing ? 'Queueing…' : 'Reclaim space'}
                     </button>
                   </div>
