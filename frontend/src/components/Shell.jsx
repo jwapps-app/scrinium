@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-do
 import { apiJson, setTokens } from '../api'
 import { APP_NAME } from '../constants/branding'
 import ProgressBar, { formatEta } from './ProgressBar'
+import Icon from './Icon'
 
 // Order tags as a tree: parents first, children indented beneath them.
 // `collapsed` (a Set of tag ids) prunes the descendants of collapsed nodes;
@@ -186,21 +187,23 @@ export default function Shell({ children }) {
   const activeCorrespondent = onLibrary ? params.get('correspondent') : null
 
   const statusLinks = [
-    { label: 'All documents', to: '/', key: null, count: stats?.total },
-    { label: 'Completed', to: '/?status=ready', key: 'ready', count: stats?.ready },
+    { label: 'All documents', to: '/', key: null, icon: 'docs', count: stats?.total },
+    { label: 'Completed', to: '/?status=ready', key: 'ready', icon: 'check', count: stats?.ready },
     {
       label: 'Processing',
       to: '/?status=processing',
       key: 'processing',
+      icon: 'processing',
       count: stats?.processing,
     },
     {
       label: 'Needs attention',
       to: '/?status=flagged',
       key: 'flagged',
+      icon: 'attention',
       count: stats?.flagged,
     },
-    { label: 'Trash', to: '/?status=trash', key: 'trash', count: stats?.trash },
+    { label: 'Trash', to: '/?status=trash', key: 'trash', icon: 'trash', count: stats?.trash },
   ]
 
   return (
@@ -217,6 +220,17 @@ export default function Shell({ children }) {
           {APP_NAME}
         </Link>
 
+        <Link
+          to="/insights"
+          className={`side-link side-feature ${
+            location.pathname === '/insights' ? 'active' : ''
+          }`}
+        >
+          <span className="side-label">
+            <Icon name="insights" className="side-icon" /> Insights
+          </span>
+        </Link>
+
         <nav className="side-group">
           {statusLinks.map((s) => (
             <Link
@@ -226,7 +240,9 @@ export default function Shell({ children }) {
                 onLibrary && activeStatus === s.key && !activeTag ? 'active' : ''
               }`}
             >
-              <span>{s.label}</span>
+              <span className="side-label">
+                <Icon name={s.icon} className="side-icon" /> {s.label}
+              </span>
               {s.count != null && <span className="side-count">{s.count}</span>}
             </Link>
           ))}
@@ -235,7 +251,9 @@ export default function Shell({ children }) {
               to="/?expiring=1&sort=expires"
               className="side-link expiring-link"
             >
-              <span>Expiring soon</span>
+              <span className="side-label">
+                <Icon name="clock" className="side-icon" /> Expiring soon
+              </span>
               <span className="side-count">{stats.expiring}</span>
             </Link>
           )}
@@ -246,7 +264,9 @@ export default function Shell({ children }) {
                 location.pathname === '/review' ? 'active' : ''
               }`}
             >
-              <span>To review</span>
+              <span className="side-label">
+                <Icon name="review" className="side-icon" /> To review
+              </span>
               <span className="side-count">{stats.review}</span>
             </Link>
           )}
@@ -436,25 +456,25 @@ export default function Shell({ children }) {
 
         <div className="side-group side-bottom">
           <Link
-            to="/insights"
-            className={`side-link ${location.pathname === '/insights' ? 'active' : ''}`}
-          >
-            Insights
-          </Link>
-          <Link
             to="/offline"
             className={`side-link ${location.pathname === '/offline' ? 'active' : ''}`}
           >
-            Offline
+            <span className="side-label">
+              <Icon name="offline" className="side-icon" /> Offline
+            </span>
           </Link>
           <Link
             to="/settings"
             className={`side-link ${location.pathname === '/settings' ? 'active' : ''}`}
           >
-            Settings
+            <span className="side-label">
+              <Icon name="settings" className="side-icon" /> Settings
+            </span>
           </Link>
           <button className="side-link side-button" onClick={() => setTokens(null)}>
-            Sign out
+            <span className="side-label">
+              <Icon name="signout" className="side-icon" /> Sign out
+            </span>
           </button>
         </div>
       </aside>

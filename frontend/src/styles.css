@@ -218,6 +218,31 @@ textarea:hover {
   background: var(--bg);
 }
 
+/* Label + custom icon on a nav row */
+.side-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+.icon {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex-shrink: 0;
+}
+.side-icon {
+  color: var(--accent);
+}
+/* On the active (burgundy) row, the icon flips to the readable foreground. */
+.side-link.active .side-icon {
+  color: var(--accent-text);
+}
+/* The promoted Insights entry sits above the main nav with a little air. */
+.side-feature {
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+}
+
 .side-link.active {
   background: var(--accent);
   color: var(--accent-text);
