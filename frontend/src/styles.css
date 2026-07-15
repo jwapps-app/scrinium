@@ -614,9 +614,14 @@ textarea:hover {
   flex-wrap: wrap;
 }
 
-.dup-actions button {
+.dup-actions button,
+.dup-actions .ghost-link {
   font-size: 0.7rem;
   padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  display: inline-block;
+  text-decoration: none;
+  cursor: pointer;
 }
 
 /* Keyboard help */
@@ -2129,4 +2134,100 @@ button.linklike {
   border-radius: 2px;
   pointer-events: none;
   mix-blend-mode: multiply;
+}
+
+/* Side-by-side document comparison (duplicate review) */
+.compare-view {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  z-index: 50;
+}
+.compare-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.compare-bar .compare-acts {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.compare-lock {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+}
+.compare-lock.is-on {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+.compare-titles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+.compare-titles span {
+  padding: 0.35rem 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compare-titles span:first-child {
+  border-right: 1px solid var(--border);
+}
+.compare-panes {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 0;
+}
+.compare-pane {
+  position: relative;
+  min-width: 0;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.compare-pane:last-child {
+  border-right: none;
+}
+.compare-scroller {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.5rem;
+  background: color-mix(in srgb, var(--text) 6%, var(--bg));
+}
+.compare-page {
+  background: #fff;
+  margin: 0 auto 0.5rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  width: 100%;
+}
+.compare-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  opacity: 0.6;
+  pointer-events: none;
+}
+@media (max-width: 640px) {
+  .compare-titles,
+  .compare-panes {
+    grid-template-columns: 1fr;
+  }
 }

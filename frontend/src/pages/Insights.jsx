@@ -47,11 +47,14 @@ function Bars({ items, labelKey, max, color, linkTo }) {
 export default function Insights() {
   const [data, setData] = useState(null)
   const [dupes, setDupes] = useState(null)
+  const [storage, setStorage] = useState(null)
+  const [compressing, setCompressing] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
     apiJson('/api/insights').then(setData).catch((e) => setError(e.message))
     apiJson('/api/insights/duplicates').then(setDupes).catch(() => {})
+    apiJson('/api/documents/downsample-candidates').then(setStorage).catch(() => {})
   }, [])
 
   const maxMonthly = data ? Math.max(1, ...data.monthly.map((m) => m.count)) : 1
@@ -165,6 +168,13 @@ export default function Insights() {
                           <Link to={`/doc/${p.b.id}`}>{p.b.title}</Link>
                         </span>
                         <span className="dup-actions">
+                          <Link
+                            className="ghost-link"
+                            to={`/compare/${p.a.id}/${p.b.id}`}
+                            title="Open both side by side"
+                          >
+                            Compare
+                          </Link>
                           <button
                             className="ghost"
                             title={`Move “${p.a.title}” to the trash`}
@@ -203,6 +213,62 @@ export default function Insights() {
                     ))}
                   </ul>
                 )}
+              </section>
+            )}
+
+            {storage?.enabled && storage.count > 0 && (
+              <section className="insight-section">
+                <h2>Reclaim space</h2>
+                <p className="settings-help">
+                  Scanned pages above {storage.target_dpi} DPI carry more
+                  resolution than a document library needs. Downsampling caps
+                  them at {storage.target_dpi} DPI — originals are never touched,
+                  each archive is only replaced when the result is genuinely
+                  smaller, and it runs at the lowest priority behind new work.
+                  {storage.non_pdfa > 0 && (
+                    <>
+                      {' '}
+                      <a href="/?non_pdfa=1">
+                        {storage.non_pdfa.toLocaleString()} archives aren’t
+                        PDF/A.
+                      </a>
+                    </>
+                  )}
+                </p>
+                <button
+                  disabled={compressing}
+                  onClick={async () => {
+                    if (
+                      !window.confirm(
+                        `Shrink oversized archives to ${storage.target_dpi} DPI? Runs in the background — new documents and OCR always go first.`,
+                      )
+                    )
+                      return
+                    setCompressing(true)
+                    let queued = 0
+                    try {
+                      for (let i = 0; i < 1000; i++) {
+                        const r = await apiJson(
+                          '/api/documents/downsample-archives',
+                          { method: 'POST' },
+                        )
+                        queued += r.queued
+                        if (r.queued === 0 || r.remaining === 0) break
+                      }
+                      setStorage({ ...storage, count: 0 })
+                      window.alert(
+                        `${queued.toLocaleString()} archives queued for downsampling.`,
+                      )
+                      window.dispatchEvent(new Event('library-changed'))
+                    } catch (err) {
+                      setError(err.message)
+                    } finally {
+                      setCompressing(false)
+                    }
+                  }}
+                >
+                  {compressing ? 'Queueing…' : 'Reclaim space'}
+                </button>
               </section>
             )}
 

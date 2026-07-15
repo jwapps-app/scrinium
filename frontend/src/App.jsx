@@ -5,6 +5,7 @@ import Login from './pages/Login'
 import Setup from './pages/Setup'
 import Library from './pages/Library'
 import DocumentView from './pages/DocumentView'
+import Compare from './pages/Compare'
 import Settings from './pages/Settings'
 import Insights from './pages/Insights'
 import OfflineDocs from './pages/OfflineDocs'
@@ -48,6 +49,14 @@ export default function App() {
         element={
           <RequireAuth>
             <DocumentView />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/compare/:a/:b"
+        element={
+          <RequireAuth>
+            <Compare />
           </RequireAuth>
         }
       />
