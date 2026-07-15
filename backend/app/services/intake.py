@@ -105,6 +105,7 @@ async def ingest_file(
     )
     if captured:
         doc.text_content = ocr_text
+        doc.text_length = len(ocr_text or "")
         doc.simhash = similarity.simhash(ocr_text)
         doc.ocr_engine = ocr_engine or "apple"
         doc.doc_date = extract_document_date(ocr_text)

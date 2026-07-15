@@ -1,9 +1,11 @@
 """Library statistics: what's in here, where it came from, what it costs."""
 
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
 from sqlalchemy import case, func, select, text
+from sqlalchemy.orm import aliased
 
 from app.services.similarity import find_near_duplicates
 
@@ -21,11 +23,40 @@ from app.models import (
 router = APIRouter(tags=["insights"])
 
 
+_INSIGHTS_CACHE: dict = {}
+_INSIGHTS_TTL = 60.0  # seconds — stats don't need to be real-time
+
+
+def _text_len():
+    """Effective OCR-text length: the cached column, falling back to measuring
+    the text for documents not yet backfilled."""
+    return func.coalesce(Document.text_length, func.length(Document.text_content))
+
+
 @router.get("/insights")
 async def insights(user: CurrentUser, db: DB) -> dict:
+    """Cached briefly per tenant: these aggregates are expensive on a large
+    library and don't need to be second-fresh, so repeat visits are instant."""
+    now = time.monotonic()
+    hit = _INSIGHTS_CACHE.get(user.tenant_id)
+    if hit is not None and now - hit[0] < _INSIGHTS_TTL:
+        return hit[1]
+    payload = await _compute_insights(user, db)
+    _INSIGHTS_CACHE[user.tenant_id] = (now, payload)
+    return payload
+
+
+async def _compute_insights(user: CurrentUser, db: DB) -> dict:
     live = (
         Document.tenant_id == user.tenant_id,
         Document.deleted_at.is_(None),
+    )
+    # Two aliases to sum a document's footprint via index-friendly PK joins,
+    # instead of a correlated subquery that scans blobs per document.
+    orig_blob = aliased(Blob)
+    arch_blob = aliased(Blob)
+    footprint = func.coalesce(orig_blob.size_bytes, 0) + func.coalesce(
+        arch_blob.size_bytes, 0
     )
 
     totals = (
@@ -39,16 +70,11 @@ async def insights(user: CurrentUser, db: DB) -> dict:
 
     storage_bytes = (
         await db.execute(
-            select(func.coalesce(func.sum(Blob.size_bytes), 0)).where(
-                Blob.id.in_(
-                    select(Document.original_blob_id).where(*live)
-                )
-                | Blob.id.in_(
-                    select(Document.archive_blob_id).where(
-                        *live, Document.archive_blob_id.is_not(None)
-                    )
-                )
-            )
+            select(func.coalesce(func.sum(footprint), 0))
+            .select_from(Document)
+            .outerjoin(orig_blob, orig_blob.id == Document.original_blob_id)
+            .outerjoin(arch_blob, arch_blob.id == Document.archive_blob_id)
+            .where(*live)
         )
     ).scalar_one()
 
@@ -113,7 +139,7 @@ async def insights(user: CurrentUser, db: DB) -> dict:
                 Document.id,
                 Document.title,
                 Document.page_count,
-                func.length(Document.text_content),
+                _text_len(),
             )
             .where(
                 *live,
@@ -121,11 +147,11 @@ async def insights(user: CurrentUser, db: DB) -> dict:
                 Document.weak_ocr_dismissed.is_(False),
                 Document.page_count > 0,
                 Document.text_content.is_not(None),
-                func.length(Document.text_content)
+                _text_len()
                 < Document.page_count * 150,
             )
             .order_by(
-                (func.length(Document.text_content) / Document.page_count)
+                (_text_len() / Document.page_count)
             )
             .limit(10)
         )
@@ -133,15 +159,6 @@ async def insights(user: CurrentUser, db: DB) -> dict:
 
     # Biggest documents by total on-disk footprint (original + archive) — the
     # storage hogs, with resolution so you can judge reclaim potential.
-    footprint = (
-        select(func.coalesce(func.sum(Blob.size_bytes), 0))
-        .where(
-            (Blob.id == Document.original_blob_id)
-            | (Blob.id == Document.archive_blob_id)
-        )
-        .correlate(Document)
-        .scalar_subquery()
-    )
     largest_rows = (
         await db.execute(
             select(
@@ -151,6 +168,9 @@ async def insights(user: CurrentUser, db: DB) -> dict:
                 Document.archive_dpi,
                 footprint.label("bytes"),
             )
+            .select_from(Document)
+            .outerjoin(orig_blob, orig_blob.id == Document.original_blob_id)
+            .outerjoin(arch_blob, arch_blob.id == Document.archive_blob_id)
             .where(*live)
             .order_by(footprint.desc())
             .limit(12)
@@ -200,7 +220,7 @@ def _weak_ocr_conditions(user):
         Document.weak_ocr_dismissed.is_(False),
         Document.page_count > 0,
         Document.text_content.is_not(None),
-        func.length(Document.text_content) < Document.page_count * 150,
+        _text_len() < Document.page_count * 150,
     )
 
 
@@ -217,11 +237,11 @@ async def weak_ocr(user: CurrentUser, db: DB, limit: int = 200) -> dict:
                 Document.id,
                 Document.title,
                 Document.page_count,
-                func.length(Document.text_content),
+                _text_len(),
                 Document.ocr_engine,
             )
             .where(*cond)
-            .order_by(func.length(Document.text_content) / Document.page_count)
+            .order_by(_text_len() / Document.page_count)
             .limit(limit)
         )
     ).all()

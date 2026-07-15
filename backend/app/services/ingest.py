@@ -214,6 +214,7 @@ async def process_job(session: AsyncSession, job: Job) -> None:
         )
         document.thumbnail_blob_id = t_id
     document.text_content = outcome.text
+    document.text_length = len(outcome.text or "")
     document.simhash = similarity.simhash(outcome.text or "")
     if document.doc_date is None:
         document.doc_date = extract_document_date(outcome.text)

@@ -135,12 +135,12 @@ SORTS = {
         .nulls_last()
     ),
     "pages": Document.page_count.desc().nulls_last(),
-    # Total on-disk footprint: original + archive blob.
+    # Total on-disk footprint: original + archive blob. IN (not OR) so the
+    # per-row subquery uses the blobs primary-key index.
     "size": (
         select(func.coalesce(func.sum(Blob.size_bytes), 0))
         .where(
-            (Blob.id == Document.original_blob_id)
-            | (Blob.id == Document.archive_blob_id)
+            Blob.id.in_([Document.original_blob_id, Document.archive_blob_id])
         )
         .correlate(Document)
         .scalar_subquery()

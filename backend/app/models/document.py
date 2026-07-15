@@ -106,6 +106,9 @@ class Document(Base):
     # 64-bit content fingerprint for near-duplicate detection.
     simhash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     text_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Character count of text_content, cached so weak-OCR stats don't detoast
+    # and re-measure the (large) text on every Insights load.
+    text_length: Mapped[int | None] = mapped_column(nullable=True)
     search_vector = mapped_column(
         TSVECTOR,
         Computed(

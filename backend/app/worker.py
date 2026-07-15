@@ -35,6 +35,22 @@ from app.services.watch import scan_once, sweep_retention
 WATCH_LOCK_KEY = 815551
 MAIL_LOCK_KEY = 815552
 PURGE_LOCK_KEY = 815553
+BACKFILL_LOCK_KEY = 815554
+
+
+async def _backfill_text_length() -> None:
+    """One-time gradual backfill of documents.text_length for docs OCR'd before
+    the column existed — a batch at a time so it never detoasts the whole
+    library at once. A no-op (0 rows) once everything is populated."""
+    async with SessionLocal() as session:
+        await session.execute(
+            text(
+                "UPDATE documents SET text_length = length(text_content) "
+                "WHERE id IN (SELECT id FROM documents "
+                "WHERE text_length IS NULL AND text_content IS NOT NULL LIMIT 2000)"
+            )
+        )
+        await session.commit()
 
 
 async def _with_advisory_lock(key: int, coro_fn) -> None:
@@ -118,7 +134,7 @@ async def processor_loop(slot: int) -> None:
 async def maintenance_loop() -> None:
     """Single lane for the periodic sweeps (watch/mail/purge). Advisory
     locks keep these singular even across multiple worker replicas."""
-    last_watch = last_mail = last_purge = 0.0
+    last_watch = last_mail = last_purge = last_backfill = 0.0
     last_reclaim = time.monotonic()
     last_pulse = 0.0
     prev_backlog: int | None = None
@@ -144,6 +160,13 @@ async def maintenance_loop() -> None:
                 await _with_advisory_lock(MAIL_LOCK_KEY, poll_mail_once)
             except Exception:
                 logger.exception("mail poll crashed; continuing")
+
+        if now - last_backfill >= 20:
+            last_backfill = now
+            try:
+                await _with_advisory_lock(BACKFILL_LOCK_KEY, _backfill_text_length)
+            except Exception:
+                logger.exception("text-length backfill crashed; continuing")
 
         if now - last_purge >= 3600:
             last_purge = now
