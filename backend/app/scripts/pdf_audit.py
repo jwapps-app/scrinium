@@ -121,8 +121,14 @@ async def collect(limit: int | None) -> list[tuple[str, str, int | None, str, in
     """Load (doc_id, title, pages, which, size, blob_hex) for PDF blobs."""
     jobs: list[tuple[str, str, int | None, str, int, str]] = []
     async with SessionLocal() as db:
+        # Select only the scalar columns we need — NOT full ORM rows, which
+        # would drag every document's text_content into memory and OOM the
+        # process on a large library.
         q = (
-            select(Document, Blob)
+            select(
+                Document.id, Document.title, Document.page_count,
+                Document.archive_blob_id, Blob.id, Blob.size_bytes, Blob.mime_type,
+            )
             .join(
                 Blob,
                 Blob.id == func.coalesce(Document.archive_blob_id, Document.original_blob_id),
@@ -132,13 +138,14 @@ async def collect(limit: int | None) -> list[tuple[str, str, int | None, str, in
         )
         if limit:
             q = q.limit(limit)
-        for doc, blob in (await db.execute(q)).all():
-            if (blob.mime_type or "").lower() != "application/pdf":
+        for doc_id, title, pages, archive_id, blob_id, size, mime in (
+            await db.execute(q)
+        ).all():
+            if (mime or "").lower() != "application/pdf":
                 continue
-            which = "archive" if doc.archive_blob_id else "original"
+            which = "archive" if archive_id else "original"
             jobs.append(
-                (str(doc.id), doc.title, doc.page_count, which,
-                 blob.size_bytes or 0, blob.id.hex)
+                (str(doc_id), title, pages, which, size or 0, blob_id.hex)
             )
     return jobs
 
