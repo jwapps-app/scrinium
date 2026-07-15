@@ -77,6 +77,7 @@ export default function Library() {
   }
   const q = params.get('q')
   const expiring = params.get('expiring') === '1'
+  const nonPdfa = params.get('non_pdfa') === '1'
 
   function setParam(key, value) {
     const next = new URLSearchParams(params)
@@ -99,6 +100,7 @@ export default function Library() {
       if (doctype) search.set('doc_type_id', doctype)
       if (engine) search.set('engine', engine)
       if (expiring) search.set('expiring', 'true')
+      if (nonPdfa) search.set('non_pdfa', 'true')
       if (from) search.set('date_from', from)
       if (to) search.set('date_to', to)
       search.set('sort', sort)
@@ -109,7 +111,7 @@ export default function Library() {
     } catch (err) {
       setError(err.message)
     }
-  }, [status, tag, correspondent, doctype, engine, sort, from, to, expiring])
+  }, [status, tag, correspondent, doctype, engine, sort, from, to, expiring, nonPdfa])
 
   useEffect(() => {
     load()

@@ -14,6 +14,7 @@ original, so nothing here is destructive.
 import asyncio
 import logging
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,31 @@ from app.models import Blob, Document, Job, JobStatus
 from app.services import storage
 
 logger = logging.getLogger(__name__)
+
+# sRGB ICC profile shipped with the Ghostscript package — the OutputIntent a
+# PDF/A file must carry. If it's ever missing we fall back to plain PDF.
+ICC_PATH = "/usr/share/color/icc/ghostscript/srgb.icc"
+
+# PDF/A OutputIntent prologue (pdfmarks) fed to Ghostscript ahead of the source.
+_PDFA_DEF = """[/_objdef {{icc}} /type /stream /OBJ pdfmark
+[{{icc}} <</N 3>> /PUT pdfmark
+[{{icc}} ({icc}) (r) file /PUT pdfmark
+[/_objdef {{oi}} /type /dict /OBJ pdfmark
+[{{oi}} << /Type /OutputIntent /S /GTS_PDFA1 /DestOutputProfile {{icc}} \
+/OutputConditionIdentifier (sRGB) >> /PUT pdfmark
+[{{Catalog}} <</OutputIntents [ {{oi}} ]>> /PUT pdfmark
+"""
+
+
+def is_pdfa(pdf: Path) -> bool:
+    """True when the PDF declares PDF/A conformance (XMP pdfaid:part)."""
+    try:
+        import pikepdf
+
+        with pikepdf.open(pdf) as doc:
+            return bool(doc.open_metadata().get("pdfaid:part"))
+    except Exception:
+        return False
 
 
 def max_image_dpi(pdf: Path, sample_pages: int = 2) -> int | None:
@@ -75,26 +101,16 @@ def _has_text(pdf: Path) -> bool:
         return False
 
 
-def downsample_archive(src: Path, dst: Path, target_dpi: int) -> bool:
-    """Write a downsampled-to-`target_dpi` copy of `src` at `dst`.
-
-    Only images above the target are resampled; anything already at or below is
-    left untouched. Returns True only when the result is a valid PDF with the
-    same page count, a preserved text layer (when the source had one), and a
-    genuinely smaller file. Otherwise returns False — keep the original archive.
-    """
-    src_pages = _page_count(src)
-    if src_pages is None:
-        return False
-    src_had_text = _has_text(src)
-
+def _gs_downsample(src: Path, dst: Path, target_dpi: int, pdfa: bool) -> bool:
+    """Run one Ghostscript pass. `pdfa` adds the PDF/A OutputIntent so the
+    rebuilt archive keeps its archival conformance."""
     # DownsampleThreshold 1.0 → only resample images whose DPI exceeds the
     # target, so already-lean pages pass through untouched. Mono (bitonal) is
     # held at ≥300 so line art / text scans stay legible.
     mono_dpi = max(target_dpi, 300)
     cmd = [
         "gs", "-dBATCH", "-dNOPAUSE", "-dQUIET", "-dSAFER",
-        "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.7",
+        "-sDEVICE=pdfwrite",
         "-dDetectDuplicateImages=true",
         "-dColorImageDownsampleType=/Average",
         "-dGrayImageDownsampleType=/Average",
@@ -108,32 +124,83 @@ def downsample_archive(src: Path, dst: Path, target_dpi: int) -> bool:
         "-dDownsampleMonoImages=true",
         f"-dMonoImageResolution={mono_dpi}",
         "-dMonoImageDownsampleThreshold=1.0",
-        f"-sOutputFile={dst}", str(src),
     ]
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=1800,
-            stdin=subprocess.DEVNULL,
-        )
-    except (subprocess.SubprocessError, OSError) as exc:
-        logger.warning("ghostscript downsample failed to launch: %s", exc)
-        return False
+    inputs = [str(src)]
+    with tempfile.TemporaryDirectory(prefix="gsdef-") as tmp:
+        if pdfa:
+            # SAFER blocks reads outside the workdir, so explicitly permit the
+            # ICC profile the OutputIntent references.
+            defps = Path(tmp) / "pdfa_def.ps"
+            defps.write_text(_PDFA_DEF.format(icc=ICC_PATH))
+            cmd += [
+                f"--permit-file-read={ICC_PATH}",
+                "-dPDFA=2", "-dPDFACompatibilityPolicy=1",
+                "-sColorConversionStrategy=RGB",
+            ]
+            inputs = [str(defps), str(src)]
+        else:
+            cmd += ["-dCompatibilityLevel=1.7"]
+        cmd += [f"-sOutputFile={dst}", *inputs]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=1800,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.warning("ghostscript downsample failed to launch: %s", exc)
+            return False
     if proc.returncode != 0 or not dst.exists():
         logger.warning(
-            "ghostscript downsample exited %s: %s",
-            proc.returncode, (proc.stderr or "")[:200],
+            "ghostscript downsample (pdfa=%s) exited %s: %s",
+            pdfa, proc.returncode, (proc.stderr or "")[:200],
         )
         return False
+    return True
 
+
+def _acceptable(src: Path, dst: Path, src_pages: int, src_had_text: bool) -> bool:
+    """A rebuilt archive is only usable if it keeps every page, keeps its text
+    layer, and is genuinely smaller than the original."""
     if _page_count(dst) != src_pages:
-        logger.warning("downsample changed page count; keeping original archive")
         return False
     if src_had_text and not _has_text(dst):
-        logger.warning("downsample dropped the text layer; keeping original archive")
         return False
-    if dst.stat().st_size >= src.stat().st_size:
-        return False  # no win — leave the archive as it was
-    return True
+    return dst.stat().st_size < src.stat().st_size
+
+
+def downsample_archive(
+    src: Path, dst: Path, target_dpi: int, keep_pdfa: bool = True
+) -> str | None:
+    """Write a downsampled-to-`target_dpi` copy of `src` at `dst`.
+
+    Only images above the target are resampled. Returns the format of the
+    accepted result — "pdfa" or "pdf" — or None when nothing usable was
+    produced (invalid, changed page count, lost text, or not smaller), in which
+    case the caller keeps the original archive untouched.
+
+    When `keep_pdfa`, a PDF/A pass is tried first so archival conformance is
+    preserved; only if that can't produce a clean smaller file do we fall back
+    to a plain-PDF pass (some color spaces / transparency won't convert).
+    """
+    src_pages = _page_count(src)
+    if src_pages is None:
+        return None
+    src_had_text = _has_text(src)
+
+    attempts = []
+    if keep_pdfa and Path(ICC_PATH).exists():
+        attempts.append(True)
+    attempts.append(False)
+
+    for pdfa in attempts:
+        if _gs_downsample(src, dst, target_dpi, pdfa) and _acceptable(
+            src, dst, src_pages, src_had_text
+        ):
+            # A PDF/A pass that didn't actually stamp conformance still counts
+            # as a valid smaller plain PDF — report it honestly.
+            return "pdfa" if (pdfa and is_pdfa(dst)) else "pdf"
+        dst.unlink(missing_ok=True)  # clear a bad output before the next pass
+    return None
 
 
 async def _run_with_heartbeat(session: AsyncSession, job: Job, fn, *args):
@@ -184,22 +251,24 @@ async def process_downsample_job(
     archive_path = storage.blob_file(document.archive_blob_id)
     dpi = await asyncio.to_thread(max_image_dpi, archive_path)
     if dpi is None or dpi <= target_dpi:
+        # Already lean — nothing to rebuild, but record the archive's current
+        # PDF/A status so the indicator is accurate across the whole library.
+        document.archive_pdfa = await asyncio.to_thread(is_pdfa, archive_path)
         job.status = JobStatus.DONE
         job.finished_at = datetime.now(timezone.utc)
         await session.commit()
         return
 
     try:
-        import tempfile
-
         with tempfile.TemporaryDirectory(prefix="downsample-") as tmp:
             out = Path(tmp) / "archive.pdf"
-            ok = await _run_with_heartbeat(
+            result = await _run_with_heartbeat(
                 session, job, downsample_archive, archive_path, out, target_dpi
             )
-            if not ok:
-                # No usable win; leave the archive untouched but mark done so we
-                # don't re-attempt it every sweep.
+            if result is None:
+                # No usable win; leave the archive untouched but record its
+                # current status and mark done so we don't retry every sweep.
+                document.archive_pdfa = await asyncio.to_thread(is_pdfa, archive_path)
                 job.status = JobStatus.DONE
                 job.finished_at = datetime.now(timezone.utc)
                 await session.commit()
@@ -218,6 +287,7 @@ async def process_downsample_job(
         Blob(id=blob_id, sha256=sha256, size_bytes=size, mime_type="application/pdf")
     )
     document.archive_blob_id = blob_id
+    document.archive_pdfa = result == "pdfa"
     job.status = JobStatus.DONE
     job.finished_at = datetime.now(timezone.utc)
     await session.commit()

@@ -325,6 +325,7 @@ async def list_documents(
     sort: str = "newest",
     needs_review: bool = False,
     expiring: bool = False,
+    non_pdfa: bool = False,
     offset: int = 0,
     limit: int = 50,
 ) -> DocumentList:
@@ -359,6 +360,8 @@ async def list_documents(
         conditions.append(Document.doc_type_id == doc_type_id)
     if engine:
         conditions.append(Document.ocr_engine == engine)
+    if non_pdfa:
+        conditions.append(Document.archive_pdfa.is_(False))
     # Date filters mean the document's own date, falling back to when it
     # was added for docs without one.
     effective_date = func.coalesce(Document.doc_date, func.date(Document.created_at))
@@ -555,6 +558,16 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         )
     ).scalar_one()
 
+    non_pdfa_count = (
+        await db.execute(
+            select(func.count(Document.id)).where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+                Document.archive_pdfa.is_(False),
+            )
+        )
+    ).scalar_one()
+
     # Current-wave progress: cumulative completed since the wave anchored,
     # over the wave's high-water size. Restart-proof (see worker pulse).
     base_raw = await get_value(db, "wave_baseline")
@@ -573,6 +586,7 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
         "processing": remaining,
         "flagged": counts.get(DocumentStatus.FLAGGED, 0),
         "trash": trash_count,
+        "non_pdfa": non_pdfa_count,
         "recent": [{"id": str(r[0]), "title": r[1]} for r in recent_added],
         "paused": await get_flag(db, PROCESSING_PAUSED),
         "running": running,
@@ -723,8 +737,19 @@ async def downsample_candidates(user: CurrentUser, db: DB) -> dict:
             select(func.count(Document.id)).where(*_downsample_eligible(user.tenant_id))
         )
     ).scalar_one()
+    non_pdfa = (
+        await db.execute(
+            select(func.count(Document.id)).where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+                Document.archive_pdfa.is_(False),
+            )
+        )
+    ).scalar_one()
     dpi = await resolve_archive_dpi(db)
-    return {"count": count, "target_dpi": dpi, "enabled": dpi > 0}
+    return {
+        "count": count, "target_dpi": dpi, "enabled": dpi > 0, "non_pdfa": non_pdfa
+    }
 
 
 @router.post("/downsample-archives")

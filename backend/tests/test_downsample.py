@@ -20,7 +20,9 @@ def test_compress_fail_soft_on_imageless_pdf():
         src = Path(tmp) / "src.pdf"
         pdf.save(str(src))
         assert compress.max_image_dpi(src) is None
-        assert compress.downsample_archive(src, Path(tmp) / "out.pdf", 300) is False
+        # No raster images to shrink → no usable result → keep the original.
+        assert compress.downsample_archive(src, Path(tmp) / "out.pdf", 300) is None
+        assert compress.is_pdfa(src) is False  # a bare pikepdf is not PDF/A
 
 
 async def test_archive_dpi_setting_roundtrip(client, auth):

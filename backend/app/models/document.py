@@ -65,6 +65,9 @@ class Document(Base):
     thumbnail_blob_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("blobs.id"), nullable=True
     )
+    # Whether the archive is PDF/A-conformant. None = unknown/no archive;
+    # False marks the plain PDFs that couldn't be made PDF/A.
+    archive_pdfa: Mapped[bool | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(
         String(32), default=DocumentStatus.PENDING, index=True
     )

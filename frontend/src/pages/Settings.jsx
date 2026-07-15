@@ -169,6 +169,18 @@ export default function Settings() {
                   : '…'}
               </strong>
             </div>
+            <div className="settings-row">
+              <span>Archive format</span>
+              <span>
+                {downsample?.non_pdfa > 0 ? (
+                  <a href="/?non_pdfa=1">
+                    {downsample.non_pdfa.toLocaleString()} not PDF/A
+                  </a>
+                ) : (
+                  <strong>All PDF/A</strong>
+                )}
+              </span>
+            </div>
           </div>
           {downsample?.enabled && downsample.count > 0 && (
             <div className="organize-block">
