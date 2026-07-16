@@ -30,8 +30,8 @@ _DUMMY_HASH = hash_password("scrinium-timing-equalizer")
 
 def _token_pair(user: User) -> TokenPair:
     return TokenPair(
-        access_token=mint_access_token(user.id),
-        refresh_token=mint_refresh_token(user.id),
+        access_token=mint_access_token(user.id, user.token_version),
+        refresh_token=mint_refresh_token(user.id, user.token_version),
     )
 
 
@@ -81,12 +81,15 @@ async def login(body: LoginRequest, db: DB) -> TokenPair:
 
 @router.post("/refresh", response_model=TokenPair)
 async def refresh(body: RefreshRequest, db: DB) -> TokenPair:
-    user_id = decode_token(body.refresh_token, "refresh")
-    if user_id is None:
+    decoded = decode_token(body.refresh_token, "refresh")
+    if decoded is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
+    user_id, token_version = decoded
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
+    if token_version != user.token_version:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired")
     return _token_pair(user)
 
 
@@ -101,8 +104,16 @@ async def change_password(body: dict, user: CurrentUser, db: DB) -> dict:
     if not verify_password(current, user.password_hash):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Current password is wrong")
     user.password_hash = hash_password(new)
+    # Invalidate every outstanding token (this device included) and hand the
+    # caller a fresh pair so their current session continues seamlessly.
+    user.token_version += 1
     await db.flush()
-    return {"changed": True}
+    fresh = _token_pair(user)
+    return {
+        "changed": True,
+        "access_token": fresh.access_token,
+        "refresh_token": fresh.refresh_token,
+    }
 
 
 @router.get("/users")

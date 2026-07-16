@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import QRCode from 'qrcode'
-import { apiFetch, apiJson } from '../api'
+import { apiFetch, apiJson, setTokens } from '../api'
 
 /** Settings card: change password, manage accounts. */
 export default function AccountSection() {
@@ -74,15 +74,23 @@ export default function AccountSection() {
     setError('')
     setNotice('')
     try {
-      await apiJson('/api/auth/change-password', {
+      const result = await apiJson('/api/auth/change-password', {
         method: 'POST',
         body: JSON.stringify({
           current_password: pw.current,
           new_password: pw.next,
         }),
       })
+      // The server invalidates all older tokens on password change and
+      // returns a fresh pair — adopt it so this session continues.
+      if (result?.access_token) {
+        setTokens({
+          access_token: result.access_token,
+          refresh_token: result.refresh_token,
+        })
+      }
       setPw({ current: '', next: '' })
-      setNotice('Password changed.')
+      setNotice('Password changed. Other signed-in devices will need to sign in again.')
     } catch (err) {
       setError(err.message)
     }

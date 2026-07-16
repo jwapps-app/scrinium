@@ -44,7 +44,7 @@ from app.services.tag_tree import with_ancestors
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 # Only these render inline; everything else is forced to download so a
-# mistyped/ível content-type can never execute in the browser origin.
+# mistyped/evil content-type can never execute in the browser origin.
 _INLINE_SAFE = {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"}
 
 

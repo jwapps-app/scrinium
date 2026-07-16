@@ -20,26 +20,36 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def _mint(user_id: uuid.UUID, token_type: str, lifetime: timedelta) -> str:
+def _mint(
+    user_id: uuid.UUID, token_type: str, lifetime: timedelta, version: int
+) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
         "type": token_type,
+        "ver": version,
         "iat": now,
         "exp": now + lifetime,
     }
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
 
 
-def mint_access_token(user_id: uuid.UUID) -> str:
-    return _mint(user_id, "access", timedelta(minutes=settings.access_token_minutes))
+def mint_access_token(user_id: uuid.UUID, version: int = 0) -> str:
+    return _mint(
+        user_id, "access", timedelta(minutes=settings.access_token_minutes), version
+    )
 
 
-def mint_refresh_token(user_id: uuid.UUID) -> str:
-    return _mint(user_id, "refresh", timedelta(days=settings.refresh_token_days))
+def mint_refresh_token(user_id: uuid.UUID, version: int = 0) -> str:
+    return _mint(
+        user_id, "refresh", timedelta(days=settings.refresh_token_days), version
+    )
 
 
-def decode_token(token: str, expected_type: str) -> uuid.UUID | None:
+def decode_token(token: str, expected_type: str) -> tuple[uuid.UUID, int] | None:
+    """Returns (user_id, token_version) — the caller compares the version to
+    the user row so a password change invalidates older tokens. Tokens minted
+    before versioning carry no "ver" and read as version 0."""
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
     except jwt.PyJWTError:
@@ -47,6 +57,6 @@ def decode_token(token: str, expected_type: str) -> uuid.UUID | None:
     if payload.get("type") != expected_type:
         return None
     try:
-        return uuid.UUID(payload["sub"])
+        return uuid.UUID(payload["sub"]), int(payload.get("ver", 0))
     except (KeyError, ValueError):
         return None
