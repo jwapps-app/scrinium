@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import update as sqla_update
 
 from app.config import settings
 from app.database import SessionLocal, engine
@@ -38,12 +39,17 @@ PURGE_LOCK_KEY = 815553
 BACKFILL_LOCK_KEY = 815554
 
 
+_backfill_done = False
+
+
 async def _backfill_text_length() -> None:
     """One-time gradual backfill of documents.text_length for docs OCR'd before
     the column existed — a batch at a time so it never detoasts the whole
-    library at once. A no-op (0 rows) once everything is populated."""
+    library at once. Once a pass updates 0 rows, back off to an hourly
+    re-check instead of pinging the DB every 20s forever."""
+    global _backfill_done
     async with SessionLocal() as session:
-        await session.execute(
+        result = await session.execute(
             text(
                 "UPDATE documents SET text_length = length(text_content) "
                 "WHERE id IN (SELECT id FROM documents "
@@ -51,6 +57,62 @@ async def _backfill_text_length() -> None:
             )
         )
         await session.commit()
+        _backfill_done = (result.rowcount or 0) == 0
+
+
+async def _sweep_orphan_blobs() -> None:
+    """Delete blob-store files that have no Blob row. Failure paths can leave
+    them behind (bytes are written before the DB commit; a rollback drops the
+    row but not the file), and nothing else ever looks at row-less files.
+    Only files older than a day are touched, so in-flight stores are safe."""
+    import os
+    import uuid as _uuid
+    from pathlib import Path
+
+    from app.models import Blob
+    from app.services import storage
+
+    blob_root = Path(settings.data_dir) / "blobs"
+    if not blob_root.exists():
+        return
+    cutoff = time.time() - 86400
+    candidates: list[Path] = []
+    for path in blob_root.glob("*/*/*"):
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                candidates.append(path)
+        except OSError:
+            continue
+        if len(candidates) >= 5000:
+            break  # bound one sweep; the next hour catches the rest
+    if not candidates:
+        return
+    ids = []
+    by_id = {}
+    for path in candidates:
+        try:
+            bid = _uuid.UUID(path.name)
+        except ValueError:
+            continue
+        ids.append(bid)
+        by_id[bid] = path
+    removed = 0
+    async with SessionLocal() as session:
+        known = {
+            row
+            for row in (
+                await session.execute(select(Blob.id).where(Blob.id.in_(ids)))
+            ).scalars()
+        }
+    for bid, path in by_id.items():
+        if bid not in known:
+            try:
+                os.unlink(path)
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        logger.info("orphan sweep removed %d row-less blob file(s)", removed)
 
 
 async def _with_advisory_lock(key: int, coro_fn) -> None:
@@ -103,12 +165,24 @@ async def claim_and_run() -> bool:
         return True
 
 
+_paused_cache: tuple[float, bool] | None = None
+
+
 async def _is_paused() -> bool:
+    """The pause flag, cached ~3s: every lane checks it per job and the
+    maintenance loop per tick, and it changes rarely — no need to open a
+    session and hit AppSetting for each check."""
+    global _paused_cache
+    now = time.monotonic()
+    if _paused_cache is not None and now - _paused_cache[0] < 3.0:
+        return _paused_cache[1]
     try:
         async with SessionLocal() as session:
-            return await get_flag(session, PROCESSING_PAUSED)
+            value = await get_flag(session, PROCESSING_PAUSED)
     except Exception:
         return False
+    _paused_cache = (now, value)
+    return value
 
 
 async def processor_loop(slot: int) -> None:
@@ -131,13 +205,163 @@ async def processor_loop(slot: int) -> None:
             await asyncio.sleep(settings.worker_poll_seconds)
 
 
+async def pulse_loop() -> None:
+    """Liveness + recovery on their own lane: the worker_last_seen heartbeat,
+    wave progress, drain notification, small backfills, and interrupted-job
+    reclaim. Kept separate from maintenance_loop so heavy sweeps (exports,
+    purges) can't starve the heartbeat or delay job recovery."""
+    prev_backlog: int | None = None
+    last_reclaim = time.monotonic()
+    while True:
+        try:
+            async with SessionLocal() as session:
+                await set_value(
+                    session, "worker_last_seen",
+                    datetime.now(timezone.utc).isoformat(),
+                )
+                backlog = (
+                    await session.execute(
+                        select(func.count(Document.id)).where(
+                            Document.status.in_(
+                                [DocumentStatus.PENDING, DocumentStatus.PROCESSING]
+                            ),
+                            Document.deleted_at.is_(None),
+                        )
+                    )
+                ).scalar_one()
+                # Current-wave progress, anchored to the cumulative
+                # completed count so it NEVER moves backward on a restart
+                # (done = ready_now - baseline; both are durable facts, so
+                # 10-of-100 stays 10-of-100 across a container bounce).
+                ready_now = (
+                    await session.execute(
+                        select(func.count(Document.id)).where(
+                            Document.status == DocumentStatus.READY,
+                            Document.deleted_at.is_(None),
+                        )
+                    )
+                ).scalar_one()
+                base_raw = await get_value(session, "wave_baseline")
+                total_raw = await get_value(session, "wave_total")
+                wave_total = int(total_raw) if (total_raw or "").isdigit() else 0
+                if backlog == 0:
+                    # Wave finished — clear the anchor; the next batch
+                    # re-anchors at whatever's already completed.
+                    await set_value(session, "wave_baseline", "")
+                    await set_value(session, "wave_total", "0")
+                else:
+                    baseline = (
+                        int(base_raw) if (base_raw or "").isdigit() else ready_now
+                    )
+                    done = max(0, ready_now - baseline)
+                    wave_total = max(wave_total, done + backlog)
+                    await set_value(session, "wave_baseline", str(baseline))
+                    await set_value(session, "wave_total", str(wave_total))
+                # A real batch just finished — worth a ping. Small
+                # trickles (a couple of uploads) stay quiet.
+                if prev_backlog is not None and prev_backlog >= 10 and backlog == 0:
+                    tenant_id = (
+                        await session.execute(
+                            select(Tenant.id).order_by(Tenant.created_at)
+                        )
+                    ).scalars().first()
+                    if tenant_id is not None:
+                        await push.notify_tenant(
+                            session, tenant_id, settings.app_name,
+                            "All caught up — the processing queue is empty.",
+                            {},
+                        )
+                prev_backlog = backlog
+                # Backfill content fingerprints for docs from before the
+                # near-duplicate feature. Fetch only (id, text) and hash in a
+                # thread — simhash over full book text is CPU work that must
+                # not sit on the event loop blocking heartbeats.
+                stale = (
+                    await session.execute(
+                        select(Document.id, Document.text_content)
+                        .where(
+                            Document.simhash.is_(None),
+                            Document.text_content.is_not(None),
+                        )
+                        .limit(300)
+                    )
+                ).all()
+                if stale:
+                    def _hash_batch(rows):
+                        return [
+                            (doc_id, similarity.simhash(text or "") or 0)
+                            for doc_id, text in rows
+                        ]
+
+                    hashed = await asyncio.to_thread(_hash_batch, list(stale))
+                    for doc_id, h in hashed:
+                        await session.execute(
+                            sqla_update(Document)
+                            .where(Document.id == doc_id)
+                            .values(simhash=h)
+                        )
+                    logger.info("fingerprinted %d document(s)", len(hashed))
+                # Backfill page counts for queued PDFs from before
+                # page-at-intake, so the pages-based ETA can see the
+                # whole backlog. Header reads only; small batches.
+                uncounted = (
+                    await session.execute(
+                        select(Document.id, Document.original_blob_id)
+                        .where(
+                            Document.page_count.is_(None),
+                            Document.status.in_(
+                                [DocumentStatus.PENDING, DocumentStatus.PROCESSING]
+                            ),
+                            Document.deleted_at.is_(None),
+                            Document.original_filename.ilike("%.pdf"),
+                        )
+                        .limit(100)
+                    )
+                ).all()
+
+                def _count_pages(paths):
+                    import pikepdf
+
+                    from app.services import storage as _storage
+
+                    results = []
+                    for doc_id, blob_id in paths:
+                        try:
+                            with pikepdf.open(_storage.blob_file(blob_id)) as pdf:
+                                results.append((doc_id, len(pdf.pages)))
+                        except Exception:
+                            results.append((doc_id, 0))
+                    return results
+
+                if uncounted:
+                    counted = await asyncio.to_thread(_count_pages, list(uncounted))
+                    for doc_id, pages in counted:
+                        if pages:
+                            await session.execute(
+                                sqla_update(Document)
+                                .where(Document.id == doc_id)
+                                .values(page_count=pages)
+                            )
+                    logger.info("page-counted %d queued document(s)", len(uncounted))
+                await session.commit()
+        except Exception:
+            logger.exception("liveness pulse crashed; continuing")
+
+        if time.monotonic() - last_reclaim >= 300:
+            last_reclaim = time.monotonic()
+            try:
+                await _with_advisory_lock(
+                    PURGE_LOCK_KEY, lambda: reclaim_interrupted_jobs(180)
+                )
+            except Exception:
+                logger.exception("stale-job reclaim crashed; continuing")
+        await asyncio.sleep(15)
+
+
 async def maintenance_loop() -> None:
     """Single lane for the periodic sweeps (watch/mail/purge). Advisory
     locks keep these singular even across multiple worker replicas."""
     last_watch = last_mail = last_purge = last_backfill = 0.0
-    last_reclaim = time.monotonic()
-    last_pulse = 0.0
-    prev_backlog: int | None = None
     while True:
         now = time.monotonic()
         paused = await _is_paused()
@@ -161,7 +385,7 @@ async def maintenance_loop() -> None:
             except Exception:
                 logger.exception("mail poll crashed; continuing")
 
-        if now - last_backfill >= 20:
+        if now - last_backfill >= (3600 if _backfill_done else 20):
             last_backfill = now
             try:
                 await _with_advisory_lock(BACKFILL_LOCK_KEY, _backfill_text_length)
@@ -170,6 +394,10 @@ async def maintenance_loop() -> None:
 
         if now - last_purge >= 3600:
             last_purge = now
+            try:
+                await _with_advisory_lock(BACKFILL_LOCK_KEY, _sweep_orphan_blobs)
+            except Exception:
+                logger.exception("orphan blob sweep crashed; continuing")
             try:
                 async def _purge():
                     async with SessionLocal() as session:
@@ -198,141 +426,9 @@ async def maintenance_loop() -> None:
                 except Exception:
                     logger.exception("scheduled export crashed; continuing")
 
-        # Liveness pulse + drain detection, every ~15s.
-        if time.monotonic() - last_pulse >= 15:
-            last_pulse = time.monotonic()
-            try:
-                async with SessionLocal() as session:
-                    await set_value(
-                        session, "worker_last_seen",
-                        datetime.now(timezone.utc).isoformat(),
-                    )
-                    backlog = (
-                        await session.execute(
-                            select(func.count(Document.id)).where(
-                                Document.status.in_(
-                                    [DocumentStatus.PENDING, DocumentStatus.PROCESSING]
-                                ),
-                                Document.deleted_at.is_(None),
-                            )
-                        )
-                    ).scalar_one()
-                    # Current-wave progress, anchored to the cumulative
-                    # completed count so it NEVER moves backward on a restart
-                    # (done = ready_now - baseline; both are durable facts, so
-                    # 10-of-100 stays 10-of-100 across a container bounce).
-                    ready_now = (
-                        await session.execute(
-                            select(func.count(Document.id)).where(
-                                Document.status == DocumentStatus.READY,
-                                Document.deleted_at.is_(None),
-                            )
-                        )
-                    ).scalar_one()
-                    base_raw = await get_value(session, "wave_baseline")
-                    total_raw = await get_value(session, "wave_total")
-                    wave_total = int(total_raw) if (total_raw or "").isdigit() else 0
-                    if backlog == 0:
-                        # Wave finished — clear the anchor; the next batch
-                        # re-anchors at whatever's already completed.
-                        await set_value(session, "wave_baseline", "")
-                        await set_value(session, "wave_total", "0")
-                    else:
-                        baseline = (
-                            int(base_raw) if (base_raw or "").isdigit() else ready_now
-                        )
-                        done = max(0, ready_now - baseline)
-                        wave_total = max(wave_total, done + backlog)
-                        await set_value(session, "wave_baseline", str(baseline))
-                        await set_value(session, "wave_total", str(wave_total))
-                    # A real batch just finished — worth a ping. Small
-                    # trickles (a couple of uploads) stay quiet.
-                    if prev_backlog is not None and prev_backlog >= 10 and backlog == 0:
-                        tenant_id = (
-                            await session.execute(
-                                select(Tenant.id).order_by(Tenant.created_at)
-                            )
-                        ).scalars().first()
-                        if tenant_id is not None:
-                            await push.notify_tenant(
-                                session, tenant_id, settings.app_name,
-                                "All caught up — the processing queue is empty.",
-                                {},
-                            )
-                    prev_backlog = backlog
-                    # Backfill content fingerprints for docs from before the
-                    # near-duplicate feature; a few hundred per pulse until
-                    # the corpus is covered.
-                    stale = (
-                        await session.execute(
-                            select(Document)
-                            .where(
-                                Document.simhash.is_(None),
-                                Document.text_content.is_not(None),
-                            )
-                            .limit(300)
-                        )
-                    ).scalars().all()
-                    for doc in stale:
-                        doc.simhash = similarity.simhash(doc.text_content or "")
-                        if doc.simhash is None:
-                            doc.simhash = 0  # too short to fingerprint; mark done
-                    if stale:
-                        logger.info("fingerprinted %d document(s)", len(stale))
-                    # Backfill page counts for queued PDFs from before
-                    # page-at-intake, so the pages-based ETA can see the
-                    # whole backlog. Header reads only; small batches.
-                    uncounted = (
-                        await session.execute(
-                            select(Document)
-                            .where(
-                                Document.page_count.is_(None),
-                                Document.status.in_(
-                                    [DocumentStatus.PENDING, DocumentStatus.PROCESSING]
-                                ),
-                                Document.deleted_at.is_(None),
-                                Document.original_filename.ilike("%.pdf"),
-                            )
-                            .limit(100)
-                        )
-                    ).scalars().all()
-
-                    def _count_pages(paths):
-                        import pikepdf
-
-                        from app.services import storage as _storage
-
-                        results = []
-                        for doc_id, blob_id in paths:
-                            try:
-                                with pikepdf.open(_storage.blob_file(blob_id)) as pdf:
-                                    results.append((doc_id, len(pdf.pages)))
-                            except Exception:
-                                results.append((doc_id, 0))
-                        return results
-
-                    if uncounted:
-                        counted = await asyncio.to_thread(
-                            _count_pages,
-                            [(d.id, d.original_blob_id) for d in uncounted],
-                        )
-                        by_id = {d.id: d for d in uncounted}
-                        for doc_id, pages in counted:
-                            if pages:
-                                by_id[doc_id].page_count = pages
-                        logger.info("page-counted %d queued document(s)", len(uncounted))
-                    await session.commit()
-            except Exception:
-                logger.exception("liveness pulse crashed; continuing")
-
-        if time.monotonic() - last_reclaim >= 300:
-            last_reclaim = time.monotonic()
-            try:
-                await _with_advisory_lock(
-                    PURGE_LOCK_KEY, lambda: reclaim_interrupted_jobs(180)
-                )
-            except Exception:
-                logger.exception("stale-job reclaim crashed; continuing")
+        # (Liveness pulse and stale-job reclaim run in their own pulse_loop so
+        # a long sweep here — a full-library export, a big purge — can never
+        # make the worker read as dead or delay interrupted-job recovery.)
 
         await asyncio.sleep(1)
 
@@ -537,6 +633,7 @@ async def main() -> None:
         # orphans; this worker owns none yet). Replicas → heartbeat-only.
         await reclaim_interrupted_jobs(0 if settings.worker_single else None)
         await asyncio.gather(
+            pulse_loop(),
             maintenance_loop(),
             *(processor_loop(i) for i in range(concurrency)),
         )

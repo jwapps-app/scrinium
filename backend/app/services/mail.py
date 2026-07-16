@@ -41,9 +41,13 @@ def _decode(value: str | None) -> str:
     return out
 
 
-def _fetch_unseen() -> list[dict]:
-    """Runs in a thread: returns [{filename, payload, sender_name, subject}]."""
+def _fetch_unseen() -> tuple[list[dict], list[bytes]]:
+    """Runs in a thread. Returns (attachments, scanned_uids). Messages are NOT
+    marked Seen here — that happens only after their attachments actually
+    ingest, so a failed ingestion is retried on the next poll instead of the
+    attachment being silently lost."""
     found: list[dict] = []
+    scanned: list[bytes] = []
     with imaplib.IMAP4_SSL(settings.mail_host, settings.mail_port) as imap:
         imap.login(settings.mail_username, settings.mail_password)
         imap.select(settings.mail_folder)
@@ -68,16 +72,29 @@ def _fetch_unseen() -> list[dict]:
                     if payload:
                         found.append(
                             {
+                                "uid": uid,
                                 "filename": filename,
                                 "payload": payload,
                                 "sender": sender_name or sender_addr or "Unknown",
                                 "subject": subject,
                             }
                         )
-                imap.store(uid, "+FLAGS", "\\Seen")
+                scanned.append(uid)
             except Exception:
                 logger.exception("failed reading mail uid %s; skipping", uid)
-    return found
+    return found, scanned
+
+
+def _mark_seen(uids: list[bytes]) -> None:
+    """Runs in a thread: flag fully-processed messages so they leave the
+    unseen set."""
+    if not uids:
+        return
+    with imaplib.IMAP4_SSL(settings.mail_host, settings.mail_port) as imap:
+        imap.login(settings.mail_username, settings.mail_password)
+        imap.select(settings.mail_folder)
+        for uid in uids:
+            imap.store(uid, "+FLAGS", "\\Seen")
 
 
 async def _record_status(session, text: str) -> None:
@@ -103,55 +120,69 @@ async def poll_once() -> int:
         if tenant_id is None:
             return 0
         try:
-            attachments = await asyncio.to_thread(_fetch_unseen)
+            attachments, scanned = await asyncio.to_thread(_fetch_unseen)
         except Exception as exc:
             logger.warning("mail poll failed: %s", exc)
             await _record_status(session, f"error: {str(exc)[:200]}")
             return 0
 
+        failed_uids: set[bytes] = set()
         for item in attachments:
+            # Bind the temp path before writing so a failed write can still
+            # be cleaned up (the old ordering leaked the file on error).
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=Path(item["filename"]).suffix, delete=False
+            )
+            tmp_path = Path(tmp.name)
             try:
-                with tempfile.NamedTemporaryFile(
-                    suffix=Path(item["filename"]).suffix, delete=False
-                ) as tmp:
-                    tmp.write(item["payload"])
-                    tmp_path = Path(tmp.name)
                 try:
-                    tags = await tag_tree.get_or_create_tag_path(
-                        session, tenant_id, ["Email"]
-                    )
-                    doc = await intake.ingest_file(
-                        session, tenant_id, tmp_path, item["filename"], tags=tags
-                    )
-                    correspondent = (
-                        await session.execute(
-                            select(Correspondent).where(
-                                Correspondent.tenant_id == tenant_id,
-                                Correspondent.name == item["sender"],
-                            )
-                        )
-                    ).scalar_one_or_none()
-                    if correspondent is None:
-                        correspondent = Correspondent(
-                            tenant_id=tenant_id, name=item["sender"]
-                        )
-                        session.add(correspondent)
-                        await session.flush()
-                    doc.correspondent_id = correspondent.id
-                    await session.commit()
-                    ingested += 1
-                    logger.info(
-                        "ingested mail attachment %s from %s",
-                        item["filename"],
-                        item["sender"],
-                    )
+                    tmp.write(item["payload"])
                 finally:
-                    tmp_path.unlink(missing_ok=True)
+                    tmp.close()
+                tags = await tag_tree.get_or_create_tag_path(
+                    session, tenant_id, ["Email"]
+                )
+                doc = await intake.ingest_file(
+                    session, tenant_id, tmp_path, item["filename"], tags=tags
+                )
+                correspondent = (
+                    await session.execute(
+                        select(Correspondent).where(
+                            Correspondent.tenant_id == tenant_id,
+                            Correspondent.name == item["sender"],
+                        )
+                    )
+                ).scalar_one_or_none()
+                if correspondent is None:
+                    correspondent = Correspondent(
+                        tenant_id=tenant_id, name=item["sender"]
+                    )
+                    session.add(correspondent)
+                    await session.flush()
+                doc.correspondent_id = correspondent.id
+                await session.commit()
+                ingested += 1
+                logger.info(
+                    "ingested mail attachment %s from %s",
+                    item["filename"],
+                    item["sender"],
+                )
             except intake.DuplicateDocument:
                 await session.rollback()
                 logger.info("mail attachment %s is a duplicate", item["filename"])
             except Exception:
                 await session.rollback()
+                failed_uids.add(item["uid"])
                 logger.exception("failed ingesting mail attachment")
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+        # Only fully-processed messages leave the unseen set; a message whose
+        # attachment failed for a real reason is retried next poll.
+        to_mark = [uid for uid in scanned if uid not in failed_uids]
+        try:
+            await asyncio.to_thread(_mark_seen, to_mark)
+        except Exception:
+            logger.exception("failed marking mail seen; will re-scan next poll")
         await _record_status(session, "ok")
     return ingested

@@ -93,8 +93,15 @@ def _run_watched(attempt: list[str], workdir: Path):
     stderr_path = workdir / ".ocr-stderr"
 
     with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
+        # Own process group: ocrmypdf spawns Ghostscript/Tesseract children,
+        # and killing only the parent would orphan them as runaway zombies.
         proc = subprocess.Popen(
-            attempt, stdout=out, stderr=err, env=progress_env(workdir)
+            attempt,
+            stdout=out,
+            stderr=err,
+            stdin=subprocess.DEVNULL,
+            env=progress_env(workdir),
+            start_new_session=True,
         )
         started = time.monotonic()
         last_progress = started
@@ -113,8 +120,7 @@ def _run_watched(attempt: list[str], workdir: Path):
                 last_progress = time.monotonic()
             now = time.monotonic()
             if now - last_progress > stall_limit or now - started > hard_limit:
-                proc.kill()
-                proc.wait(timeout=60)
+                _kill_group(proc)
                 reason = (
                     f"no OCR progress for {settings.ocr_stall_minutes} minutes"
                     if now - started <= hard_limit
@@ -123,6 +129,22 @@ def _run_watched(attempt: list[str], workdir: Path):
                 return 137, f"killed: {reason}"
     stderr_text = stderr_path.read_text(errors="replace")
     return proc.returncode, stderr_text
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    """Kill the whole process group (ocrmypdf + its gs/tesseract children) and
+    reap without letting an unkillable child crash the watchdog."""
+    import os
+    import signal
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
+    try:
+        proc.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        logger.warning("killed OCR process did not reap within 60s; continuing")
 
 
 def run_ocrmypdf(cmd: list[str], workdir: Path) -> None:
@@ -151,6 +173,7 @@ def extract_text(pdf: Path) -> str:
     result = subprocess.run(
         ["pdftotext", "-layout", str(pdf), "-"],
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         text=True,
         timeout=300,
     )
@@ -163,6 +186,7 @@ def _tesseract_image(image: Path) -> str:
     result = subprocess.run(
         ["tesseract", str(image), "stdout", "-l", settings.ocr_languages],
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         text=True,
         timeout=600,
     )
@@ -194,6 +218,7 @@ def text_only_fallback(source: Path, workdir: Path) -> str:
     result = subprocess.run(
         ["pdftoppm", "-r", "200", "-png", str(source), str(fb_dir / "pg")],
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         text=True,
         timeout=3600,
     )

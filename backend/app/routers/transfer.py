@@ -39,6 +39,17 @@ async def import_status(user: CurrentUser, db: DB) -> dict:
     }
 
 
+# asyncio holds only weak refs to tasks — retain them so a background
+# import/export can't be garbage-collected mid-run, and surface crashes.
+_BACKGROUND_TASKS: set = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
 @router.post("/import/paperless")
 async def start_import(user: CurrentUser, db: DB) -> dict:
     state = await _current(db, IMPORT_STATUS)
@@ -50,7 +61,7 @@ async def start_import(user: CurrentUser, db: DB) -> dict:
             f"No Paperless export found in {import_root()} — copy the export "
             "folder (or zip) there first",
         )
-    asyncio.create_task(run_import(user.tenant_id))
+    _spawn(run_import(user.tenant_id))
     return {"started": True}
 
 
@@ -71,7 +82,5 @@ async def start_export(user: CurrentUser, db: DB, body: dict | None = None) -> d
     part_gb = body.get("part_gb")
     if part_gb is not None and not (1 <= int(part_gb) <= 500):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "part_gb: 1-500")
-    asyncio.create_task(
-        run_export(user.tenant_id, fmt, int(part_gb) if part_gb else None)
-    )
+    _spawn(run_export(user.tenant_id, fmt, int(part_gb) if part_gb else None))
     return {"started": True}

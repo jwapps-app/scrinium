@@ -72,12 +72,14 @@ def _run_ocr(
     # Born-compressed: cap archive image DPI at ingest so new docs don't need a
     # later backfill. Only shrinks images above the cap; fail-soft keeps the
     # full-res archive if the rebuild isn't a clean, smaller win.
-    if archive_path is not None and max_dpi > 0:
+    dpi: int | None = None
+    if archive_path is not None:
         dpi = compress.max_image_dpi(archive_path)
-        if dpi is not None and dpi > max_dpi:
+        if max_dpi > 0 and dpi is not None and dpi > max_dpi:
             reduced = workdir / "archive_reduced.pdf"
             if compress.downsample_archive(archive_path, reduced, max_dpi):
                 archive_path = reduced
+                dpi = compress.max_image_dpi(archive_path)
 
     thumb_dir = workdir / "thumbwork"
     thumb_dir.mkdir()
@@ -91,10 +93,9 @@ def _run_ocr(
         )
     pages = _page_count(archive_path)
     # Measure the final archive's PDF/A status (ocrmypdf usually emits PDF/A,
-    # but its force-raster fallback and a plain-PDF downsample do not) and its
-    # image resolution (surfaced/sortable in the library).
+    # but its force-raster fallback and a plain-PDF downsample do not). DPI was
+    # probed above (and re-probed only when the archive was rebuilt).
     pdfa = compress.is_pdfa(archive_path)
-    dpi = compress.max_image_dpi(archive_path)
     # Copy the archive into the blob store before the tempdir vanishes.
     blob_id, sha256, size = storage.store_file(archive_path)
     return IngestOutcome(
@@ -242,14 +243,15 @@ async def process_job(session: AsyncSession, job: Job) -> None:
         logger.exception("auto-classification failed; continuing")
         await session.rollback()
 
-    for old_id in (old_archive_id, old_thumb_id):
-        if old_id is None:
-            continue
-        old_blob = await session.get(Blob, old_id)
-        if old_blob is not None:
-            await session.delete(old_blob)
-            await session.commit()
-        storage.delete_blob(old_id)
+    superseded = [i for i in (old_archive_id, old_thumb_id) if i is not None]
+    if superseded:
+        for old_id in superseded:
+            old_blob = await session.get(Blob, old_id)
+            if old_blob is not None:
+                await session.delete(old_blob)
+        await session.commit()  # one commit for both rows
+        for old_id in superseded:
+            storage.delete_blob(old_id)
 
     await push.notify_tenant(
         session,

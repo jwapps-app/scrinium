@@ -6,7 +6,6 @@ download time. Blobs are never renamed or mutated.
 """
 
 import hashlib
-import shutil
 import uuid
 from pathlib import Path
 
@@ -27,12 +26,19 @@ def sha256_of(path: Path) -> str:
 
 
 def store_file(source: Path, blob_id: uuid.UUID | None = None) -> tuple[uuid.UUID, str, int]:
-    """Copy a file into the store. Returns (blob_id, sha256, size_bytes)."""
+    """Copy a file into the store, hashing while copying so the bytes are
+    read exactly once. Returns (blob_id, sha256, size_bytes)."""
     blob_id = blob_id or uuid.uuid4()
     dest = _blob_path(blob_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, dest)
-    return blob_id, sha256_of(dest), dest.stat().st_size
+    digest = hashlib.sha256()
+    size = 0
+    with open(source, "rb") as src, open(dest, "wb") as out:
+        while chunk := src.read(1024 * 1024):
+            digest.update(chunk)
+            out.write(chunk)
+            size += len(chunk)
+    return blob_id, digest.hexdigest(), size
 
 
 def blob_file(blob_id: uuid.UUID) -> Path:

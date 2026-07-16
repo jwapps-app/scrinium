@@ -33,6 +33,7 @@ def make_thumbnail(source: Path, workdir: Path) -> Path | None:
                 "-scale-to", str(THUMB_SIZE), str(source), str(prefix),
             ],
             capture_output=True,
+        stdin=subprocess.DEVNULL,
             text=True,
             timeout=120,
         )
