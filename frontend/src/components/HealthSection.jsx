@@ -16,7 +16,9 @@ export default function HealthSection() {
       }
     }
     load()
-    const t = setInterval(load, 15000)
+    const t = setInterval(() => {
+      if (!document.hidden) load()
+    }, 15000)
     return () => {
       cancelled = true
       clearInterval(t)

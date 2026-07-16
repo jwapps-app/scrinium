@@ -136,12 +136,14 @@ export default function Library() {
   }, [])
 
   // Poll while anything is still working its way through the pipeline.
+  // No 'library-changed' dispatch here: the Shell runs its own poll on the
+  // same cadence, and re-triggering it from every tick multiplied pollers.
   useEffect(() => {
     const busy = docs.some((d) => d.status === 'pending' || d.status === 'processing')
     if (!busy) return
     const t = setInterval(() => {
+      if (document.hidden) return // background tabs shouldn't hit the network
       load()
-      window.dispatchEvent(new Event('library-changed'))
     }, 2500)
     return () => clearInterval(t)
   }, [docs, load])

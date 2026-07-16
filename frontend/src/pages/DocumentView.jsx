@@ -133,7 +133,9 @@ export default function DocumentView() {
   // Poll while processing so the viewer (and progress) appear when OCR lands.
   useEffect(() => {
     if (!doc || (doc.status !== 'pending' && doc.status !== 'processing')) return
-    const t = setInterval(load, 2500)
+    const t = setInterval(() => {
+      if (!document.hidden) load()
+    }, 2500)
     return () => clearInterval(t)
   }, [doc, load])
 

@@ -31,7 +31,9 @@ export default function TransferSection() {
   const busy = imp?.status?.state === 'running' || exp?.state === 'running'
   useEffect(() => {
     if (!busy) return
-    const t = setInterval(load, 2500)
+    const t = setInterval(() => {
+      if (!document.hidden) load()
+    }, 2500)
     return () => clearInterval(t)
   }, [busy, load])
 

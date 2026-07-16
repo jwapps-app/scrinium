@@ -23,10 +23,6 @@ export default function Settings() {
     async function poll() {
       try {
         const data = await apiJson('/api/settings/ocr')
-        apiJson('/api/documents/upgradeable').then(setUpgrade).catch(() => {})
-        apiJson('/api/documents/downsample-candidates')
-          .then((d) => !cancelled && setDownsample(d))
-          .catch(() => {})
         if (!cancelled) {
           setOcr(data)
           setError('')
@@ -35,11 +31,27 @@ export default function Settings() {
         if (!cancelled) setError(err.message)
       }
     }
+    // These barely change — no need to re-count the library every 5s.
+    function pollSlow() {
+      apiJson('/api/documents/upgradeable')
+        .then((d) => !cancelled && setUpgrade(d))
+        .catch(() => {})
+      apiJson('/api/documents/downsample-candidates')
+        .then((d) => !cancelled && setDownsample(d))
+        .catch(() => {})
+    }
     poll()
-    const t = setInterval(poll, 5000)
+    pollSlow()
+    const t = setInterval(() => {
+      if (!document.hidden) poll()
+    }, 5000)
+    const ts = setInterval(() => {
+      if (!document.hidden) pollSlow()
+    }, 30000)
     return () => {
       cancelled = true
       clearInterval(t)
+      clearInterval(ts)
     }
   }, [])
 

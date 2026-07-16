@@ -104,36 +104,56 @@ export default function Shell({ children }) {
   useEffect(() => {
     let cancelled = false
     let timer = null
+    let inFlight = false
     async function load() {
+      // Single-flight + single-timer: a 'library-changed' arriving while a
+      // poll timeout was pending used to spawn an ADDITIONAL self-scheduling
+      // chain — poll storms multiplied during long processing runs.
+      if (inFlight) return
+      inFlight = true
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
       let active = false
       try {
-        const [s, t, v, c] = await Promise.all([
-          apiJson('/api/documents/stats'),
-          apiJson('/api/tags'),
-          apiJson('/api/views'),
-          apiJson('/api/correspondents'),
-        ])
-        if (cancelled) return
-        setStats(s)
-        setTags(t)
-        setViews(v)
-        setCorrespondents(c)
-        active = s.processing > 0 || (s.running && s.running.length > 0)
+        if (!document.hidden) {
+          const [s, t, v, c] = await Promise.all([
+            apiJson('/api/documents/stats'),
+            apiJson('/api/tags'),
+            apiJson('/api/views'),
+            apiJson('/api/correspondents'),
+          ])
+          if (cancelled) return
+          setStats(s)
+          setTags(t)
+          setViews(v)
+          setCorrespondents(c)
+          active = s.processing > 0 || (s.running && s.running.length > 0)
+        }
       } catch {
         /* sidebar data is best-effort */
+      } finally {
+        inFlight = false
       }
       if (cancelled) return
       // Poll fast while the queue is active so the live bars stay current;
-      // idle otherwise.
-      timer = setTimeout(load, active ? 2500 : 15000)
+      // idle otherwise; barely at all while the tab is hidden.
+      const delay = document.hidden ? 60000 : active ? 2500 : 15000
+      timer = setTimeout(load, delay)
     }
     load()
     const onChange = () => load()
+    const onVisible = () => {
+      if (!document.hidden) load() // catch up as soon as the tab is back
+    }
     window.addEventListener('library-changed', onChange)
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       cancelled = true
       if (timer) clearTimeout(timer)
       window.removeEventListener('library-changed', onChange)
+      document.removeEventListener('visibilitychange', onVisible)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
