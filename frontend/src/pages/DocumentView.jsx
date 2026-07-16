@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { apiFetch, apiJson, isTextNative } from '../api'
+import { apiDelete, apiFetch, apiJson, isTextNative } from '../api'
+import { invalidateThumb } from '../components/Thumb'
 import StatusChip from '../components/StatusChip'
 import ProgressBar from '../components/ProgressBar'
 import PageOrganizer from '../components/PageOrganizer'
@@ -44,6 +45,15 @@ export default function DocumentView() {
   const [fitMode, setFitMode] = useState('width')
   const [zoom, setZoom] = useState(1)
   const urlRef = useRef(null)
+  // True while mounted; guards post-await object-URL creation in pageOp
+  // (the unmount cleanup has already revoked by the time a late await lands).
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     apiJson('/api/settings/ocr').then(setOcrInfo).catch(() => {})
@@ -71,16 +81,22 @@ export default function DocumentView() {
   }, [load])
 
   useEffect(() => {
-    apiJson(`/api/documents/${id}/annotations`).then(setAnnotations).catch(() => {})
+    // Guard against cross-document races: a slow response for the previous
+    // document must not land on the one now being viewed.
+    let cancelled = false
+    apiJson(`/api/documents/${id}/annotations`)
+      .then((d) => !cancelled && setAnnotations(d))
+      .catch(() => {})
     apiJson(`/api/documents/${id}/related`)
-      .then((d) => setRelated(d.related))
+      .then((d) => !cancelled && setRelated(d.related))
       .catch(() => {})
     apiJson(`/api/documents/${id}/position`)
-      .then((d) => setServerPage(d.page))
+      .then((d) => !cancelled && setServerPage(d.page))
       .catch(() => {})
-      .finally(() => setPositionReady(true))
-    isOffline(id).then(setOfflineKept).catch(() => {})
+      .finally(() => !cancelled && setPositionReady(true))
+    isOffline(id).then((v) => !cancelled && setOfflineKept(v)).catch(() => {})
     return () => {
+      cancelled = true
       if (positionTimer.current) clearTimeout(positionTimer.current)
     }
   }, [id])
@@ -222,9 +238,10 @@ export default function DocumentView() {
         // The document was rebuilt: refetch metadata and the file itself.
         setPageMode(false)
         setFileUrl(null)
+        invalidateThumb(id) // pages changed — the cached thumbnail is stale
         await load()
         const resp = await apiFetch(`/api/documents/${id}/file`)
-        if (resp.ok) {
+        if (resp.ok && mountedRef.current) {
           const blob = await resp.blob()
           if (urlRef.current) URL.revokeObjectURL(urlRef.current)
           urlRef.current = URL.createObjectURL(blob)
@@ -259,7 +276,7 @@ export default function DocumentView() {
 
   async function unshareDoc() {
     try {
-      await apiFetch(`/api/documents/${id}/share`, { method: 'DELETE' })
+      await apiDelete(`/api/documents/${id}/share`)
       window.alert('All share links for this document are revoked.')
     } catch (err) {
       setError(err.message)
@@ -654,8 +671,12 @@ export default function DocumentView() {
                   <button
                     className="ghost danger side-x"
                     onClick={async () => {
-                      await apiFetch(`/api/annotations/${a.id}`, { method: 'DELETE' })
-                      setAnnotations((prev) => prev.filter((x) => x.id !== a.id))
+                      try {
+                        await apiDelete(`/api/annotations/${a.id}`)
+                        setAnnotations((prev) => prev.filter((x) => x.id !== a.id))
+                      } catch (err) {
+                        setError(err.message)
+                      }
                     }}
                   >
                     ×

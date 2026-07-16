@@ -15,9 +15,9 @@ export default function Menu({ label, className = '', items }) {
         <>
           <div className="menu-backdrop" onClick={() => setOpen(false)} />
           <div className="menu-pop">
-            {visible.map((item) => (
+            {visible.map((item, i) => (
               <button
-                key={item.label}
+                key={`${item.label}-${i}`}
                 className={`menu-item ${item.danger ? 'danger' : ''}`}
                 onClick={() => {
                   setOpen(false)

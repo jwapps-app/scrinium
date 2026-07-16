@@ -38,7 +38,7 @@ export default function Login() {
           setError('')
           return
         }
-        throw new Error(detail === 'Bad one-time code' ? detail : detail)
+        throw new Error(detail)
       }
       setTokens(await resp.json())
       navigate('/', { replace: true })

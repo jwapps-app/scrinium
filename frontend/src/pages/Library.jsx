@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { apiFetch, apiJson, isTextNative } from '../api'
+import { fmtBytes } from '../format'
 import Menu from '../components/Menu'
 import ProgressBar from '../components/ProgressBar'
 import Shell from '../components/Shell'
@@ -19,17 +20,6 @@ function Snippet({ text }) {
 }
 
 const ENGINES = ['tesseract', 'apple', 'native']
-function fmtBytes(n) {
-  if (!n) return null
-  const u = ['B', 'KB', 'MB', 'GB', 'TB']
-  let i = 0
-  while (n >= 1024 && i < u.length - 1) {
-    n /= 1024
-    i++
-  }
-  return `${i === 0 ? n : n.toFixed(1)} ${u[i]}`
-}
-
 const SORTS = [
   ['newest', 'Newest added'],
   ['oldest', 'Oldest added'],

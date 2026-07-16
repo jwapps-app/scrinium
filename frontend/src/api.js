@@ -43,6 +43,22 @@ export async function apiFetch(path, options = {}, retry = true) {
   return resp
 }
 
+
+/** DELETE that actually reports failure — apiFetch returns error responses
+ * as-is, and several callers were treating any response as success. */
+export async function apiDelete(path) {
+  const resp = await apiFetch(path, { method: 'DELETE' })
+  if (!resp.ok) {
+    let detail = resp.statusText
+    try {
+      detail = (await resp.json()).detail || detail
+    } catch {
+      /* not json */
+    }
+    throw new Error(detail)
+  }
+}
+
 export async function apiJson(path, options = {}) {
   const resp = await apiFetch(path, {
     ...options,

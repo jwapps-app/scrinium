@@ -1,13 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { apiFetch, apiJson } from '../api'
+import { apiDelete, apiJson } from '../api'
+import { fmtBytes } from '../format'
 import Shell from '../components/Shell'
-
-function fmtBytes(n) {
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`
-  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`
-  return `${Math.round(n / 1024)} KB`
-}
 
 function monthLabel(ym) {
   const [y, m] = ym.split('-')
@@ -126,7 +121,7 @@ export default function Insights() {
                 <span className="stat-label">pages</span>
               </div>
               <div className="stat-card">
-                <span className="stat-value">{fmtBytes(data.storage_bytes)}</span>
+                <span className="stat-value">{fmtBytes(data.storage_bytes) || '0 B'}</span>
                 <span className="stat-label">on disk</span>
               </div>
             </div>
@@ -227,8 +222,12 @@ export default function Insights() {
                             className="ghost"
                             title={`Move “${p.a.title}” to the trash`}
                             onClick={async () => {
-                              await apiFetch(`/api/documents/${p.a.id}`, { method: 'DELETE' })
-                              setDupes({ ...dupes, pairs: dupes.pairs.filter((x) => x !== p) })
+                              try {
+                                await apiDelete(`/api/documents/${p.a.id}`)
+                                setDupes({ ...dupes, pairs: dupes.pairs.filter((x) => x !== p) })
+                              } catch (err) {
+                                setError(err.message)
+                              }
                             }}
                           >
                             Trash left
@@ -237,8 +236,12 @@ export default function Insights() {
                             className="ghost"
                             title={`Move “${p.b.title}” to the trash`}
                             onClick={async () => {
-                              await apiFetch(`/api/documents/${p.b.id}`, { method: 'DELETE' })
-                              setDupes({ ...dupes, pairs: dupes.pairs.filter((x) => x !== p) })
+                              try {
+                                await apiDelete(`/api/documents/${p.b.id}`)
+                                setDupes({ ...dupes, pairs: dupes.pairs.filter((x) => x !== p) })
+                              } catch (err) {
+                                setError(err.message)
+                              }
                             }}
                           >
                             Trash right
@@ -274,7 +277,7 @@ export default function Insights() {
                 <ul className="dup-list">
                   {data.largest.map((d) => (
                     <li key={d.id} className="dup-pair">
-                      <span className="dup-similarity">{fmtBytes(d.bytes)}</span>
+                      <span className="dup-similarity">{fmtBytes(d.bytes) || '0 B'}</span>
                       <span className="dup-docs">
                         <Link to={`/doc/${d.id}`}>{d.title}</Link>
                         <span className="settings-hint">

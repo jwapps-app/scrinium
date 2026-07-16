@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { apiFetch, apiJson } from '../api'
+import { apiDelete, apiJson } from '../api'
 import ComparePane from '../components/ComparePane'
 
 /**
@@ -83,7 +83,12 @@ export default function Compare() {
   }
 
   async function trash(id) {
-    await apiFetch(`/api/documents/${id}`, { method: 'DELETE' })
+    try {
+      await apiDelete(`/api/documents/${id}`)
+    } catch (err) {
+      window.alert(`Could not move to trash: ${err.message}`)
+      return
+    }
     await advance()
   }
   async function notDupe() {

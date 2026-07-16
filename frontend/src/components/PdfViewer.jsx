@@ -34,6 +34,9 @@ export default function PdfViewer({
 }) {
   const containerRef = useRef(null)
   const stateRef = useRef(null)
+  // The parsed PDF, kept across zoom/fit rebuilds: re-parsing a large blob on
+  // every zoom click is very expensive. Destroyed only when url changes.
+  const pdfRef = useRef({ url: null, pdf: null })
   // Survives rebuilds so zoom/fit changes restore the page you were on.
   const anchorPageRef = useRef(null)
   const [error, setError] = useState('')
@@ -217,7 +220,15 @@ export default function PdfViewer({
 
     async function load() {
       try {
-        const pdf = await pdfjsLib.getDocument(url).promise
+        let pdf = pdfRef.current.url === url ? pdfRef.current.pdf : null
+        if (!pdf) {
+          pdf = await pdfjsLib.getDocument(url).promise
+          if (cancelled) {
+            pdf.destroy()
+            return
+          }
+          pdfRef.current = { url, pdf }
+        }
         if (cancelled) return
         st.pdf = pdf
         const first = await pdf.getPage(1)
@@ -343,9 +354,18 @@ export default function PdfViewer({
       window.removeEventListener('resize', st.onScroll)
       container.removeEventListener('mouseup', st.onMouseUp)
       if (st.throttle) clearTimeout(st.throttle)
-      st.pdf?.destroy()
     }
   }, [url, fitMode, zoom]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Destroy the parsed PDF only when the document itself changes (or on
+  // unmount) — zoom/fit rebuilds above reuse it.
+  useEffect(
+    () => () => {
+      pdfRef.current.pdf?.destroy()
+      pdfRef.current = { url: null, pdf: null }
+    },
+    [url],
+  )
 
   // Re-draw highlights on already-rendered pages when the terms change.
   useEffect(() => {

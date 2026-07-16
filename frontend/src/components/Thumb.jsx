@@ -10,8 +10,11 @@ export default function Thumb({ id, className = '' }) {
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
+    // Reset per-id state: a reused <Thumb> (no key) must not carry the
+    // previous document's image or a sticky failed flag to the next one.
+    setFailed(false)
+    setUrl(cache.get(id) || null)
     if (cache.has(id)) {
-      setUrl(cache.get(id))
       return
     }
     let cancelled = false
