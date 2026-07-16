@@ -1,6 +1,6 @@
 from sqlalchemy import Float, cast, func, select
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 
 from app.deps import DB, CurrentUser
 import uuid
@@ -23,6 +23,16 @@ async def search(
     if not q:
         return SearchResponse(query=q, results=[])
 
+    # Validate up front — a malformed tag_id should be a 422, not a 500.
+    tag_uuid = None
+    if tag_id:
+        try:
+            tag_uuid = uuid.UUID(tag_id)
+        except ValueError:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "tag_id must be a UUID"
+            )
+
     tsquery = func.websearch_to_tsquery("english", q)
     rank = cast(func.ts_rank(Document.search_vector, tsquery), Float)
     snippet = func.ts_headline(
@@ -42,8 +52,8 @@ async def search(
                 Document.search_vector.op("@@")(tsquery),
                 # Scoped search: restrict to the active tag filter.
                 *(
-                    [Document.tags.any(Tag.id == uuid.UUID(tag_id))]
-                    if tag_id
+                    [Document.tags.any(Tag.id == tag_uuid)]
+                    if tag_uuid
                     else []
                 ),
             )

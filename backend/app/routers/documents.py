@@ -11,6 +11,7 @@ import aiofiles
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import update as sqla_update
 
 from app.deps import DB, CurrentUser
 from app.models import Blob, Document, DocumentStatus, Job, JobStatus, Tag
@@ -45,6 +46,18 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 # Only these render inline; everything else is forced to download so a
 # mistyped/ível content-type can never execute in the browser origin.
 _INLINE_SAFE = {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"}
+
+
+def _light_document():
+    """select(Document) without the heavy payload columns. text_content is
+    megabytes of TOASTed OCR text per book and search_vector mirrors it —
+    list/detail serialization never needs either, so loading them detoasts
+    and ships huge data just to throw it away."""
+    from sqlalchemy.orm import defer
+
+    return select(Document).options(
+        defer(Document.text_content), defer(Document.search_vector)
+    )
 
 
 def _serve_blob(path, media_type: str, filename: str, disposition: str):
@@ -382,7 +395,7 @@ async def list_documents(
     ).scalar_one()
     docs = (
         await db.execute(
-            select(Document)
+            _light_document()
             .where(*conditions)
             .order_by(SORTS.get(sort, SORTS["newest"]))
             .offset(offset)
@@ -425,8 +438,29 @@ async def _size_map(db, docs) -> dict:
     return out
 
 
+_STATS_CACHE: dict = {}
+_STATS_TTL = 3.0  # short enough to keep live progress bars honest, long
+# enough to collapse concurrent pollers into one computation
+
+
 @router.get("/stats")
 async def library_stats(user: CurrentUser, db: DB) -> dict:
+    """~8 aggregate queries, polled every few seconds by every open tab —
+    a tiny TTL cache means N pollers cost one computation."""
+    import time as _time
+
+    now = _time.monotonic()
+    hit = _STATS_CACHE.get(user.tenant_id)
+    if hit is not None and now - hit[0] < _STATS_TTL:
+        return hit[1]
+    payload = await _compute_stats(user, db)
+    for key in [k for k, v in _STATS_CACHE.items() if now - v[0] >= _STATS_TTL]:
+        _STATS_CACHE.pop(key, None)
+    _STATS_CACHE[user.tenant_id] = (now, payload)
+    return payload
+
+
+async def _compute_stats(user: CurrentUser, db: DB) -> dict:
     counts = dict(
         (
             await db.execute(
@@ -643,24 +677,41 @@ async def library_stats(user: CurrentUser, db: DB) -> dict:
 async def extract_dates(user: CurrentUser, db: DB) -> dict:
     """Backfill document dates for existing docs that don't have one,
     from their already-stored text. Cheap — no OCR involved."""
-    docs = (
-        await db.execute(
-            select(Document).where(
+    # Stream in batches — loading every undated document's full text at once
+    # is a memory spike on a large library.
+    examined = 0
+    updated = 0
+    last_id = None
+    while True:
+        q = (
+            select(Document.id, Document.text_content)
+            .where(
                 Document.tenant_id == user.tenant_id,
                 Document.doc_date.is_(None),
                 Document.text_content.is_not(None),
                 Document.deleted_at.is_(None),
             )
+            .order_by(Document.id)
+            .limit(500)
         )
-    ).scalars().all()
-    updated = 0
-    for doc in docs:
-        found = extract_document_date(doc.text_content)
-        if found:
-            doc.doc_date = found
-            updated += 1
-    await db.flush()
-    return {"examined": len(docs), "dated": updated}
+        if last_id is not None:
+            q = q.where(Document.id > last_id)
+        rows = (await db.execute(q)).all()
+        if not rows:
+            break
+        for doc_id, content in rows:
+            examined += 1
+            found = extract_document_date(content)
+            if found:
+                await db.execute(
+                    sqla_update(Document)
+                    .where(Document.id == doc_id)
+                    .values(doc_date=found)
+                )
+                updated += 1
+            last_id = doc_id
+        await db.flush()
+    return {"examined": examined, "dated": updated}
 
 
 @router.post("/processing")
@@ -670,6 +721,7 @@ async def set_processing(body: dict, user: CurrentUser, db: DB) -> dict:
     server or the Mac (Apple OCR host) without losing work or quality."""
     paused = bool(body.get("paused"))
     await set_flag(db, PROCESSING_PAUSED, paused)
+    _STATS_CACHE.pop(user.tenant_id, None)  # reflect the toggle immediately
     return {"paused": paused}
 
 
@@ -720,6 +772,9 @@ async def upgrade_ocr(user: CurrentUser, db: DB) -> dict:
     """Queue every Tesseract-finished document for Apple re-OCR at LOW
     priority: fresh intake always claims first, so the upgrade fleet only
     runs when the queue is otherwise idle."""
+    active_jobs = select(Job.document_id).where(
+        Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])
+    )
     docs = (
         await db.execute(
             select(Document.id).where(
@@ -727,25 +782,14 @@ async def upgrade_ocr(user: CurrentUser, db: DB) -> dict:
                 Document.deleted_at.is_(None),
                 Document.status == DocumentStatus.READY,
                 Document.ocr_engine == "tesseract",
+                ~Document.id.in_(active_jobs),
             )
         )
     ).scalars().all()
-    queued = 0
     for doc_id in docs:
-        existing = (
-            await db.execute(
-                select(func.count(Job.id)).where(
-                    Job.document_id == doc_id,
-                    Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
-                )
-            )
-        ).scalar_one()
-        if existing:
-            continue
         db.add(Job(document_id=doc_id, kind="ingest", mode="redo", priority=10))
-        queued += 1
     await db.flush()
-    return {"queued": queued}
+    return {"queued": len(docs)}
 
 
 def _downsample_eligible(tenant_id, target_dpi: int):
@@ -1089,7 +1133,7 @@ async def build_binder_pdf(body: dict, user: CurrentUser, db: DB):
     elif tag_id:
         docs = (
             await db.execute(
-                select(Document)
+                _light_document()
                 .where(
                     Document.tenant_id == user.tenant_id,
                     Document.deleted_at.is_(None),
@@ -1158,7 +1202,7 @@ async def download_zip(body: dict, user: CurrentUser, db: DB):
     elif tag_id:
         docs = (
             await db.execute(
-                select(Document)
+                _light_document()
                 .where(
                     Document.tenant_id == user.tenant_id,
                     Document.deleted_at.is_(None),
@@ -1342,14 +1386,14 @@ async def bulk_action(
     remaining = 0
     heavy = body.action in ("delete", "purge")
     if body.filter_trash:
-        base = select(Document).where(
+        base = _light_document().where(
             Document.tenant_id == user.tenant_id, Document.deleted_at.is_not(None)
         )
         count_where = [
             Document.tenant_id == user.tenant_id, Document.deleted_at.is_not(None)
         ]
     elif body.filter_tag_id is not None:
-        base = select(Document).where(
+        base = _light_document().where(
             Document.tenant_id == user.tenant_id,
             Document.tags.any(Tag.id == body.filter_tag_id),
             Document.deleted_at.is_(None),
@@ -1373,7 +1417,7 @@ async def bulk_action(
     elif body.ids:
         docs = (
             await db.execute(
-                select(Document).where(
+                _light_document().where(
                     Document.tenant_id == user.tenant_id, Document.id.in_(body.ids)
                 )
             )

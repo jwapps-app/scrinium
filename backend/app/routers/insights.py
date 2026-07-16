@@ -42,6 +42,9 @@ async def insights(user: CurrentUser, db: DB) -> dict:
     if hit is not None and now - hit[0] < _INSIGHTS_TTL:
         return hit[1]
     payload = await _compute_insights(user, db)
+    # Drop expired entries so the cache can't grow one stale entry per tenant.
+    for key in [k for k, v in _INSIGHTS_CACHE.items() if now - v[0] >= _INSIGHTS_TTL]:
+        _INSIGHTS_CACHE.pop(key, None)
     _INSIGHTS_CACHE[user.tenant_id] = (now, payload)
     return payload
 
@@ -133,6 +136,8 @@ async def _compute_insights(user: CurrentUser, db: DB) -> dict:
 
     # Suspiciously little text per page: candidates for a better scan or
     # a re-OCR (OCR "succeeded" but yielded almost nothing).
+    # Same predicate as the /insights/weak-ocr worklist — one definition so
+    # the threshold can't drift between the summary and the review flow.
     low_yield_rows = (
         await db.execute(
             select(
@@ -141,15 +146,7 @@ async def _compute_insights(user: CurrentUser, db: DB) -> dict:
                 Document.page_count,
                 _text_len(),
             )
-            .where(
-                *live,
-                Document.status == "ready",
-                Document.weak_ocr_dismissed.is_(False),
-                Document.page_count > 0,
-                Document.text_content.is_not(None),
-                _text_len()
-                < Document.page_count * 150,
-            )
+            .where(*_weak_ocr_conditions(user))
             .order_by(
                 (_text_len() / Document.page_count)
             )
@@ -327,14 +324,17 @@ async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
     ids = {i for a, b, _ in pairs for i in (a, b)}
     docs = {}
     if ids:
-        for doc in (
-            await db.execute(select(Document).where(Document.id.in_(ids)))
-        ).scalars():
-            docs[doc.id] = {
-                "id": str(doc.id),
-                "title": doc.title,
-                "page_count": doc.page_count,
-                "created_at": doc.created_at.isoformat(),
+        rows = await db.execute(
+            select(
+                Document.id, Document.title, Document.page_count, Document.created_at
+            ).where(Document.id.in_(ids))
+        )
+        for doc_id, title, page_count, created_at in rows:
+            docs[doc_id] = {
+                "id": str(doc_id),
+                "title": title,
+                "page_count": page_count,
+                "created_at": created_at.isoformat(),
             }
     return {
         "fingerprinted": len(rows),

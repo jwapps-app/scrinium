@@ -145,6 +145,7 @@ async def system_health(user: CurrentUser, db: DB) -> dict:
     backlog = (
         await db.execute(
             select(func.count(Document.id)).where(
+                Document.tenant_id == user.tenant_id,
                 Document.status.in_(
                     [DocumentStatus.PENDING, DocumentStatus.PROCESSING]
                 ),
@@ -154,7 +155,12 @@ async def system_health(user: CurrentUser, db: DB) -> dict:
     ).scalar_one()
     running = (
         await db.execute(
-            select(func.count(Job.id)).where(Job.status == JobStatus.RUNNING)
+            select(func.count(Job.id))
+            .join(Document, Job.document_id == Document.id)
+            .where(
+                Job.status == JobStatus.RUNNING,
+                Document.tenant_id == user.tenant_id,
+            )
         )
     ).scalar_one()
 

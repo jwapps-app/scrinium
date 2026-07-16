@@ -37,14 +37,33 @@ async def classify_all(user: CurrentUser, db: DB) -> BulkClassifyResult:
             .order_by(Rule.priority, Rule.created_at)
         )
     ).scalars().all()
-    docs = (
-        await db.execute(select(Document).where(Document.tenant_id == user.tenant_id))
-    ).scalars().all()
-
+    # Batched by id keyset: loading every document's full OCR text at once is
+    # a memory spike on a large library, and trashed docs shouldn't reclassify.
+    examined = 0
     changed = 0
-    for doc in docs:
-        outcome = await classify_document(db, doc, rules)
-        if outcome.added_tags or outcome.new_title:
-            changed += 1
-    await db.flush()
-    return BulkClassifyResult(documents_examined=len(docs), documents_changed=changed)
+    last_id = None
+    while True:
+        q = (
+            select(Document)
+            .where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+            )
+            .order_by(Document.id)
+            .limit(200)
+        )
+        if last_id is not None:
+            q = q.where(Document.id > last_id)
+        docs = (await db.execute(q)).scalars().all()
+        if not docs:
+            break
+        for doc in docs:
+            outcome = await classify_document(db, doc, rules)
+            if outcome.added_tags or outcome.new_title:
+                changed += 1
+            last_id = doc.id
+        examined += len(docs)
+        await db.flush()
+        # Release the batch's loaded text before the next one.
+        db.expunge_all()
+    return BulkClassifyResult(documents_examined=examined, documents_changed=changed)
