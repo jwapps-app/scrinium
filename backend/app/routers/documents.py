@@ -439,24 +439,26 @@ async def _size_map(db, docs) -> dict:
 
 
 _STATS_CACHE: dict = {}
-_STATS_TTL = 3.0  # short enough to keep live progress bars honest, long
-# enough to collapse concurrent pollers into one computation
 
 
 @router.get("/stats")
 async def library_stats(user: CurrentUser, db: DB) -> dict:
-    """~8 aggregate queries, polled every few seconds by every open tab —
-    a tiny TTL cache means N pollers cost one computation."""
+    """~8 aggregate queries, polled every few seconds by every open tab — a
+    tiny TTL cache (STATS_CACHE_SECONDS, default 3s; 0 disables) means N
+    pollers cost one computation while live progress stays honest."""
     import time as _time
 
+    ttl = app_settings.stats_cache_seconds
     now = _time.monotonic()
-    hit = _STATS_CACHE.get(user.tenant_id)
-    if hit is not None and now - hit[0] < _STATS_TTL:
-        return hit[1]
+    if ttl > 0:
+        hit = _STATS_CACHE.get(user.tenant_id)
+        if hit is not None and now - hit[0] < ttl:
+            return hit[1]
     payload = await _compute_stats(user, db)
-    for key in [k for k, v in _STATS_CACHE.items() if now - v[0] >= _STATS_TTL]:
-        _STATS_CACHE.pop(key, None)
-    _STATS_CACHE[user.tenant_id] = (now, payload)
+    if ttl > 0:
+        for key in [k for k, v in _STATS_CACHE.items() if now - v[0] >= ttl]:
+            _STATS_CACHE.pop(key, None)
+        _STATS_CACHE[user.tenant_id] = (now, payload)
     return payload
 
 

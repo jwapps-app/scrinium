@@ -20,6 +20,8 @@ TEST_DB_URL = os.environ.get(
 )
 
 os.environ["DATABASE_URL"] = TEST_DB_URL
+# Counts must be fresh per request in tests — no stats micro-cache.
+os.environ["STATS_CACHE_SECONDS"] = "0"
 os.environ["ENVIRONMENT"] = "development"
 os.environ["SECRET_KEY"] = "test-secret-key-that-is-long-enough-000"
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="scrinium-test-data-")

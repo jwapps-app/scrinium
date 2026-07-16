@@ -25,22 +25,51 @@ async def test_change_password_requires_current(client, auth):
 
 
 async def test_change_password_roundtrip(client, auth):
-    # change it, log in with the new one, change it back
+    # change it — the response carries a fresh token pair, and every token
+    # minted before the change (including the shared fixture token) dies
     r = await client.post(
         "/api/auth/change-password", headers=auth,
         json={"current_password": "testpassword1", "new_password": "temporarypass2"},
     )
     assert r.status_code == 200
+    body = r.json()
+    assert body.get("access_token") and body.get("refresh_token")
+    fresh = {"Authorization": f"Bearer {body['access_token']}"}
+
+    # the pre-change token is now invalid (that's the point of the version bump)
+    stale = await client.get("/api/auth/users", headers=auth)
+    assert stale.status_code == 401
+
     login = await client.post(
         "/api/auth/login",
         json={"email": "tester@example.com", "password": "temporarypass2"},
     )
     assert login.status_code == 200
+
+    # change it back using the fresh token
     r = await client.post(
-        "/api/auth/change-password", headers=auth,
+        "/api/auth/change-password", headers=fresh,
         json={"current_password": "temporarypass2", "new_password": "testpassword1"},
     )
     assert r.status_code == 200
+
+    # Restore token_version so the session-scoped fixture token (minted at
+    # version 0) keeps working for the rest of the suite.
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models import User
+
+    async with SessionLocal() as session:
+        await session.execute(
+            sa.update(User)
+            .where(User.email == "tester@example.com")
+            .values(token_version=0)
+        )
+        await session.commit()
+
+    ok = await client.get("/api/auth/users", headers=auth)
+    assert ok.status_code == 200
 
 
 async def test_user_management(client, auth):

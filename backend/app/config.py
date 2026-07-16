@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     # running multiple worker replicas (then rely on heartbeat staleness).
     worker_single: bool = True
     max_upload_mb: int = 500
+    # /documents/stats micro-cache TTL; 0 disables (tests need fresh counts).
+    stats_cache_seconds: float = 3.0
 
     # Document-date extraction: MDY (US) or DMY for ambiguous 03/04/2024
     date_order: str = "MDY"

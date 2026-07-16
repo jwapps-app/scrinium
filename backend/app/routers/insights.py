@@ -324,12 +324,12 @@ async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
     ids = {i for a, b, _ in pairs for i in (a, b)}
     docs = {}
     if ids:
-        rows = await db.execute(
+        detail_rows = await db.execute(
             select(
                 Document.id, Document.title, Document.page_count, Document.created_at
             ).where(Document.id.in_(ids))
         )
-        for doc_id, title, page_count, created_at in rows:
+        for doc_id, title, page_count, created_at in detail_rows:
             docs[doc_id] = {
                 "id": str(doc_id),
                 "title": title,
