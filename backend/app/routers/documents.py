@@ -27,7 +27,7 @@ from app.schemas import (
 from datetime import datetime, timezone
 from app.config import settings as app_settings
 from app.models import Correspondent, CustomField, DocType, document_custom_values
-from app.services import deletion, intake, storage, thumbnails
+from app.services import compress, deletion, intake, storage, thumbnails
 from app.services import pages as pages_service
 from app.services.intake import DuplicateDocument
 from app.services.dates import extract_document_date
@@ -810,7 +810,10 @@ def _downsample_eligible(tenant_id, target_dpi: int):
         ~Document.id.in_(active_jobs),
         or_(
             Document.archive_dpi.is_(None),
-            Document.archive_dpi > target_dpi,
+            # Above the cap by more than rounding slack. Ghostscript targets the
+            # cap but re-measures a hair over (e.g. 301 for a 300 cap), so a
+            # strict `> cap` would flag every downsampled doc forever.
+            Document.archive_dpi > compress.cap_threshold(target_dpi),
         ),
     )
 

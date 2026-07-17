@@ -75,7 +75,7 @@ def _run_ocr(
     dpi: int | None = None
     if archive_path is not None:
         dpi = compress.max_image_dpi(archive_path)
-        if max_dpi > 0 and dpi is not None and dpi > max_dpi:
+        if compress.over_cap(dpi, max_dpi):
             reduced = workdir / "archive_reduced.pdf"
             if compress.downsample_archive(archive_path, reduced, max_dpi):
                 archive_path = reduced

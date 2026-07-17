@@ -42,6 +42,27 @@ _PDFA_DEF = """[/_objdef {{icc}} /type /stream /OBJ pdfmark
 """
 
 
+# Ghostscript's ...ImageResolution is a *target*, not an exact clamp: the
+# re-measured effective DPI (image pixels ÷ page inches, rounded to an integer
+# by pdfimages) routinely lands a hair above it — e.g. a "300 DPI" downsample
+# reads back as 301. A strict `dpi > cap` test then flags such a doc as still
+# over the cap forever, and re-downsampling only reproduces 301. So treat any
+# archive within this fraction of the cap as already-satisfied. 5% (300→315)
+# absorbs the rounding while still catching genuine over-cap scans (400/600).
+DPI_TOLERANCE = 0.05
+
+
+def cap_threshold(target_dpi: int) -> int:
+    """Highest measured DPI still considered "at the cap" for `target_dpi`."""
+    return int(target_dpi * (1 + DPI_TOLERANCE))
+
+
+def over_cap(dpi: int | None, target_dpi: int) -> bool:
+    """True when an archive is meaningfully above the cap — i.e. worth
+    downsampling — as opposed to sitting at the cap modulo rounding."""
+    return bool(target_dpi > 0 and dpi is not None and dpi > cap_threshold(target_dpi))
+
+
 def is_pdfa(pdf: Path) -> bool:
     """True when the PDF declares PDF/A conformance (XMP pdfaid:part)."""
     try:
@@ -253,9 +274,10 @@ async def process_downsample_job(
     # 0 (not None) for no-image archives, so they read as measured and don't
     # requeue forever as unmeasured candidates.
     document.archive_dpi = dpi or 0
-    if dpi is None or dpi <= target_dpi:
-        # Already lean — nothing to rebuild, but record the archive's current
-        # PDF/A status so the indicator is accurate across the whole library.
+    if not over_cap(dpi, target_dpi):
+        # Already lean (or at the cap modulo rounding) — nothing to rebuild, but
+        # record the archive's current PDF/A status so the indicator is
+        # accurate across the whole library.
         document.archive_pdfa = await asyncio.to_thread(is_pdfa, archive_path)
         job.status = JobStatus.DONE
         job.finished_at = datetime.now(timezone.utc)
