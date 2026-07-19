@@ -74,12 +74,25 @@ def is_pdfa(pdf: Path) -> bool:
         return False
 
 
-def max_image_dpi(pdf: Path, sample_pages: int = 2) -> int | None:
-    """Highest embedded-image DPI over the first `sample_pages` pages.
+# A page image is anything at least this many pixels. A real page scan — even a
+# small receipt at 150 DPI — clears this easily (a letter page at 150 DPI is
+# ~2 megapixels), while logos, icons, and inline figures fall below it. Keeps a
+# 120×120 logo shown in a 0.1" box (which computes to ~1200 PPI) from being
+# mistaken for the document's resolution.
+MIN_PAGE_IMAGE_PX = 500_000
 
-    Scans are uniform DPI across pages, so sampling the front is representative
-    and stays cheap even on a 2,000-page book. Returns None for a PDF with no
-    raster images (born-digital / vector) — nothing to downsample.
+
+def max_image_dpi(pdf: Path, sample_pages: int = 2) -> int | None:
+    """DPI of the dominant page image over the first `sample_pages` pages.
+
+    Reports the highest DPI among *substantial* images only, ignoring small
+    embedded graphics: a tiny sharp logo displayed in a small box computes to an
+    enormous effective PPI (1000+), which a naive max would report as the whole
+    document's resolution — making an already-lean file look like a high-DPI
+    downsample candidate. Scans are uniform DPI across pages, so sampling the
+    front is representative and cheap even on a 2,000-page book. Returns None for
+    a PDF with no substantial raster image (born-digital / vector, or only
+    decorative graphics) — nothing to downsample.
     """
     try:
         out = subprocess.run(
@@ -96,6 +109,11 @@ def max_image_dpi(pdf: Path, sample_pages: int = 2) -> int | None:
     for line in out.stdout.splitlines()[2:]:
         f = line.split()
         if len(f) < 14 or f[2] not in ("image", "stencil"):
+            continue
+        try:
+            if int(f[3]) * int(f[4]) < MIN_PAGE_IMAGE_PX:  # width × height
+                continue
+        except ValueError:
             continue
         for idx in (12, 13):  # x-ppi, y-ppi
             try:
