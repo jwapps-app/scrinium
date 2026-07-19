@@ -84,7 +84,8 @@ def max_image_dpi(pdf: Path, sample_pages: int = 2) -> int | None:
     try:
         out = subprocess.run(
             ["pdfimages", "-list", "-f", "1", "-l", str(sample_pages), str(pdf)],
-            capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+            capture_output=True, encoding="utf-8", errors="replace",
+            timeout=120, stdin=subprocess.DEVNULL,
         )
     except (subprocess.SubprocessError, OSError):
         return None
@@ -115,7 +116,8 @@ def _has_text(pdf: Path) -> bool:
     try:
         out = subprocess.run(
             ["pdftotext", "-q", str(pdf), "-"],
-            capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+            capture_output=True, encoding="utf-8", errors="replace",
+            timeout=120, stdin=subprocess.DEVNULL,
         )
         return bool((out.stdout or "").strip())
     except (subprocess.SubprocessError, OSError):
@@ -164,8 +166,8 @@ def _gs_downsample(src: Path, dst: Path, target_dpi: int, pdfa: bool) -> bool:
         cmd += [f"-sOutputFile={dst}", *inputs]
         try:
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=1800,
-                stdin=subprocess.DEVNULL,
+                cmd, capture_output=True, encoding="utf-8", errors="replace",
+                timeout=1800, stdin=subprocess.DEVNULL,
             )
         except (subprocess.SubprocessError, OSError) as exc:
             logger.warning("ghostscript downsample failed to launch: %s", exc)

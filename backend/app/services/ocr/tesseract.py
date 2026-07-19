@@ -174,7 +174,11 @@ def extract_text(pdf: Path) -> str:
         ["pdftotext", "-layout", str(pdf), "-"],
         capture_output=True,
         stdin=subprocess.DEVNULL,
-        text=True,
+        # A PDF's existing text layer may be in a legacy encoding (Latin-1 /
+        # CP1252); pdftotext passes those bytes through verbatim, so decode
+        # fail-soft rather than letting one bad byte flunk the whole document.
+        encoding="utf-8",
+        errors="replace",
         timeout=300,
     )
     if result.returncode != 0:
@@ -187,7 +191,8 @@ def _tesseract_image(image: Path) -> str:
         ["tesseract", str(image), "stdout", "-l", settings.ocr_languages],
         capture_output=True,
         stdin=subprocess.DEVNULL,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=600,
     )
     return result.stdout if result.returncode == 0 else ""
@@ -219,7 +224,8 @@ def text_only_fallback(source: Path, workdir: Path) -> str:
         ["pdftoppm", "-r", "200", "-png", str(source), str(fb_dir / "pg")],
         capture_output=True,
         stdin=subprocess.DEVNULL,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=3600,
     )
     pages = sorted(fb_dir.glob("pg*.png"))

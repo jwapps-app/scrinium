@@ -329,7 +329,8 @@ async def _restore_scrinium(tenant_id, source: Path, manifest: dict) -> None:
                 if archive_path and archive_path.exists():
                     result = subprocess.run(
                         ["pdftotext", "-layout", str(archive_path), "-"],
-                        capture_output=True, text=True, timeout=300,
+                        capture_output=True, encoding="utf-8", errors="replace",
+                        timeout=300,
                     )
                     if result.returncode == 0 and result.stdout.strip():
                         text = result.stdout

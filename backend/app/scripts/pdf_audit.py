@@ -78,7 +78,8 @@ def probe(path: Path) -> tuple[int | None, int, str | None]:
     try:
         out = subprocess.run(
             ["pdfimages", "-list", str(path)],
-            capture_output=True, text=True, timeout=PROBE_TIMEOUT,
+            capture_output=True, encoding="utf-8", errors="replace",
+            timeout=PROBE_TIMEOUT,
             # DEVNULL, not the console: an encrypted/malformed PDF makes
             # pdfimages prompt for a password on stdin and block forever.
             # With no stdin it gets EOF and fails fast instead.
