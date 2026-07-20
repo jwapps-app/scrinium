@@ -1984,9 +1984,9 @@ button.linklike {
 }
 
 .menu-pop {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
+  /* Portaled to body (see Menu.jsx); desktop coords come from the trigger via
+     inline top/right, so this is fixed (viewport-relative), not absolute. */
+  position: fixed;
   z-index: 41;
   min-width: 220px;
   max-height: 55vh;
