@@ -10,12 +10,63 @@ export default function DocumentDetails({ doc, onChange }) {
   const [docTypes, setDocTypes] = useState([])
   const [fields, setFields] = useState([])
   const [error, setError] = useState('')
+  // "Copy tags from…": pick an existing document and mirror its tags here.
+  const [copyOpen, setCopyOpen] = useState(false)
+  const [copyQuery, setCopyQuery] = useState('')
+  const [copyResults, setCopyResults] = useState([])
 
   useEffect(() => {
     apiJson('/api/correspondents').then(setCorrespondents).catch(() => {})
     apiJson('/api/doc-types').then(setDocTypes).catch(() => {})
     apiJson('/api/custom-fields').then(setFields).catch(() => {})
   }, [])
+
+  // Debounced title search for the copy-from picker. Title-only (not
+  // full-text) so typing a title doesn't surface every document that merely
+  // mentions it.
+  useEffect(() => {
+    if (!copyOpen) return
+    const q = copyQuery.trim()
+    if (!q) {
+      setCopyResults([])
+      return
+    }
+    let cancelled = false
+    const timer = setTimeout(() => {
+      apiJson(`/api/documents?title_q=${encodeURIComponent(q)}&limit=8`)
+        .then((r) => {
+          if (!cancelled) setCopyResults(r.items.filter((d) => d.id !== doc.id))
+        })
+        .catch(() => {
+          if (!cancelled) setCopyResults([])
+        })
+    }, 250)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [copyQuery, copyOpen, doc.id])
+
+  function closeCopy() {
+    setCopyOpen(false)
+    setCopyQuery('')
+    setCopyResults([])
+  }
+
+  async function copyTagsFrom(sourceId) {
+    setError('')
+    try {
+      const updated = await apiJson(`/api/documents/${doc.id}/copy-tags`, {
+        method: 'POST',
+        body: JSON.stringify({ source_id: sourceId }),
+      })
+      onChange(updated)
+      window.dispatchEvent(new Event('library-changed'))
+      closeCopy()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
 
   async function patch(body) {
     setError('')
@@ -147,27 +198,64 @@ export default function DocumentDetails({ doc, onChange }) {
         </label>
       ))}
 
-      {doc.tags.length > 0 && (
-        <span className="detail detail-tags">
-          {doc.tags.map((t) => (
-            <span
-              key={t.id}
-              className="chip chip-tag"
-              style={
-                t.color
-                  ? {
-                      background: `color-mix(in srgb, ${t.color} 22%, transparent)`,
-                      borderColor: t.color,
-                      color: t.color,
-                    }
-                  : undefined
-              }
-            >
-              {t.name}
-            </span>
-          ))}
-        </span>
-      )}
+      <span className="detail detail-tags">
+        {doc.tags.map((t) => (
+          <span
+            key={t.id}
+            className="chip chip-tag"
+            style={
+              t.color
+                ? {
+                    background: `color-mix(in srgb, ${t.color} 22%, transparent)`,
+                    borderColor: t.color,
+                    color: t.color,
+                  }
+                : undefined
+            }
+          >
+            {t.name}
+          </span>
+        ))}
+        {copyOpen ? (
+          <span className="tag-copy">
+            <input
+              autoFocus
+              placeholder="Find a document by title…"
+              value={copyQuery}
+              onChange={(e) => setCopyQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') closeCopy()
+              }}
+            />
+            <button type="button" className="ghost" onClick={closeCopy}>
+              Cancel
+            </button>
+            {copyResults.length > 0 && (
+              <span className="tag-copy-results">
+                {copyResults.map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    className="tag-copy-hit"
+                    onClick={() => copyTagsFrom(d.id)}
+                  >
+                    <span className="tag-copy-title">{d.title}</span>
+                    <span className="tag-copy-tags">
+                      {d.tags.length
+                        ? d.tags.map((t) => t.name).join(' · ')
+                        : 'no tags'}
+                    </span>
+                  </button>
+                ))}
+              </span>
+            )}
+          </span>
+        ) : (
+          <button type="button" className="ghost" onClick={() => setCopyOpen(true)}>
+            Copy tags from…
+          </button>
+        )}
+      </span>
 
       <label className="detail detail-notes">
         <span className="detail-label">Notes</span>

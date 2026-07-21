@@ -108,6 +108,10 @@ class ReprocessRequest(BaseModel):
     mode: str = Field(default="redo", pattern="^(skip|redo|force)$")
 
 
+class CopyTagsRequest(BaseModel):
+    source_id: uuid.UUID  # document whose tags are mirrored onto this one
+
+
 class ShareLinkCreate(BaseModel):
     days: int = Field(default=7, ge=0, le=365)  # 0 = no expiry
 

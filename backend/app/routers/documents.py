@@ -18,6 +18,7 @@ from app.models import Blob, Document, DocumentStatus, Job, JobStatus, Tag
 from app.schemas import (
     BulkActionRequest,
     BulkActionResult,
+    CopyTagsRequest,
     DocumentList,
     DocumentOut,
     DocumentUpdate,
@@ -346,6 +347,7 @@ async def list_documents(
     needs_review: bool = False,
     expiring: bool = False,
     non_pdfa: bool = False,
+    title_q: str | None = None,
     offset: int = 0,
     limit: int = 50,
 ) -> DocumentList:
@@ -382,6 +384,11 @@ async def list_documents(
         conditions.append(Document.ocr_engine == engine)
     if non_pdfa:
         conditions.append(Document.archive_pdfa.is_(False))
+    if title_q and title_q.strip():
+        # Title-only match for pickers (e.g. choosing a document to copy tags
+        # from), deliberately not full-text: matching body text would bury the
+        # title you actually typed under every document that mentions it.
+        conditions.append(Document.title.ilike(f"%{title_q.strip()}%"))
     # Date filters mean the document's own date, falling back to when it
     # was added for docs without one.
     effective_date = func.coalesce(Document.doc_date, func.date(Document.created_at))
@@ -1075,6 +1082,28 @@ async def reprocess(
     await db.flush()
     await db.refresh(doc)
     return doc_out(doc)
+
+
+@router.post("/{doc_id}/copy-tags", response_model=DocumentOut)
+async def copy_tags(
+    doc_id: uuid.UUID, body: CopyTagsRequest, user: CurrentUser, db: DB
+) -> DocumentOut:
+    """Mirror another document's tags onto this one.
+
+    Additive by design: the document keeps every tag it already had, so
+    copying from a second source stacks rather than silently dropping work.
+    Ancestors are implied as everywhere else, so copying a leaf tag brings its
+    parents along."""
+    doc = await _get_owned(doc_id, user, db)
+    if body.source_id != doc.id:
+        source = await _get_owned(body.source_id, user, db)
+        merged = {t.id: t for t in doc.tags}
+        for tag in source.tags:
+            merged.setdefault(tag.id, tag)
+        doc.tags = await with_ancestors(db, list(merged.values()))
+        await db.flush()
+        await db.refresh(doc)
+    return doc_out(doc, custom_values=await _custom_values(db, doc.id))
 
 
 @router.get("/{doc_id}/related")

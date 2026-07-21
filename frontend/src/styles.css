@@ -1883,6 +1883,63 @@ button.linklike {
   align-items: center;
   gap: 0.3rem;
   padding-bottom: 0.35rem;
+  flex-wrap: wrap;
+}
+
+/* "Copy tags from…" picker: mirror another document's tags onto this one. */
+.tag-copy {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.tag-copy input {
+  width: 15rem;
+  max-width: 55vw;
+}
+
+.tag-copy-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 20rem;
+  max-width: min(28rem, 85vw);
+  max-height: 40vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-md);
+  padding: 4px;
+}
+
+.tag-copy-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  background: none;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.4rem 0.55rem;
+  text-align: left;
+}
+
+.tag-copy-hit:hover {
+  background: var(--bg);
+}
+
+.tag-copy-title {
+  font-size: 0.85rem;
+}
+
+.tag-copy-tags {
+  font-size: 0.72rem;
+  color: var(--muted);
 }
 
 /* Trash banner */

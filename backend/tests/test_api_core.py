@@ -92,6 +92,68 @@ async def test_tag_hierarchy_and_cycle_guard(client, auth, pdf_factory):
     assert child["id"] in names and parent["id"] in names
 
 
+async def test_copy_tags_from_another_document(client, auth, pdf_factory):
+    parent = (await client.post("/api/tags", headers=auth, json={"name": _name("cp-parent")})).json()
+    child = (
+        await client.post(
+            "/api/tags", headers=auth,
+            json={"name": _name("cp-child"), "parent_id": parent["id"]},
+        )
+    ).json()
+    own = (await client.post("/api/tags", headers=auth, json={"name": _name("cp-own")})).json()
+
+    source = (await upload(client, auth, pdf_factory(text=_name("src")), "src.pdf")).json()
+    await client.patch(
+        f"/api/documents/{source['id']}", headers=auth, json={"tag_ids": [child["id"]]}
+    )
+    target = (await upload(client, auth, pdf_factory(text=_name("dst")), "dst.pdf")).json()
+    await client.patch(
+        f"/api/documents/{target['id']}", headers=auth, json={"tag_ids": [own["id"]]}
+    )
+
+    resp = await client.post(
+        f"/api/documents/{target['id']}/copy-tags",
+        headers=auth,
+        json={"source_id": source["id"]},
+    )
+    assert resp.status_code == 200
+    ids = {t["id"] for t in resp.json()["tags"]}
+    # union: keeps its own tag, gains the source's tag and that tag's ancestor
+    assert ids == {own["id"], child["id"], parent["id"]}
+
+    # idempotent, and copying from itself is a harmless no-op
+    again = await client.post(
+        f"/api/documents/{target['id']}/copy-tags",
+        headers=auth, json={"source_id": source["id"]},
+    )
+    assert {t["id"] for t in again.json()["tags"]} == ids
+    self_copy = await client.post(
+        f"/api/documents/{target['id']}/copy-tags",
+        headers=auth, json={"source_id": target["id"]},
+    )
+    assert {t["id"] for t in self_copy.json()["tags"]} == ids
+
+    # a document from another tenant is not a valid source
+    missing = await client.post(
+        f"/api/documents/{target['id']}/copy-tags",
+        headers=auth, json={"source_id": str(uuid.uuid4())},
+    )
+    assert missing.status_code == 404
+
+
+async def test_title_q_filters_by_title(client, auth, pdf_factory):
+    unique = _name("titleq")
+    doc = (await upload(client, auth, pdf_factory(text="body"), f"{unique}.pdf")).json()
+    hit = (
+        await client.get(f"/api/documents?title_q={unique}", headers=auth)
+    ).json()
+    assert [d["id"] for d in hit["items"]] == [doc["id"]]
+    miss = (
+        await client.get("/api/documents?title_q=zzz-no-such-title", headers=auth)
+    ).json()
+    assert miss["items"] == []
+
+
 async def test_tag_color(client, auth):
     tag = (await client.post("/api/tags", headers=auth, json={"name": _name("color")})).json()
     updated = (
