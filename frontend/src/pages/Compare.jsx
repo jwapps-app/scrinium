@@ -38,24 +38,30 @@ export default function Compare() {
   // After resolving a pair, jump straight to the next one so you can cycle
   // through the whole set without returning to Insights each time.
   async function advance() {
+    let data
     try {
-      const data = await apiJson('/api/insights/duplicates')
-      // Skip only the pair just resolved, not every pair touching either of
-      // its documents: duplicates come in clusters (three copies of a book
-      // yield A/B, A/C, B/C), and excluding both ids dropped the whole rest
-      // of the cluster and bounced back to Insights. The server already
-      // filters what's resolved — dismissed pairs and trashed documents.
-      const next = (data.pairs || []).find((p) => {
-        const ids = [p.a.id, p.b.id]
-        return !(ids.includes(a) && ids.includes(b))
-      })
-      if (next) {
-        setRemaining((data.pairs || []).length)
-        navigate(`/compare/${next.a.id}/${next.b.id}`, { replace: true })
-      } else {
-        navigate('/insights')
-      }
-    } catch {
+      data = await apiJson('/api/insights/duplicates')
+    } catch (err) {
+      // Never bounce to Insights on failure: that is indistinguishable from
+      // "nothing left to review", so a slow or erroring duplicates scan looked
+      // exactly like finishing the queue. Stay put and say what broke.
+      window.alert(`Could not load the next duplicate pair: ${err.message}`)
+      return
+    }
+    const pairs = data.pairs || []
+    // Skip only the pair just resolved, not every pair touching either of its
+    // documents: duplicates come in clusters (three copies of a book yield
+    // A/B, A/C, B/C), and excluding both ids dropped the whole rest of the
+    // cluster. The server already filters what's resolved — dismissed pairs
+    // and trashed documents.
+    const next = pairs.find((p) => {
+      const ids = [p.a.id, p.b.id]
+      return !(ids.includes(a) && ids.includes(b))
+    })
+    setRemaining(pairs.length)
+    if (next) {
+      navigate(`/compare/${next.a.id}/${next.b.id}`, { replace: true })
+    } else {
       navigate('/insights')
     }
   }
@@ -97,10 +103,15 @@ export default function Compare() {
     await advance()
   }
   async function notDupe() {
-    await apiJson('/api/insights/duplicates/dismiss', {
-      method: 'POST',
-      body: JSON.stringify({ a, b }),
-    })
+    try {
+      await apiJson('/api/insights/duplicates/dismiss', {
+        method: 'POST',
+        body: JSON.stringify({ a, b }),
+      })
+    } catch (err) {
+      window.alert(`Could not dismiss this pair: ${err.message}`)
+      return
+    }
     await advance()
   }
 
