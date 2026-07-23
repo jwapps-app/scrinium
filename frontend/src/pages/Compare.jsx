@@ -40,10 +40,15 @@ export default function Compare() {
   async function advance() {
     try {
       const data = await apiJson('/api/insights/duplicates')
-      const next = (data.pairs || []).find(
-        (p) =>
-          ![p.a.id, p.b.id].includes(a) && ![p.a.id, p.b.id].includes(b),
-      )
+      // Skip only the pair just resolved, not every pair touching either of
+      // its documents: duplicates come in clusters (three copies of a book
+      // yield A/B, A/C, B/C), and excluding both ids dropped the whole rest
+      // of the cluster and bounced back to Insights. The server already
+      // filters what's resolved — dismissed pairs and trashed documents.
+      const next = (data.pairs || []).find((p) => {
+        const ids = [p.a.id, p.b.id]
+        return !(ids.includes(a) && ids.includes(b))
+      })
       if (next) {
         setRemaining((data.pairs || []).length)
         navigate(`/compare/${next.a.id}/${next.b.id}`, { replace: true })
