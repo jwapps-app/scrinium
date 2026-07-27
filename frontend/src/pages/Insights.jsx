@@ -202,9 +202,21 @@ export default function Insights() {
                   </p>
                 ) : (
                   <ul className="dup-list">
+                    {dupes.total > dupes.pairs.length && (
+                      <li className="settings-help">
+                        Showing the {dupes.pairs.length} closest of{' '}
+                        {dupes.total.toLocaleString()} candidate pairs — resolve
+                        these and the next batch appears.
+                      </li>
+                    )}
                     {dupes.pairs.map((p, i) => (
                       <li key={i} className="dup-pair">
-                        <span className="dup-similarity">{p.similarity}%</span>
+                        <span
+                          className="dup-similarity"
+                          title={`${p.similarity}% of text bigrams shared (fingerprint distance ${p.fingerprint_distance})`}
+                        >
+                          {p.similarity}%
+                        </span>
                         <span className="dup-docs">
                           <Link to={`/doc/${p.a.id}`}>{p.a.title}</Link>
                           <span className="dup-vs">≈</span>

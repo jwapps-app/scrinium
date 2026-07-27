@@ -50,6 +50,47 @@ def hamming(a: int, b: int) -> int:
     return ((a ^ b) & ((1 << 64) - 1)).bit_count()
 
 
+# Scoring reads three windows of this size — start, middle, end — rather than
+# one long prefix. A prefix is actively misleading on this library's content:
+# 40k characters is ~10 pages of a 700-page book, so two different volumes that
+# share a publisher's front matter score as identical on their opening alone.
+# Sampling across the document makes differing bodies visible.
+SAMPLE_CHARS = 12000
+COMPARE_CHARS = SAMPLE_CHARS * 3
+
+
+def sample_windows(text: str, window: int = SAMPLE_CHARS) -> str:
+    """Start + middle + end excerpt of the text — the Python mirror of the
+    SQL-side sampling, so both sides describe the same span."""
+    if len(text) <= window * 3:
+        return text
+    mid = max(0, len(text) // 2 - window // 2)
+    return " ".join(
+        (text[:window], text[mid : mid + window], text[-window:])
+    )
+
+
+def bigram_set(text: str, max_chars: int = COMPARE_CHARS) -> set[str]:
+    """Word bigrams of the text as an explicit set, for measuring real overlap."""
+    words = _WORD.findall(text[:max_chars].lower())
+    return {f"{words[i]} {words[i + 1]}" for i in range(len(words) - 1)}
+
+
+def jaccard(a: set[str], b: set[str]) -> float:
+    """Share of bigrams the two texts have in common, 0..1.
+
+    This is a genuine content measure, unlike fingerprint distance: two
+    unrelated documents score near zero, where their *fingerprints* can still
+    land a couple of bits apart and look deceptively close. Too expensive to
+    run across the whole library, which is what the fingerprint is for — but
+    cheap on a shortlist, where it separates real rescans from hash collisions.
+    """
+    if not a or not b:
+        return 0.0
+    union = len(a | b)
+    return len(a & b) / union if union else 0.0
+
+
 def find_near_duplicates(
     rows: list[tuple], max_hamming: int = MAX_HAMMING
 ) -> list[tuple]:

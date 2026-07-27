@@ -31,7 +31,8 @@ export default function Compare() {
 
   useEffect(() => {
     apiJson('/api/insights/duplicates')
-      .then((d) => setRemaining((d.pairs || []).length))
+      // `total` is the real backlog; `pairs` is only the scored window.
+      .then((d) => setRemaining(d.total ?? (d.pairs || []).length))
       .catch(() => {})
   }, [])
 
@@ -58,7 +59,7 @@ export default function Compare() {
       const ids = [p.a.id, p.b.id]
       return !(ids.includes(a) && ids.includes(b))
     })
-    setRemaining(pairs.length)
+    setRemaining(data.total ?? pairs.length)
     if (next) {
       navigate(`/compare/${next.a.id}/${next.b.id}`, { replace: true })
     } else {

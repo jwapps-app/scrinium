@@ -1,12 +1,14 @@
 """Library statistics: what's in here, where it came from, what it costs."""
 
+import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
-from sqlalchemy import case, func, select, text
+from sqlalchemy import Integer, case, cast, func, select, text
 from sqlalchemy.orm import aliased
 
+from app.services import similarity
 from app.services.similarity import find_near_duplicates
 
 from app.deps import DB, CurrentUser
@@ -25,6 +27,11 @@ router = APIRouter(tags=["insights"])
 
 _INSIGHTS_CACHE: dict = {}
 _INSIGHTS_TTL = 60.0  # seconds — stats don't need to be real-time
+
+# How many candidate pairs get scored and returned per request. Scoring reads
+# text, so the window is bounded; the response reports the full backlog count
+# separately.
+PAIR_WINDOW = 50
 
 
 def _text_len():
@@ -317,12 +324,17 @@ async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
             )
         ).scalars()
     }
-    pairs = [
+    candidates = [
         p for p in find_near_duplicates([(r[0], r[1]) for r in rows])
         if frozenset((p[0], p[1])) not in dismissed
-    ][:50]
+    ]
+    # Only a window is scored and returned, but report the true backlog: the
+    # review UI counts what it receives, so a capped list made the "N to
+    # review" tally sit frozen at the cap while work remained behind it.
+    pairs = candidates[:PAIR_WINDOW]
     ids = {i for a, b, _ in pairs for i in (a, b)}
     docs = {}
+    grams: dict = {}
     if ids:
         detail_rows = await db.execute(
             select(
@@ -336,18 +348,57 @@ async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
                 "page_count": page_count,
                 "created_at": created_at.isoformat(),
             }
-    return {
-        "fingerprinted": len(rows),
-        "pending_fingerprint": pending,
-        "pairs": [
+        # Score the shortlist on real text overlap. Fingerprint distance only
+        # gets a pair onto the shortlist; it's far too coarse to *rank* one,
+        # since a couple of differing bits out of 64 can be two unrelated
+        # documents. Sample start/middle/end rather than a prefix — on a
+        # 700-page book a prefix is just the front matter, which two different
+        # volumes of a series share. Postgres slices the windows so whole books
+        # never cross the wire; tokenizing happens off the event loop.
+        txt = func.coalesce(Document.text_content, "")
+        tlen = func.length(txt)
+        w = similarity.SAMPLE_CHARS
+        # substr() takes integers: SQLAlchemy's `/` yields numeric, so the
+        # midpoint is cast back explicitly.
+        midpoint = cast(tlen / 2, Integer) - w // 2
+        sample = func.concat_ws(
+            " ",
+            func.substr(txt, 1, w),
+            func.substr(txt, func.greatest(1, midpoint), w),
+            func.substr(txt, func.greatest(1, tlen - w), w),
+        )
+        text_rows = (
+            await db.execute(
+                select(Document.id, sample).where(Document.id.in_(ids))
+            )
+        ).all()
+        grams = await asyncio.to_thread(
+            lambda: {i: similarity.bigram_set(t or "") for i, t in text_rows}
+        )
+
+    items = []
+    for a, b, dist in pairs:
+        if a not in docs or b not in docs:
+            continue
+        overlap = similarity.jaccard(grams.get(a, set()), grams.get(b, set()))
+        items.append(
             {
                 "a": docs[a],
                 "b": docs[b],
-                "similarity": round((1 - dist / 64) * 100),
+                # Real shared-content percentage, so the number means what it
+                # says: a hash collision reads low, a rescan reads high.
+                "similarity": round(overlap * 100),
+                "fingerprint_distance": dist,
             }
-            for a, b, dist in pairs
-            if a in docs and b in docs
-        ],
+        )
+    # Likeliest matches first, so review starts where it pays off.
+    items.sort(key=lambda it: -it["similarity"])
+    return {
+        "fingerprinted": len(rows),
+        "pending_fingerprint": pending,
+        "total": len(candidates),
+        "shown": len(items),
+        "pairs": items,
     }
 
 
