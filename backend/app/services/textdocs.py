@@ -8,6 +8,7 @@ formatting-faithful viewing means downloading the original.
 """
 
 import re
+import logging
 import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
@@ -26,6 +27,8 @@ class _BombError(Exception):
 TEXT_SUFFIXES = {
     ".txt", ".md", ".epub", ".docx", ".xlsx", ".pptx", ".odt",
 }
+
+logger = logging.getLogger(__name__)
 
 _MAX_TEXT = 20_000_000  # 20 MB of extracted text is plenty
 _MAX_MEMBER = 200 * 1024 * 1024  # refuse to decompress a >200 MB member
@@ -99,7 +102,15 @@ def extract_text(path: Path) -> str | None:
         return None
 
     if suffix in (".txt", ".md"):
-        return _clean(path.read_text(errors="replace"))
+        # Bounded read: the whole file used to be decoded into one string before
+        # _clean truncated it, and _clean's regex passes then tripled peak
+        # memory — so a multi-GB .txt assembled via chunked upload (which is
+        # designed to exceed nginx's body cap) could OOM the container. The
+        # office branch below already enforced caps; this one enforced none.
+        if path.stat().st_size > _MAX_MEMBER:
+            logger.warning("text file %s exceeds the size cap; truncating", path.name)
+        with path.open("r", errors="replace") as fh:
+            return _clean(fh.read(_MAX_TEXT + 1))
 
     try:
         with zipfile.ZipFile(path) as zf:
@@ -161,6 +172,13 @@ def extract_text(path: Path) -> str | None:
     except _BombError:
         # Refuse quietly — the document is stored as-is; only text is skipped.
         return None
-    except (zipfile.BadZipFile, KeyError, OSError):
+    except (zipfile.BadZipFile, KeyError, OSError, NotImplementedError):
+        # NotImplementedError = unsupported zip compression method. It used to
+        # escape and become a permanent, retrying ingest failure.
+        return None
+    except Exception:
+        # Text extraction is a best-effort enrichment: the document is stored
+        # either way, so no parser surprise should fail the ingest.
+        logger.exception("text extraction failed for %s; storing without text", path.name)
         return None
     return None

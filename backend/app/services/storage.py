@@ -6,10 +6,15 @@ download time. Blobs are never renamed or mutated.
 """
 
 import hashlib
+import logging
+import os
 import uuid
 from pathlib import Path
 
 from app.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 def _blob_path(blob_id: uuid.UUID) -> Path:
@@ -38,6 +43,14 @@ def store_file(source: Path, blob_id: uuid.UUID | None = None) -> tuple[uuid.UUI
             digest.update(chunk)
             out.write(chunk)
             size += len(chunk)
+    # Owner-only. The store sits on a bind-mounted NAS share, so the default
+    # 0644 meant every local account could read every original and archive
+    # directly off the filesystem — bypassing auth, share links and trash.
+    try:
+        os.chmod(dest, 0o600)
+        os.chmod(dest.parent, 0o700)
+    except OSError:
+        logger.debug("could not tighten permissions on %s", dest, exc_info=True)
     return blob_id, digest.hexdigest(), size
 
 

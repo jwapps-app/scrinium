@@ -9,7 +9,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, delete, func, or_, select, text, union
 from sqlalchemy import update as sqla_update
 
 from app.config import settings
@@ -114,6 +114,51 @@ async def _sweep_orphan_blobs() -> None:
     if removed:
         logger.info("orphan sweep removed %d row-less blob file(s)", removed)
 
+    await _sweep_unreferenced_blob_rows()
+
+
+async def _sweep_unreferenced_blob_rows() -> None:
+    """Delete Blob rows (and their files) no document points at.
+
+    The complement of the sweep above: the archive swap commits the new pointer
+    before deleting the superseded row, so a crash in that window — or a job
+    discarding its own result — leaves a blob with a live row and no referrer.
+    Those are invisible to a row-less-file scan, so disk use only ever grew.
+    Aged a day so nothing mid-store is touched.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Blob, Document
+    from app.services import storage
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+    async with SessionLocal() as session:
+        referenced = union(
+            select(Document.original_blob_id).where(
+                Document.original_blob_id.is_not(None)
+            ),
+            select(Document.archive_blob_id).where(
+                Document.archive_blob_id.is_not(None)
+            ),
+            select(Document.thumbnail_blob_id).where(
+                Document.thumbnail_blob_id.is_not(None)
+            ),
+        )
+        stale = (
+            await session.execute(
+                select(Blob.id)
+                .where(Blob.created_at < cutoff, Blob.id.not_in(referenced))
+                .limit(2000)
+            )
+        ).scalars().all()
+        if not stale:
+            return
+        await session.execute(delete(Blob).where(Blob.id.in_(stale)))
+        await session.commit()
+    for bid in stale:
+        storage.delete_blob(bid)
+    logger.info("orphan sweep removed %d unreferenced blob row(s)", len(stale))
+
 
 async def _with_advisory_lock(key: int, coro_fn) -> None:
     async with engine.connect() as conn:
@@ -139,6 +184,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("worker")
 
 
+# A job is abandoned after this many starts. Each attempt is counted when the
+# job begins, so this bounds crash-loops (worker killed mid-job) as well as
+# ordinary failures.
+MAX_JOB_ATTEMPTS = 5
+
+
 async def claim_and_run() -> bool:
     """Claim one queued job and run it. Returns True if a job was processed."""
     async with SessionLocal() as session:
@@ -153,6 +204,28 @@ async def claim_and_run() -> bool:
         if job is None:
             await session.rollback()
             return False
+        # attempts was incremented but never read, so a job that kills the
+        # worker outright (rather than raising) was requeued by the startup
+        # reclaim and crashed again — an unbounded loop in which nothing else in
+        # the queue ever ran. Give up and flag the document instead.
+        if job.attempts >= MAX_JOB_ATTEMPTS:
+            logger.error(
+                "job %s (document %s) has failed %d times; giving up",
+                job.id, job.document_id, job.attempts,
+            )
+            job.status = JobStatus.FAILED
+            job.error = f"abandoned after {job.attempts} attempts"
+            job.finished_at = datetime.now(timezone.utc)
+            document = await session.get(Document, job.document_id)
+            if document is not None:
+                document.status = DocumentStatus.FLAGGED
+                document.error = (
+                    "Processing was interrupted repeatedly and has been stopped. "
+                    "Retry OCR to try again."
+                )
+            await session.commit()
+            return True
+
         logger.info(
             "processing job %s (document %s, kind %s, mode %s)",
             job.id, job.document_id, job.kind, job.mode,

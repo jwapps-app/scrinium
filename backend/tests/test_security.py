@@ -431,3 +431,56 @@ async def test_logout_revokes_outstanding_tokens(client):
             "/api/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
         )
     ).status_code == 401
+
+
+async def test_over_long_filename_is_truncated_not_a_500(client, auth, pdf_factory):
+    """title/original_filename are varchar(1024) and nothing trimmed them, so a
+    long name raised on flush after the blob was written — a 500 plus a leaked
+    blob, and via mail an endlessly retrying poison message."""
+    long_name = "a" * 3000 + ".pdf"
+    resp = await client.post(
+        "/api/documents",
+        headers=auth,
+        files={"file": (long_name, pdf_factory(text="long name"), "application/pdf")},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert len(body["title"]) <= 1024
+    assert len(body["original_filename"]) <= 1024
+
+
+def test_unsupported_zip_compression_does_not_propagate(tmp_path):
+    """NotImplementedError from an unknown compress_type escaped extract_text and
+    became a permanent ingest failure."""
+    import zipfile
+
+    from app.services import textdocs
+
+    path = tmp_path / "weird.docx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("word/document.xml", "<w:t>hello</w:t>")
+    raw = bytearray(path.read_bytes())
+    # Patch every compression-method field to an unsupported value (99).
+    for marker in (b"PK\x03\x04", b"PK\x01\x02"):
+        start = 0
+        while (idx := raw.find(marker, start)) != -1:
+            offset = idx + (8 if marker == b"PK\x03\x04" else 10)
+            raw[offset : offset + 2] = (99).to_bytes(2, "little")
+            start = idx + 4
+    path.write_bytes(bytes(raw))
+    # Must return None rather than raising.
+    assert textdocs.extract_text(path) is None
+
+
+def test_blob_files_are_owner_only(tmp_path):
+    """The store lives on a bind-mounted NAS share; 0644 let every local account
+    read every document straight off disk."""
+    import os
+
+    from app.services import storage
+
+    src = tmp_path / "x.bin"
+    src.write_bytes(b"secret")
+    blob_id, _, _ = storage.store_file(src)
+    path = storage.blob_file(blob_id)
+    assert oct(os.stat(path).st_mode & 0o777) == "0o600"

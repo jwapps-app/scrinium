@@ -221,7 +221,18 @@ def text_only_fallback(source: Path, workdir: Path) -> str:
     fb_dir = workdir / "textfallback"
     fb_dir.mkdir(exist_ok=True)
     result = subprocess.run(
-        ["pdftoppm", "-r", "200", "-png", str(source), str(fb_dir / "pg")],
+        [
+            "pdftoppm",
+            "-r", "200",
+            # Ceiling on the rasterized size: a hostile MediaBox would otherwise
+            # turn a fixed DPI into gigapixel pages. 200 DPI on US Letter is
+            # 1700x2200, so this only clamps the pathological cases.
+            "-scale-to-x", "2600",
+            "-scale-to-y", "3400",
+            "-png",
+            str(source),
+            str(fb_dir / "pg"),
+        ],
         capture_output=True,
         stdin=subprocess.DEVNULL,
         encoding="utf-8",

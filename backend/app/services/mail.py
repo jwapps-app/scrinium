@@ -12,6 +12,7 @@ import email
 import email.header
 import email.utils
 import imaplib
+import ssl
 import logging
 import tempfile
 from pathlib import Path
@@ -41,21 +42,47 @@ def _decode(value: str | None) -> str:
     return out
 
 
+def _connect() -> imaplib.IMAP4_SSL:
+    """Open an authenticated IMAP connection with certificate verification.
+
+    imaplib defaults to ssl._create_stdlib_context() when no context is passed,
+    which has check_hostname=False and verify_mode=CERT_NONE — so anything able
+    to redirect this traffic could present a self-signed certificate and collect
+    the mailbox password in the clear.
+    """
+    imap = imaplib.IMAP4_SSL(
+        settings.mail_host,
+        settings.mail_port,
+        ssl_context=ssl.create_default_context(),
+    )
+    imap.login(settings.mail_username, settings.mail_password)
+    return imap
+
+
 def _fetch_unseen() -> tuple[list[dict], list[bytes]]:
     """Runs in a thread. Returns (attachments, scanned_uids). Messages are NOT
     marked Seen here — that happens only after their attachments actually
     ingest, so a failed ingestion is retried on the next poll instead of the
-    attachment being silently lost."""
+    attachment being silently lost.
+
+    Identifiers are true UIDs, not message sequence numbers: sequence numbers
+    shift whenever anything is expunged, and since the Seen flags are applied
+    later on a separate connection, a concurrent expunge would have flagged the
+    wrong messages — silently losing an attachment that was never ingested.
+    """
     found: list[dict] = []
     scanned: list[bytes] = []
-    with imaplib.IMAP4_SSL(settings.mail_host, settings.mail_port) as imap:
-        imap.login(settings.mail_username, settings.mail_password)
+    budget = settings.mail_max_poll_mb * 1024 * 1024
+    per_file = settings.mail_max_attachment_mb * 1024 * 1024
+    with _connect() as imap:
         imap.select(settings.mail_folder)
-        _, data = imap.search(None, "UNSEEN")
-        uids = data[0].split()
+        _, data = imap.uid("SEARCH", "UNSEEN")
+        uids = (data[0] or b"").split()
         for uid in uids[:20]:  # cap per poll; the rest next time
             try:
-                _, msg_data = imap.fetch(uid, "(RFC822)")
+                _, msg_data = imap.uid("FETCH", uid.decode(), "(RFC822)")
+                if not msg_data or not isinstance(msg_data[0], tuple):
+                    continue
                 message = email.message_from_bytes(msg_data[0][1])
                 sender_name, sender_addr = email.utils.parseaddr(
                     _decode(message.get("From"))
@@ -69,16 +96,32 @@ def _fetch_unseen() -> tuple[list[dict], list[bytes]]:
                     if Path(filename).suffix.lower() not in intake.ACCEPTED_SUFFIXES:
                         continue
                     payload = part.get_payload(decode=True)
-                    if payload:
-                        found.append(
-                            {
-                                "uid": uid,
-                                "filename": filename,
-                                "payload": payload,
-                                "sender": sender_name or sender_addr or "Unknown",
-                                "subject": subject,
-                            }
+                    if not payload:
+                        continue
+                    # Attachments are held in memory until the batch is ingested,
+                    # so bound both a single one and the whole poll: 20 messages
+                    # at a provider's maximum size would otherwise be resident at
+                    # once on a box that is also running OCR.
+                    if len(payload) > per_file:
+                        logger.warning(
+                            "mail: skipping oversized attachment %s (%d bytes)",
+                            filename,
+                            len(payload),
                         )
+                        continue
+                    if budget - len(payload) < 0:
+                        logger.info("mail: poll budget reached; remainder next poll")
+                        return found, scanned
+                    budget -= len(payload)
+                    found.append(
+                        {
+                            "uid": uid,
+                            "filename": filename,
+                            "payload": payload,
+                            "sender": sender_name or sender_addr or "Unknown",
+                            "subject": subject,
+                        }
+                    )
                 scanned.append(uid)
             except Exception:
                 logger.exception("failed reading mail uid %s; skipping", uid)
@@ -87,14 +130,22 @@ def _fetch_unseen() -> tuple[list[dict], list[bytes]]:
 
 def _mark_seen(uids: list[bytes]) -> None:
     """Runs in a thread: flag fully-processed messages so they leave the
-    unseen set."""
+    unseen set. UID-based, so it cannot flag the wrong message."""
     if not uids:
         return
-    with imaplib.IMAP4_SSL(settings.mail_host, settings.mail_port) as imap:
-        imap.login(settings.mail_username, settings.mail_password)
+    with _connect() as imap:
         imap.select(settings.mail_folder)
         for uid in uids:
-            imap.store(uid, "+FLAGS", "\\Seen")
+            imap.uid("STORE", uid.decode(), "+FLAGS", "\\Seen")
+
+
+# uid -> consecutive ingest failures, for the life of this process. A message
+# that fails the same way every poll is given up on rather than retried forever:
+# the blob is written before the failing step, so every retry leaked another full
+# copy of the attachment, and 20 such messages permanently blocked mail ingest
+# because the same never-Seen uids are re-fetched each time.
+_FAILURES: dict[bytes, int] = {}
+MAX_INGEST_ATTEMPTS = 3
 
 
 async def _record_status(session, text: str) -> None:
@@ -178,8 +229,23 @@ async def poll_once() -> int:
                 tmp_path.unlink(missing_ok=True)
 
         # Only fully-processed messages leave the unseen set; a message whose
-        # attachment failed for a real reason is retried next poll.
-        to_mark = [uid for uid in scanned if uid not in failed_uids]
+        # attachment failed for a real reason is retried next poll — but not
+        # indefinitely.
+        gave_up: set[bytes] = set()
+        for uid in failed_uids:
+            _FAILURES[uid] = _FAILURES.get(uid, 0) + 1
+            if _FAILURES[uid] >= MAX_INGEST_ATTEMPTS:
+                gave_up.add(uid)
+                logger.error(
+                    "mail: giving up on uid %s after %d attempts; marking it read "
+                    "so it stops blocking the mailbox",
+                    uid,
+                    _FAILURES[uid],
+                )
+        for uid in scanned:
+            if uid not in failed_uids:
+                _FAILURES.pop(uid, None)
+        to_mark = [uid for uid in scanned if uid not in failed_uids or uid in gave_up]
         try:
             await asyncio.to_thread(_mark_seen, to_mark)
         except Exception:

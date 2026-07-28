@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     mail_password: str = ""
     mail_folder: str = "INBOX"
     mail_poll_seconds: float = 300.0
+    # Attachments are buffered in memory until the batch ingests, so bound both
+    # a single attachment and one poll's total.
+    mail_max_attachment_mb: int = 50
+    mail_max_poll_mb: int = 200
 
     def mail_enabled(self) -> bool:
         return bool(self.mail_host and self.mail_username and self.mail_password)

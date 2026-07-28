@@ -247,6 +247,13 @@ async def complete_upload(
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = Path(tmp.name)
     try:
+        limit = app_settings.max_upload_mb * 1024 * 1024
+        assembled = sum(p.stat().st_size for p in parts)
+        if limit and assembled > limit:
+            raise HTTPException(
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                f"Upload exceeds the {app_settings.max_upload_mb} MB limit",
+            )
         async with aiofiles.open(tmp_path, "wb") as out:
             for part in parts:
                 async with aiofiles.open(part, "rb") as src:
@@ -300,8 +307,19 @@ async def upload(
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = Path(tmp.name)
     try:
+        # Enforce the configured ceiling while streaming. max_upload_mb was
+        # declared but referenced nowhere, so the only bound was nginx's body
+        # cap — absent for anything reaching the api container directly.
+        limit = app_settings.max_upload_mb * 1024 * 1024
+        written = 0
         async with aiofiles.open(tmp_path, "wb") as out:
             while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if limit and written > limit:
+                    raise HTTPException(
+                        status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        f"File exceeds the {app_settings.max_upload_mb} MB limit",
+                    )
                 await out.write(chunk)
         try:
             if ocr_text is None:

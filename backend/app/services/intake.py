@@ -97,8 +97,11 @@ async def ingest_file(
     captured = ocr_text is not None and ocr_text.strip() != ""
     doc = Document(
         tenant_id=tenant_id,
-        title=Path(filename).stem,
-        original_filename=filename,
+        # Both columns are varchar(1024) and nothing trimmed them, so an
+        # over-long name failed on flush — after the blob had been written,
+        # leaking a full copy and 500ing the upload.
+        title=Path(filename).stem[:1024] or "untitled",
+        original_filename=filename[:1024],
         original_blob_id=blob_id,
         status=DocumentStatus.READY if captured else DocumentStatus.PENDING,
         page_count=known_pages,

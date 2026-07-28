@@ -42,7 +42,17 @@ def _separator_pages(pdf_path: Path, workdir: Path) -> list[int]:
     raster_dir = workdir / "sepscan"
     raster_dir.mkdir(exist_ok=True)
     result = subprocess.run(
-        ["pdftoppm", "-r", "120", "-gray", "-png", str(pdf_path), str(raster_dir / "pg")],
+        [
+            "pdftoppm",
+            "-r", "120",
+            # Same MediaBox ceiling as the OCR fallback: a barcode scan does not
+            # need more than this, and it bounds a hostile page size.
+            "-scale-to-x", "1600",
+            "-scale-to-y", "2100",
+            "-gray", "-png",
+            str(pdf_path),
+            str(raster_dir / "pg"),
+        ],
         capture_output=True,
         timeout=1800,
     )
