@@ -192,7 +192,7 @@ Rather than "Tesseract default, optional Mac sidecar for Apple quality," the cle
 
 ## Conventions (from established fleet patterns)
 
-Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`; these are the ones applied here.
+Canonical patterns live in the Obsidian vault at a personal notes vault; these are the ones applied here.
 
 ### Git & GitHub
 - Repo: `git@github.com:jwapps-app/scrinium.git` (org, never personal account).
@@ -200,7 +200,7 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 ### Branding-as-config
 - "Scrinium" appears only as `APP_NAME` (backend env → `config.py`) and `src/constants/branding.js` (frontend). UI strings and templates reference those, never the literal.
-- Deliberate exception (decided 2026-07-09): the repo, Docker images (`scrinium-api`, `scrinium-web`), and future iOS bundle id (`com.jworthington.scrinium`) use the scrinium name rather than a generic category name.
+- Deliberate exception (decided 2026-07-09): the repo, Docker images (`scrinium-api`, `scrinium-web`), and future iOS bundle id (`com.example.scrinium`) use the scrinium name rather than a generic category name.
 - Routes, schema, env var keys stay name-free (`/api/documents`, not `/api/scrinium/...`).
 
 ### Backend skeleton
@@ -214,12 +214,12 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 ### Deployment
 - Two compose files: `docker-compose.yml` (dev, `build:`) and `docker-compose.portainer.yml` (NAS, image-only, `mem_limit`, env via Portainer UI).
 - CI (GitHub Actions) builds and publishes private images to `ghcr.io/jwapps-app/scrinium-api` / `scrinium-web` (`:latest`, `:sha-<short>`, `:vX.Y.Z` on tags). The NAS never builds — Portainer pulls.
-- Host: Synology DS1621+ (`192.168.1.10`). Web container publishes `${APP_PORT:-8220}` (8088/3300/8095/8210 and DSM/Portainer ports are taken).
-- Public access via the shared Cloudflare Tunnel: `scrinium.example.com` → `192.168.1.10:8220`. No exposed ports.
+- Host: Synology DS1621+ (`YOUR_NAS_IP`). Web container publishes `${APP_PORT:-8220}` (8088/3300/8095/8210 and DSM/Portainer ports are taken).
+- Public access via the shared Cloudflare Tunnel: `scrinium.example.com` → `YOUR_NAS_IP:8220`. No exposed ports.
 - Nightly `pg_dump` sidecar (Fc/gzip, N-day retention); bind mounts under `/volume1/docker/scrinium/`.
 
 ### Push (deferred to iOS-app phase)
-- When the iOS companion app lands, wire pushes through the shared **push-relay** per the standardized recipe: `{token, platform, environment}` registration body on `POST /api/devices`, single `notify_user()` dispatch seam, per-token environment self-heal, no-presence-skip, full dead-token reason set. Bundle id `com.jworthington.scrinium` added to the relay's `apps.keys`.
+- When the iOS companion app lands, wire pushes through the shared **push-relay** per the standardized recipe: `{token, platform, environment}` registration body on `POST /api/devices`, single `notify_user()` dispatch seam, per-token environment self-heal, no-presence-skip, full dead-token reason set. Bundle id `com.example.scrinium` added to the relay's `apps.keys`.
 
 ---
 
@@ -244,11 +244,11 @@ Canonical patterns live in the Obsidian vault at `/Users/jworthington/knowledge`
 
 - **2026-07-09 (night):** Library UI pass (dense/utilitarian per decision). Sidebar shell (status buckets + tag counts + recent + nav; drawer on mobile), thumbnail card grid with list toggle, URL-param filters (status, tag, engine, date range, sort, `?q=` search). Thumbnails: first-page PNG (~480px) generated at ingest (poppler for PDFs, Pillow for images), stored as blobs (`documents.thumbnail_blob_id`, migration 0003), lazily backfilled by `GET /documents/{id}/thumbnail`; frontend fetches with auth and caches object URLs (`<img src>` can't carry the bearer token). `status_filter` accepts a comma list so the Processing bucket (pending+processing) is one query.
 
-- **2026-07-09 (late night):** Step 8 built — iOS companion app (`ios/`, XcodeGen project, SwiftUI, iOS 16+, bundle `com.jworthington.scrinium`, team preset). Capture tier per the three-tier model: `VNDocumentCameraViewController` → on-device Vision `.accurate` OCR → PDF assembly → multipart upload with `ocr_text`/`ocr_engine`/`page_count`. Server side: `POST /api/documents` accepts those fields — captured docs go **straight to `ready` with no ingest job** (verified: instant ready, engine `apple`, searchable). Share extension (`com.jworthington.scrinium.share`) uploads shared PDFs/images for normal server-side OCR; credentials shared via App Group (Keychain migration deferred). Simulator-verified login + live library; camera/share-sheet need a real device. Push via relay still deferred — captures are ready instantly, nothing push-worthy yet.
+- **2026-07-09 (late night):** Step 8 built — iOS companion app (`ios/`, XcodeGen project, SwiftUI, iOS 16+, bundle `com.example.scrinium`, team preset). Capture tier per the three-tier model: `VNDocumentCameraViewController` → on-device Vision `.accurate` OCR → PDF assembly → multipart upload with `ocr_text`/`ocr_engine`/`page_count`. Server side: `POST /api/documents` accepts those fields — captured docs go **straight to `ready` with no ingest job** (verified: instant ready, engine `apple`, searchable). Share extension (`com.example.scrinium.share`) uploads shared PDFs/images for normal server-side OCR; credentials shared via App Group (Keychain migration deferred). Simulator-verified login + live library; camera/share-sheet need a real device. Push via relay still deferred — captures are ready instantly, nothing push-worthy yet.
 
 - **2026-07-10:** Watched-folder ingest + iOS PDF viewer. **Watched folder:** worker sweeps `WATCH_DIR` (default `/data/watch`, so no extra mount) every `WATCH_POLL_SECONDS`; files go through the same `services/intake.py` path as uploads (extracted shared helper — upload endpoint refactored onto it); consumed files move to `.consumed/`, content-hash duplicates to `.duplicates/`, crashes to `.failed/` — nothing is ever deleted; 3s settle time skips mid-copy files; idles until the first tenant exists. Verified: drop-in consumed and OCR'd via Apple sidecar, duplicate correctly filed. **iOS:** document rows now open a PDFKit viewer streaming the archive with auth (verified in simulator via UI tap). Push remains deferred — now with a real trigger available (watched-folder completions), it's the natural next candidate.
 
-- **2026-07-10 (later):** Push notifications per the fleet recipe. Server: `device_tokens` table (migration 0004, pk=token, idempotent upsert via `POST /api/devices` `{token, platform, environment}`, DELETE on sign-out), single `notify_tenant()` seam in `services/push.py` — relay contract with per-token `sandbox`, BadDeviceToken flip-retry **self-heal**, full dead-token prune set, loud 403 log, no presence-skip, never raises. Triggers: ingest job success ("ready to search") and flagged ("needs attention"). iOS: `PushService` (completion-handler delegates — not async, per the known UIKit snapshot crash), hex token, compile-time sandbox/production, re-register on foreground, `document_id` custom-data deep link into the viewer. Verified: registration upsert, real-relay 403 contract on a live watched-folder ingest (fail-soft confirmed), and simulated push → tap → app opened the exact document from background. **Remaining manual:** register the App ID (same team, no new .p8), add `com.jworthington.scrinium=<key>` to the relay's `apps.keys` + restart relay, set `PUSH_RELAY_URL`/`PUSH_RELAY_API_KEY` in server env, run the app on a real iPhone.
+- **2026-07-10 (later):** Push notifications per the fleet recipe. Server: `device_tokens` table (migration 0004, pk=token, idempotent upsert via `POST /api/devices` `{token, platform, environment}`, DELETE on sign-out), single `notify_tenant()` seam in `services/push.py` — relay contract with per-token `sandbox`, BadDeviceToken flip-retry **self-heal**, full dead-token prune set, loud 403 log, no presence-skip, never raises. Triggers: ingest job success ("ready to search") and flagged ("needs attention"). iOS: `PushService` (completion-handler delegates — not async, per the known UIKit snapshot crash), hex token, compile-time sandbox/production, re-register on foreground, `document_id` custom-data deep link into the viewer. Verified: registration upsert, real-relay 403 contract on a live watched-folder ingest (fail-soft confirmed), and simulated push → tap → app opened the exact document from background. **Remaining manual:** register the App ID (same team, no new .p8), add `com.example.scrinium=<key>` to the relay's `apps.keys` + restart relay, set `PUSH_RELAY_URL`/`PUSH_RELAY_API_KEY` in server env, run the app on a real iPhone.
 
 - **2026-07-10 (icon):** App icon chosen — **open scroll** (concept C): cream unrolled scroll with rolled ends + spiral end-caps, burnt-orange text lines, on the app's dark-stone `#1c1917` tile. Source of truth is `frontend/public/icon.svg`; rasters generated from it (qlmanage): PWA `icon-192/512.png` (+ maskable purpose in manifest), `favicon-32.png`, `apple-touch-icon.png`, and iOS `AppIcon` (single 1024, alpha-stripped — Apple rejects alpha). Deliberately reads as a sibling to Bibliocapsa's dark book tile. Regenerate rasters from the SVG if the mark changes.
 

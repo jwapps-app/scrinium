@@ -120,8 +120,11 @@ class Settings(BaseSettings):
     export_part_gb: int = 10
 
     # Push via the shared push-relay (all three set = enabled)
-    push_relay_url: str = ""      # e.g. http://192.168.1.10:8088
+    push_relay_url: str = ""      # e.g. http://YOUR_NAS_IP:8088
     push_relay_api_key: str = ""  # value after '=' in the relay's apps.keys
+    # The iOS app's real bundle id: the push relay keys its credentials on this,
+    # and it is not sensitive (bundle ids are readable in any shipped app).
+    # Override via APNS_BUNDLE_ID when running your own build.
     apns_bundle_id: str = "com.jworthington.scrinium"
 
     def push_enabled(self) -> bool:

@@ -1,0 +1,7 @@
+# Keep the build context small and prevent a local node_modules (built for the
+# host's platform) from being copied into the image build stage.
+node_modules
+dist
+.env
+.env.*
+*.log

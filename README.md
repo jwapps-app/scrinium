@@ -66,3 +66,23 @@ CI publishes `ghcr.io/jwapps-app/scrinium-api` and `-web`;
 `docker-compose.portainer.yml` is the image-only stack for the host
 (Portainer or plain compose). All host-specific paths and tuning are env
 vars — see the compose file for the full list.
+
+## Contributing
+
+Bug reports and pull requests are welcome — see `CONTRIBUTING.md` for how to run
+the stack and the tests, and the conventions the code follows. Please read the
+relevant `SCRINIUM.md` entry before proposing a large change; some things are
+deliberately absent rather than missing.
+
+## Security
+
+Please report vulnerabilities privately via GitHub's security advisories rather
+than a public issue. `SECURITY.md` has the details, including the threat model —
+notably that blobs are stored unencrypted and the database is trusted, so
+filesystem or database access is outside what the application defends against.
+
+## License
+
+[AGPL-3.0](LICENSE). You may run, modify, and redistribute this; if you offer it
+to others as a network service, your modified source has to be available to them
+too.
