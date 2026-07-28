@@ -65,8 +65,10 @@ export default function DocumentView() {
       setDoc(data)
       setTitle(data.title)
     } catch (err) {
-      // Server unreachable? An offline copy still opens.
-      const meta = await offlineMeta(id).catch(() => null)
+      // Server unreachable? An offline copy still opens. But a refusal from the
+      // server (401/403/404) is not "unreachable" — falling back there served
+      // another account's cached document.
+      const meta = err?.fromServer ? null : await offlineMeta(id).catch(() => null)
       if (meta) {
         setDoc({ ...meta, status: 'ready', tags: [], custom_values: {}, offline_only: true })
         setTitle(meta.title)
@@ -166,8 +168,15 @@ export default function DocumentView() {
     }
     let cancelled = false
     apiFetch(`/api/documents/${id}/file`)
-      .then((resp) => (resp.ok ? resp.blob() : Promise.reject(new Error('File unavailable'))))
+      .then((resp) => {
+        if (resp.ok) return resp.blob()
+        // Reached the server and it said no: do NOT fall back to the cache.
+        const denied = new Error('File unavailable')
+        denied.fromServer = true
+        throw denied
+      })
       .catch(async (err) => {
+        if (err?.fromServer) throw err
         const cached = await offlineFile(id).catch(() => null)
         if (cached) return cached.blob()
         throw err

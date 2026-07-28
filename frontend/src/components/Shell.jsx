@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { apiJson, setTokens } from '../api'
+import { apiJson, signOut } from '../api'
 import { APP_NAME } from '../constants/branding'
 import ProgressBar, { formatEta } from './ProgressBar'
 import Icon from './Icon'
@@ -491,7 +491,7 @@ export default function Shell({ children }) {
               <Icon name="settings" className="side-icon" /> Settings
             </span>
           </Link>
-          <button className="side-link side-button" onClick={() => setTokens(null)}>
+          <button className="side-link side-button" onClick={() => signOut()}>
             <span className="side-label">
               <Icon name="signout" className="side-icon" /> Sign out
             </span>

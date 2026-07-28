@@ -132,6 +132,23 @@ async def change_password(body: dict, user: CurrentUser, db: DB) -> dict:
     }
 
 
+@router.post("/logout")
+async def logout(user: CurrentUser, db: DB) -> dict:
+    """Revoke outstanding tokens for this account.
+
+    Signing out used to be purely client-side — it dropped the tokens from
+    local storage and left them valid on the server for up to the refresh
+    window, so a copy taken beforehand kept working and could be renewed
+    indefinitely. Bumping the token version invalidates every token for this
+    user, which also makes this the "sign out everywhere" control after a lost
+    device. Per-device revocation would need a sessions table; this is the
+    coarse but honest version.
+    """
+    user.token_version += 1
+    await db.flush()
+    return {"signed_out": True}
+
+
 @router.get("/me")
 async def me(user: CurrentUser) -> dict:
     """Who am I — used by the UI to hide owner-only controls."""

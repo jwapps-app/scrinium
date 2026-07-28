@@ -387,3 +387,47 @@ async def test_duplicate_dismiss_requires_owned_documents(client, auth):
         json={"a": str(uuid.uuid4()), "b": str(uuid.uuid4())},
     )
     assert resp.status_code == 404
+
+
+async def test_logout_revokes_outstanding_tokens(client):
+    """Signing out was purely client-side: the token stayed valid and renewable
+    on the server, so a copy taken beforehand kept working for weeks."""
+    email = f"logout-{uuid.uuid4().hex[:8]}@example.com"
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models import User
+
+    # Made by the owner fixture-independent path: create then log in.
+    async with SessionLocal() as session:
+        tenant_id = (
+            await session.execute(sa.select(User.tenant_id).limit(1))
+        ).scalar_one()
+        from app.security import hash_password
+
+        session.add(
+            User(
+                tenant_id=tenant_id,
+                email=email,
+                password_hash=hash_password("password123"),
+            )
+        )
+        await session.commit()
+
+    tokens = (
+        await client.post(
+            "/api/auth/login", json={"email": email, "password": "password123"}
+        )
+    ).json()
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    assert (await client.get("/api/documents", headers=headers)).status_code == 200
+
+    assert (await client.post("/api/auth/logout", headers=headers)).status_code == 200
+
+    # Both halves of the stolen pair are now dead.
+    assert (await client.get("/api/documents", headers=headers)).status_code == 401
+    assert (
+        await client.post(
+            "/api/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+        )
+    ).status_code == 401

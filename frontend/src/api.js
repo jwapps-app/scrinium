@@ -14,6 +14,32 @@ export function setTokens(tokens) {
   window.dispatchEvent(new Event('auth-changed'))
 }
 
+/** Sign out for real: revoke server-side, then drop everything this browser
+ * holds. Clearing the offline cache matters — it keeps whole PDFs and their
+ * titles under origin-scoped keys, so leaving it behind exposed one account's
+ * documents to the next person to sign in on the same browser. */
+export async function signOut() {
+  try {
+    await apiFetch('/api/auth/logout', { method: 'POST' })
+  } catch {
+    /* offline or already invalid — still clear locally */
+  }
+  try {
+    const { clearOffline } = await import('./offline')
+    await clearOffline()
+  } catch {
+    /* cache API unavailable */
+  }
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith('readpos:')) localStorage.removeItem(key)
+    }
+  } catch {
+    /* storage disabled */
+  }
+  setTokens(null)
+}
+
 async function refreshTokens() {
   const tokens = getTokens()
   if (!tokens?.refresh_token) return null
@@ -71,7 +97,11 @@ export async function apiJson(path, options = {}) {
     } catch {
       /* not json */
     }
-    throw new Error(detail)
+    const err = new Error(detail)
+    // The server answered — callers must not treat this as "offline".
+    err.fromServer = true
+    err.status = resp.status
+    throw err
   }
   if (resp.status === 204) return null
   return resp.json()

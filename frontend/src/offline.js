@@ -67,3 +67,10 @@ export async function listOffline() {
   }
   return docs.sort((a, b) => (a.title || '').localeCompare(b.title || ''))
 }
+
+/** Drop every offline copy. Called on sign-out: the cache is origin-scoped and
+ * carries no notion of who saved it, so anything left behind would be readable
+ * by the next account to sign in on this browser. */
+export async function clearOffline() {
+  await caches.delete(CACHE)
+}
