@@ -162,6 +162,11 @@ async def process_job(session: AsyncSession, job: Job) -> None:
     job.attempts += 1
     await session.commit()
 
+    # Remembered for the compare-and-swap after OCR: if another job replaced the
+    # archive while this one ran, this result is stale and must be discarded
+    # rather than overwriting the newer one.
+    archive_at_start = document.archive_blob_id
+
     original = storage.blob_file(document.original_blob_id)
     suffix = Path(document.original_filename).suffix
     # Runtime Settings toggle wins over the OCR_ENGINE env default.
@@ -189,6 +194,26 @@ async def process_job(session: AsyncSession, job: Job) -> None:
             f"“{document.title}” needs attention — OCR failed.",
             {"document_id": str(document.id)},
         )
+        return
+
+    # Lock the row for the swap itself (the OCR above ran unlocked, so nothing
+    # was held for hours) and confirm nobody replaced the archive meanwhile.
+    # Without this, two jobs on one document silently discard each other's work.
+    await session.refresh(document, with_for_update=True)
+    if document.archive_blob_id != archive_at_start:
+        logger.warning(
+            "document %s archive changed under job %s; discarding this result",
+            document.id,
+            job.id,
+        )
+        if outcome.blob_id is not None:
+            storage.delete_blob(outcome.blob_id)
+        if outcome.thumb is not None:
+            storage.delete_blob(outcome.thumb[0])
+        job.status = JobStatus.DONE
+        job.error = "superseded by a concurrent job"
+        job.finished_at = datetime.now(timezone.utc)
+        await session.commit()
         return
 
     old_archive_id = None

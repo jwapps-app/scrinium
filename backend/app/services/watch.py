@@ -47,6 +47,15 @@ def _skip_part(part: str) -> bool:
 def _candidates(watch: Path) -> list[Path]:
     found = []
     for path in sorted(watch.rglob("*")):
+        # Never follow a symlink. The watch share is writable by other (less
+        # privileged) accounts on the NAS, and is_file() stats *through* a link
+        # while the suffix check only sees the link's own name — so a
+        # `notes.pdf -> /etc/shadow` would have been read into the blob store
+        # and served as a document. The container runs as root, which makes any
+        # root-readable file reachable this way.
+        if path.is_symlink():
+            logger.warning("watch: ignoring symlink %s", path)
+            continue
         if not path.is_file():
             continue
         rel = path.relative_to(watch)
@@ -64,6 +73,13 @@ def _file_into(watch: Path, path: Path, folder_name: str) -> Path:
     rel = path.relative_to(watch)
     dest = watch / folder_name / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # A symlinked filing directory would land the rename outside the watch tree
+    # — as root, since the container runs as root. Confirm the resolved parent
+    # is still inside watch before moving anything into it.
+    base = watch.resolve()
+    resolved_parent = dest.parent.resolve()
+    if resolved_parent != base and base not in resolved_parent.parents:
+        raise RuntimeError(f"refusing to file into {dest.parent} (outside {watch})")
     if dest.exists():
         dest = dest.with_name(f"{int(time.time())}-{dest.name}")
     path.rename(dest)

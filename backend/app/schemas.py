@@ -172,6 +172,7 @@ class RuleOut(BaseModel):
     doc_type_id: uuid.UUID | None = None
     priority: int
     enabled: bool
+    error: str | None = None  # set when the rule was auto-disabled
 
 
 class RuleCreate(BaseModel):

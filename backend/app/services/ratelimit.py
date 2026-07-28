@@ -1,43 +1,85 @@
 """Minimal in-process rate limiter for auth endpoints.
 
-A sliding window keyed by client IP. The api container runs a single
-uvicorn worker, so in-memory state is authoritative; behind the Cloudflare
-tunnel the client IP comes from CF-Connecting-IP (set by Cloudflare, not
-the client). This is defense in depth against password/2FA brute force —
-not a substitute for a strong password.
+Sliding windows held in memory; the api container runs a single uvicorn worker,
+so that state is authoritative.
+
+Two things are limited, deliberately:
+
+* the **client IP**, which behind the Cloudflare tunnel comes from
+  CF-Connecting-IP. That header is only trusted when the request actually
+  arrived from a trusted proxy — it is a plain request header, so anything able
+  to reach the container directly could otherwise mint a fresh bucket per
+  request and the limit became decorative.
+* the **account** being targeted. An IP-keyed limit alone is bypassable by
+  anyone with a pool of addresses (an ordinary IPv6 /64 is enough, no spoofing
+  required), so the per-account window is what actually bounds password and
+  one-time-code guessing against a single user.
 """
 
+import ipaddress
 import time
 from collections import defaultdict
 
 from fastapi import HTTPException, Request, status
 
+from app.config import settings
+
 _HITS: dict[str, list[float]] = defaultdict(list)
 
+_TOO_MANY = "Too many attempts — wait a minute and try again."
 
-def _client_ip(request: Request) -> str:
-    return request.headers.get("cf-connecting-ip") or (
-        request.client.host if request.client else "unknown"
-    )
+
+def _trusted_peer(request: Request) -> bool:
+    """Is the immediate peer a proxy whose forwarded-IP header we believe?"""
+    peer = request.client.host if request.client else ""
+    if not peer:
+        return False
+    for entry in settings.trusted_proxy_list:
+        try:
+            if ipaddress.ip_address(peer) in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def client_ip(request: Request) -> str:
+    """The caller's address: the forwarded header only if the peer is trusted,
+    otherwise the socket peer, which cannot be forged."""
+    if _trusted_peer(request):
+        forwarded = request.headers.get("cf-connecting-ip")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _consume(key: str, limit: int, window_seconds: int) -> None:
+    now = time.monotonic()
+    hits = [t for t in _HITS[key] if now - t < window_seconds]
+    if len(hits) >= limit:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, _TOO_MANY)
+    hits.append(now)
+    _HITS[key] = hits
+    # Opportunistic cleanup so the dict can't grow unbounded.
+    if len(_HITS) > 10000:
+        for k in [k for k, v in _HITS.items() if not v or now - v[-1] > 3600]:
+            _HITS.pop(k, None)
 
 
 def rate_limit(bucket: str, limit: int, window_seconds: int):
-    """FastAPI dependency: at most `limit` requests per window per IP."""
+    """FastAPI dependency: at most `limit` requests per window per client."""
 
     async def _dep(request: Request) -> None:
-        key = f"{bucket}:{_client_ip(request)}"
-        now = time.monotonic()
-        hits = [t for t in _HITS[key] if now - t < window_seconds]
-        if len(hits) >= limit:
-            raise HTTPException(
-                status.HTTP_429_TOO_MANY_REQUESTS,
-                "Too many attempts — wait a minute and try again.",
-            )
-        hits.append(now)
-        _HITS[key] = hits
-        # Opportunistic cleanup so the dict can't grow unbounded.
-        if len(_HITS) > 10000:
-            for k in [k for k, v in _HITS.items() if not v or now - v[-1] > 3600]:
-                _HITS.pop(k, None)
+        _consume(f"{bucket}:{client_ip(request)}", limit, window_seconds)
 
     return _dep
+
+
+def limit_account(bucket: str, identifier: str, limit: int, window_seconds: int) -> None:
+    """Limit attempts against one account, regardless of source address.
+
+    Called from inside a handler (it needs the request body) — the IP-keyed
+    dependency runs first and this is the backstop that a rotating source
+    address cannot sidestep.
+    """
+    _consume(f"{bucket}:acct:{identifier.strip().lower()}", limit, window_seconds)

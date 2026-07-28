@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.services.ratelimit import rate_limit
+from starlette.concurrency import run_in_threadpool
+from app.services.ratelimit import limit_account, rate_limit
 from sqlalchemy import func, select
 
 from app.config import settings
@@ -52,7 +53,7 @@ async def setup(body: SetupRequest, db: DB) -> TokenPair:
     user = User(
         tenant_id=tenant.id,
         email=body.email.lower(),
-        password_hash=hash_password(body.password),
+        password_hash=await run_in_threadpool(hash_password, body.password),
     )
     db.add(user)
     await db.flush()
@@ -61,13 +62,17 @@ async def setup(body: SetupRequest, db: DB) -> TokenPair:
 
 @router.post("/login", response_model=TokenPair, dependencies=[Depends(rate_limit("login", 10, 60))])
 async def login(body: LoginRequest, db: DB) -> TokenPair:
+    # The IP-keyed dependency above is bypassable by anyone with a pool of
+    # addresses; this window is per-account and is what actually bounds
+    # password and one-time-code guessing against a given user.
+    limit_account("login", body.email, 10, 300)
     user = (
         await db.execute(select(User).where(User.email == body.email.lower()))
     ).scalar_one_or_none()
     # Always run a bcrypt verify so a missing account costs the same as a
     # wrong password — no timing oracle for enumerating valid emails.
-    password_ok = verify_password(
-        body.password, user.password_hash if user else _DUMMY_HASH
+    password_ok = await run_in_threadpool(
+        verify_password, body.password, user.password_hash if user else _DUMMY_HASH
     )
     if user is None or not password_ok:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
@@ -79,7 +84,11 @@ async def login(body: LoginRequest, db: DB) -> TokenPair:
     return _token_pair(user)
 
 
-@router.post("/refresh", response_model=TokenPair)
+@router.post(
+    "/refresh",
+    response_model=TokenPair,
+    dependencies=[Depends(rate_limit("refresh", 30, 60))],
+)
 async def refresh(body: RefreshRequest, db: DB) -> TokenPair:
     decoded = decode_token(body.refresh_token, "refresh")
     if decoded is None:
@@ -93,17 +102,21 @@ async def refresh(body: RefreshRequest, db: DB) -> TokenPair:
     return _token_pair(user)
 
 
-@router.post("/change-password")
+@router.post(
+    "/change-password", dependencies=[Depends(rate_limit("change-password", 10, 60))]
+)
 async def change_password(body: dict, user: CurrentUser, db: DB) -> dict:
+    # A stolen access token must not buy unlimited guesses at the password.
+    limit_account("change-password", str(user.id), 10, 300)
     current = body.get("current_password") or ""
     new = body.get("new_password") or ""
     if len(new) < 8:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "New password needs 8+ characters"
         )
-    if not verify_password(current, user.password_hash):
+    if not await run_in_threadpool(verify_password, current, user.password_hash):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Current password is wrong")
-    user.password_hash = hash_password(new)
+    user.password_hash = await run_in_threadpool(hash_password, new)
     # Invalidate every outstanding token (this device included) and hand the
     # caller a fresh pair so their current session continues seamlessly.
     user.token_version += 1
@@ -145,7 +158,7 @@ async def add_user(body: SetupRequest, user: CurrentUser, db: DB) -> dict:
     new_user = User(
         tenant_id=user.tenant_id,
         email=email,
-        password_hash=hash_password(body.password),
+        password_hash=await run_in_threadpool(hash_password, body.password),
     )
     db.add(new_user)
     await db.flush()
@@ -188,8 +201,11 @@ async def totp_setup(user: CurrentUser, db: DB) -> dict:
     }
 
 
-@router.post("/totp/enable")
+@router.post(
+    "/totp/enable", dependencies=[Depends(rate_limit("totp-enable", 10, 60))]
+)
 async def totp_enable(body: dict, user: CurrentUser, db: DB) -> dict:
+    limit_account("totp-enable", str(user.id), 10, 300)
     if not user.totp_secret:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Run setup first")
     if not totp_service.verify(user.totp_secret, body.get("code") or ""):
@@ -199,14 +215,21 @@ async def totp_enable(body: dict, user: CurrentUser, db: DB) -> dict:
     return {"enabled": True}
 
 
-@router.post("/totp/disable")
+@router.post(
+    "/totp/disable", dependencies=[Depends(rate_limit("totp-disable", 10, 60))]
+)
 async def totp_disable(body: dict, user: CurrentUser, db: DB) -> dict:
     """Requires the password AND a current code — losing the phone means
     disabling via direct database access, which is the honest recovery
     story for a self-hosted single box."""
+    # Otherwise a stolen session plus the password could strip 2FA by guessing
+    # six digits without limit.
+    limit_account("totp-disable", str(user.id), 10, 300)
     if not user.totp_enabled:
         return {"enabled": False}
-    if not verify_password(body.get("password") or "", user.password_hash):
+    if not await run_in_threadpool(
+        verify_password, body.get("password") or "", user.password_hash
+    ):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Wrong password")
     if not totp_service.verify(user.totp_secret, body.get("code") or ""):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "That code doesn't match")

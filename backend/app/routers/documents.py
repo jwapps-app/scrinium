@@ -1076,6 +1076,25 @@ async def reprocess(
     doc_id: uuid.UUID, body: ReprocessRequest, user: CurrentUser, db: DB
 ) -> DocumentOut:
     doc = await _get_owned(doc_id, user, db)
+    # One job per document at a time. Two jobs on the same document run in
+    # different lanes and both swap archive_blob_id at the end, so the loser's
+    # work is discarded and its blob leaks — and with a downsample queued
+    # alongside a re-OCR, the served archive ends up a downsample of the
+    # *pre*-re-OCR bytes while text_content describes the new ones. The other
+    # enqueue paths already exclude documents with an active job; this one
+    # didn't.
+    active = (
+        await db.execute(
+            select(Job.id).where(
+                Job.document_id == doc.id,
+                Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+            )
+        )
+    ).first()
+    if active is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "This document is already being processed."
+        )
     doc.status = DocumentStatus.PENDING
     doc.error = None
     db.add(Job(document_id=doc.id, kind="ingest", mode=body.mode))

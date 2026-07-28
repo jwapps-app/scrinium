@@ -19,6 +19,15 @@ class Settings(BaseSettings):
 
     access_token_minutes: int = 30
     refresh_token_days: int = 30
+    # Peers whose CF-Connecting-IP header is believed for rate limiting. In the
+    # normal deployment the only thing talking to the api container is nginx on
+    # the compose network, so the private ranges cover it; anything reaching the
+    # container from elsewhere is rate-limited on its real socket address.
+    trusted_proxies: str = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128"
+
+    @property
+    def trusted_proxy_list(self) -> list[str]:
+        return [p.strip() for p in self.trusted_proxies.split(",") if p.strip()]
 
     # OCR
     ocr_engine: str = "tesseract"  # "tesseract" | "apple"
@@ -42,6 +51,10 @@ class Settings(BaseSettings):
     # pages alone. Only sparse/ambiguous pages risk a spurious flip.
     rotate_pages: bool = True
     rotate_pages_threshold: float = 5.0
+    # Wall-clock budget for one classification rule against one document. A
+    # regex that compiles can still backtrack exponentially, so matching is
+    # bounded and an offending rule is disabled rather than stalling the queue.
+    rule_match_timeout: float = 2.0
     # OCR watchdog: kill a run only when page progress stalls this long
     # (wedged Ghostscript), not on a fixed clock — a 2,000-page book on
     # Tesseract may healthily grind for hours. Hard ceiling as a backstop.

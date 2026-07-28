@@ -289,6 +289,8 @@ async def process_downsample_job(
         await session.commit()
         return
 
+    # Baseline for the compare-and-swap after the (slow) Ghostscript pass.
+    archive_at_start = document.archive_blob_id
     archive_path = storage.blob_file(document.archive_blob_id)
     dpi = await asyncio.to_thread(max_image_dpi, archive_path)
     # 0 (not None) for no-image archives, so they read as measured and don't
@@ -323,6 +325,23 @@ async def process_downsample_job(
         logger.warning("downsample failed for document %s: %s", document.id, exc)
         job.status = JobStatus.FAILED
         job.error = str(exc)[:4000]
+        job.finished_at = datetime.now(timezone.utc)
+        await session.commit()
+        return
+
+    # Lock the row and confirm the archive we downsampled is still the current
+    # one. A concurrent re-OCR would otherwise have its fresh archive replaced
+    # by this downsample of the bytes it superseded.
+    await session.refresh(document, with_for_update=True)
+    if document.archive_blob_id != archive_at_start:
+        logger.warning(
+            "document %s archive changed under downsample job %s; discarding",
+            document.id,
+            job.id,
+        )
+        storage.delete_blob(blob_id)
+        job.status = JobStatus.DONE
+        job.error = "superseded by a concurrent job"
         job.finished_at = datetime.now(timezone.utc)
         await session.commit()
         return

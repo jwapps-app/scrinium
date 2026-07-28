@@ -40,6 +40,9 @@ class Rule(Base):
     )
     priority: Mapped[int] = mapped_column(default=100)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Why the rule was auto-disabled (currently: pattern exceeded its match
+    # budget). Surfaced in the UI so a disabled rule isn't a silent mystery.
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
