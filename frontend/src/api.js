@@ -25,6 +25,12 @@ export async function signOut() {
     /* offline or already invalid — still clear locally */
   }
   try {
+    const { clearSession } = await import('./session')
+    clearSession()
+  } catch {
+    /* no session cached */
+  }
+  try {
     const { clearOffline } = await import('./offline')
     await clearOffline()
   } catch {

@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '../api'
+import { useIsAdmin } from '../session'
 
 const EMPTY = { name: '', match_type: 'contains', pattern: '', tag_name: '', set_title: '', correspondent_name: '', doc_type_name: '' }
 
 export default function RulesSection() {
+  // Rules rewrite titles and tags across the whole library, so only the owner
+  // may change them; everyone can see what is configured.
+  const isAdmin = useIsAdmin()
   const [rules, setRules] = useState([])
   const [tags, setTags] = useState([])
   const [correspondents, setCorrespondents] = useState([])
@@ -156,17 +160,27 @@ export default function RulesSection() {
                   </span>
                 )}
               </div>
-              <button className="ghost" onClick={() => toggleRule(r)}>
-                {r.enabled ? 'Disable' : 'Enable'}
-              </button>
-              <button className="ghost danger" onClick={() => deleteRule(r)}>
-                Delete
-              </button>
+              {isAdmin && (
+                <>
+                  <button className="ghost" onClick={() => toggleRule(r)}>
+                    {r.enabled ? 'Disable' : 'Enable'}
+                  </button>
+                  <button className="ghost danger" onClick={() => deleteRule(r)}>
+                    Delete
+                  </button>
+                </>
+              )}
             </li>
           ))}
         </ul>
       )}
 
+      {!isAdmin && (
+        <p className="settings-help">
+          Rules apply to the whole library, so only the owner can change them.
+        </p>
+      )}
+      {isAdmin && (
       <form className="rule-form" onSubmit={addRule}>
         <input
           placeholder="Rule name (e.g. Utility bills)"
@@ -235,6 +249,7 @@ export default function RulesSection() {
           </button>
         </div>
       </form>
+      )}
     </section>
   )
 }

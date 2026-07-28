@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { apiDelete, apiJson } from '../api'
 import { fmtBytes } from '../format'
 import Shell from '../components/Shell'
+import { useIsAdmin } from '../session'
 
 function monthLabel(ym) {
   const [y, m] = ym.split('-')
@@ -40,6 +41,8 @@ function Bars({ items, labelKey, max, color, linkTo }) {
 }
 
 export default function Insights() {
+  // Reclaiming space rewrites archives library-wide — owner only.
+  const isAdmin = useIsAdmin()
   const [data, setData] = useState(null)
   const [dupes, setDupes] = useState(null)
   const [storage, setStorage] = useState(null)
@@ -303,7 +306,7 @@ export default function Insights() {
               </section>
             )}
 
-            {storage?.enabled && (
+            {isAdmin && storage?.enabled && (
               <section className="insight-section">
                 <h2>Reclaim space</h2>
                 <div className="organize-head">

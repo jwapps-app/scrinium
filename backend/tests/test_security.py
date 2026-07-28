@@ -484,3 +484,101 @@ def test_blob_files_are_owner_only(tmp_path):
     blob_id, _, _ = storage.store_file(src)
     path = storage.blob_file(blob_id)
     assert oct(os.stat(path).st_mode & 0o777) == "0o600"
+
+
+async def _member(client, auth):
+    """Create a non-owner account and return its auth header."""
+    email = f"member-{uuid.uuid4().hex[:8]}@example.com"
+    created = await client.post(
+        "/api/auth/users", headers=auth, json={"email": email, "password": "password123"}
+    )
+    assert created.status_code == 201, created.text
+    tokens = (
+        await client.post(
+            "/api/auth/login", json={"email": email, "password": "password123"}
+        )
+    ).json()
+    return {"Authorization": f"Bearer {tokens['access_token']}"}
+
+
+async def test_members_cannot_destroy_or_reconfigure(client, auth, pdf_factory):
+    """The member role draws the line at irreversible and library-wide actions."""
+    member = await _member(client, auth)
+    doc = (
+        await client.post(
+            "/api/documents", headers=member,
+            files={"file": ("m.pdf", pdf_factory(text="member owned"), "application/pdf")},
+        )
+    ).json()
+    tag = (
+        await client.post("/api/tags", headers=member, json={"name": _name("mtag")})
+    ).json()
+
+    # Permanent deletion — of one document, or in bulk.
+    await client.delete(f"/api/documents/{doc['id']}", headers=member)  # trash is fine
+    assert (
+        await client.delete(f"/api/documents/{doc['id']}/purge", headers=member)
+    ).status_code == 403
+    assert (
+        await client.post(
+            "/api/documents/bulk", headers=member,
+            json={"action": "purge", "filter_trash": True},
+        )
+    ).status_code == 403
+
+    # Removing shared vocabulary strips it from everyone's documents.
+    assert (
+        await client.delete(f"/api/tags/{tag['id']}", headers=member)
+    ).status_code == 403
+    assert (await client.delete("/api/tags/unused", headers=member)).status_code == 403
+
+    # Rules rewrite titles and tags library-wide.
+    assert (
+        await client.post(
+            "/api/rules", headers=member,
+            json={"name": "x", "match_type": "contains", "pattern": "y"},
+        )
+    ).status_code == 403
+
+    # Library-wide reprocessing replaces archives for good.
+    assert (
+        await client.post("/api/documents/downsample-archives", headers=member)
+    ).status_code == 403
+    assert (await client.post("/api/documents/upgrade-ocr", headers=member)).status_code == 403
+
+
+async def test_members_can_still_do_the_everyday_work(client, auth, pdf_factory):
+    """Read and organize must keep working, or the role is useless."""
+    member = await _member(client, auth)
+
+    doc = (
+        await client.post(
+            "/api/documents", headers=member,
+            files={"file": ("w.pdf", pdf_factory(text="everyday"), "application/pdf")},
+        )
+    ).json()
+    tag = (
+        await client.post("/api/tags", headers=member, json={"name": _name("ok")})
+    ).json()
+
+    assert (await client.get("/api/documents", headers=member)).status_code == 200
+    assert (await client.get("/api/insights", headers=member)).status_code == 200
+    assert (
+        await client.patch(
+            f"/api/documents/{doc['id']}", headers=member,
+            json={"title": "renamed by member", "tag_ids": [tag["id"]]},
+        )
+    ).status_code == 200
+    # Trash and restore are reversible, so they stay available.
+    assert (
+        await client.delete(f"/api/documents/{doc['id']}", headers=member)
+    ).status_code == 204
+    assert (
+        await client.post(f"/api/documents/{doc['id']}/restore", headers=member)
+    ).status_code == 200
+    # Sharing is no wider than the download they already have.
+    assert (
+        await client.post(
+            f"/api/documents/{doc['id']}/share", headers=member, json={"days": 7}
+        )
+    ).status_code in (200, 201)

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import QRCode from 'qrcode'
 import { apiFetch, apiJson, setTokens } from '../api'
+import { useIsAdmin } from '../session'
 
 /** Settings card: change password, manage accounts. */
 export default function AccountSection() {
@@ -16,7 +17,7 @@ export default function AccountSection() {
   const [showDisable, setShowDisable] = useState(false)
   // Account management is owner-only server-side; hide it for everyone else
   // rather than offering buttons that come back 403.
-  const [isAdmin, setIsAdmin] = useState(false)
+  const isAdmin = useIsAdmin()
 
   const load = useCallback(() => {
     apiJson('/api/auth/users').then(setUsers).catch((e) => setError(e.message))
@@ -25,7 +26,6 @@ export default function AccountSection() {
   useEffect(() => {
     load()
     apiJson('/api/auth/totp').then((d) => setTotpEnabled(d.enabled)).catch(() => {})
-    apiJson('/api/auth/me').then((d) => setIsAdmin(!!d.is_admin)).catch(() => {})
   }, [load])
 
   async function startEnroll() {

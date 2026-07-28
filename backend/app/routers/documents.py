@@ -821,7 +821,7 @@ async def upgradeable_count(user: CurrentUser, db: DB) -> dict:
 
 
 @router.post("/upgrade-ocr")
-async def upgrade_ocr(user: CurrentUser, db: DB) -> dict:
+async def upgrade_ocr(user: AdminUser, db: DB) -> dict:
     """Queue every Tesseract-finished document for Apple re-OCR at LOW
     priority: fresh intake always claims first, so the upgrade fleet only
     runs when the queue is otherwise idle."""
@@ -898,7 +898,7 @@ async def downsample_candidates(user: CurrentUser, db: DB) -> dict:
 
 @router.post("/downsample-archives")
 async def downsample_archives(
-    user: CurrentUser, db: DB, limit: Annotated[int, Query(ge=1)] = 1000
+    user: AdminUser, db: DB, limit: Annotated[int, Query(ge=1)] = 1000
 ) -> dict:
     """Queue archive-downsample jobs at the LOWEST priority so they run behind
     fresh intake and OCR upgrades. Batched: queues up to `limit` documents per
@@ -1466,7 +1466,7 @@ async def restore_document(
 
 
 @router.delete("/{doc_id}/purge", status_code=status.HTTP_204_NO_CONTENT)
-async def purge_document(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
+async def purge_document(doc_id: uuid.UUID, user: AdminUser, db: DB) -> None:
     doc = await _get_owned(doc_id, user, db)
     await deletion.purge_document(db, doc)
 
@@ -1481,6 +1481,13 @@ async def bulk_action(
     call — the response's `remaining` says how many are left; call again
     until it reaches zero."""
     remaining = 0
+    # Purge destroys the file for good; every other bulk action is reversible
+    # (trash can be restored, tags re-applied), so members keep those.
+    if body.action == "purge" and not user.is_admin:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Permanently deleting documents is limited to the library owner.",
+        )
     heavy = body.action in ("delete", "purge")
     if body.filter_trash:
         base = _light_document().where(

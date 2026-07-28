@@ -67,6 +67,28 @@ CI publishes `ghcr.io/jwapps-app/scrinium-api` and `-web`;
 (Portainer or plain compose). All host-specific paths and tuning are env
 vars — see the compose file for the full list.
 
+## Accounts and roles
+
+A deployment is one shared library. Everyone signed in sees and can organize
+every document — there are no per-document permissions, by design; this is built
+for a household or a person, not for separating colleagues from each other.
+
+Two roles:
+
+- **Owner** — the account created by first-run setup. Manages accounts, changes
+  settings that affect the whole box (OCR engine, archive DPI cap, pausing the
+  queue), runs imports and exports, and is alone able to do the things that
+  cannot be undone: permanently deleting documents, emptying the trash, deleting
+  tags/correspondents/types, and library-wide reprocessing.
+- **Member** — every account the owner adds. Uploads, reads, searches,
+  organizes, annotates, shares, and moves documents to the trash. Everything a
+  member can do is reversible by the owner.
+
+Accounts are created by the owner in Settings; there is no open registration.
+If you need people to keep documents *away* from each other, run separate
+deployments — isolation between accounts in one library is not something this
+provides.
+
 ## Contributing
 
 Bug reports and pull requests are welcome — see `CONTRIBUTING.md` for how to run

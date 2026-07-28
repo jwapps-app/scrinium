@@ -4,7 +4,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
-from app.deps import DB, CurrentUser
+from app.deps import DB, AdminUser, CurrentUser
 from app.models import Correspondent, DocType, Rule, Tag
 from app.schemas import RuleCreate, RuleOut, RuleUpdate
 
@@ -64,7 +64,7 @@ async def list_rules(user: CurrentUser, db: DB) -> list[RuleOut]:
 
 
 @router.post("", response_model=RuleOut, status_code=status.HTTP_201_CREATED)
-async def create_rule(body: RuleCreate, user: CurrentUser, db: DB) -> RuleOut:
+async def create_rule(body: RuleCreate, user: AdminUser, db: DB) -> RuleOut:
     _validate_pattern(body.match_type, body.pattern)
     fields = body.model_dump()
     await _validate_targets(fields, user, db)
@@ -76,7 +76,7 @@ async def create_rule(body: RuleCreate, user: CurrentUser, db: DB) -> RuleOut:
 
 @router.patch("/{rule_id}", response_model=RuleOut)
 async def update_rule(
-    rule_id: uuid.UUID, body: RuleUpdate, user: CurrentUser, db: DB
+    rule_id: uuid.UUID, body: RuleUpdate, user: AdminUser, db: DB
 ) -> RuleOut:
     rule = await db.get(Rule, rule_id)
     if rule is None or rule.tenant_id != user.tenant_id:
@@ -97,7 +97,7 @@ async def update_rule(
 
 
 @router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_rule(rule_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
+async def delete_rule(rule_id: uuid.UUID, user: AdminUser, db: DB) -> None:
     rule = await db.get(Rule, rule_id)
     if rule is None or rule.tenant_id != user.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found")

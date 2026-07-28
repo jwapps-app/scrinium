@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 
-from app.deps import DB, CurrentUser
+from app.deps import DB, AdminUser, CurrentUser
 from app.models import Tag
 from app.models.document import document_tags
 from app.schemas import TagCreate, TagOut, TagUpdate
@@ -131,7 +131,7 @@ async def auto_color_tags(user: CurrentUser, db: DB) -> dict:
 
 
 @router.delete("/unused")
-async def delete_unused_tags(user: CurrentUser, db: DB) -> dict:
+async def delete_unused_tags(user: AdminUser, db: DB) -> dict:
     """Delete every tag with zero documents. Runs repeatedly so emptied
     parent chains collapse bottom-up. Returns how many were removed."""
     removed = 0
@@ -167,7 +167,7 @@ async def delete_unused_tags(user: CurrentUser, db: DB) -> dict:
 
 
 @router.delete("/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_tag(tag_id: uuid.UUID, user: CurrentUser, db: DB) -> None:
+async def delete_tag(tag_id: uuid.UUID, user: AdminUser, db: DB) -> None:
     """Delete a tag; its children are promoted to the root (parent SET NULL)."""
     tag = await _get_owned(tag_id, user, db)
     await db.delete(tag)

@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 
-from app.deps import DB, CurrentUser
+from app.deps import DB, AdminUser, CurrentUser
 from app.models import Correspondent, CustomField, DocType, Document, SavedView
 from app.schemas import (
     CustomFieldCreate,
@@ -68,7 +68,7 @@ def _entity_routes(prefix: str, model, count_column):
         return NamedEntityOut(id=entity.id, name=entity.name)
 
     @sub.delete("/{entity_id}", status_code=status.HTTP_204_NO_CONTENT)
-    async def delete_entity(entity_id: uuid.UUID, user: CurrentUser, db: DB):
+    async def delete_entity(entity_id: uuid.UUID, user: AdminUser, db: DB):
         entity = await db.get(model, entity_id)
         if entity is None or entity.tenant_id != user.tenant_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
@@ -144,7 +144,7 @@ async def create_field(body: CustomFieldCreate, user: CurrentUser, db: DB):
 
 
 @router.delete("/custom-fields/{field_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_field(field_id: uuid.UUID, user: CurrentUser, db: DB):
+async def delete_field(field_id: uuid.UUID, user: AdminUser, db: DB):
     field = await db.get(CustomField, field_id)
     if field is None or field.tenant_id != user.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")

@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiJson } from '../api'
 import { flattenTagTree } from './Shell'
+import { useIsAdmin } from '../session'
 
 export default function TagsSection({ standalone = false }) {
+  // Deleting a tag strips it from every document and cannot be undone.
+  const isAdmin = useIsAdmin()
   const [tags, setTags] = useState([])
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -92,7 +95,7 @@ export default function TagsSection({ standalone = false }) {
         >
           Auto-color
         </button>
-        {tags.some((t) => t.count === 0) && (
+        {isAdmin && tags.some((t) => t.count === 0) && (
           <button
             className="ghost"
             onClick={async () => {
@@ -198,9 +201,11 @@ export default function TagsSection({ standalone = false }) {
                     </option>
                   ))}
               </select>
-              <button className="ghost danger" onClick={() => remove(t)}>
-                Delete
-              </button>
+              {isAdmin && (
+                <button className="ghost danger" onClick={() => remove(t)}>
+                  Delete
+                </button>
+              )}
             </li>
           ))}
         </ul>

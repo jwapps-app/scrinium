@@ -9,8 +9,11 @@ import { isOffline, keepOffline, offlineFile, offlineMeta, removeOffline } from 
 import PdfViewer from '../components/PdfViewer'
 import Menu from '../components/Menu'
 import DocumentDetails from '../components/DocumentDetails'
+import { useIsAdmin } from '../session'
 
 export default function DocumentView() {
+  // Permanent deletion is owner only; trashing stays available to all.
+  const isAdmin = useIsAdmin()
   const { id } = useParams()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
@@ -591,17 +594,19 @@ export default function DocumentView() {
           >
             Restore
           </button>
-          <button
-            className="ghost danger"
-            onClick={async () => {
-              if (!window.confirm('Permanently delete this document and its files?')) return
-              await apiJson(`/api/documents/${id}/purge`, { method: 'DELETE' })
-              window.dispatchEvent(new Event('library-changed'))
-              navigate('/')
-            }}
-          >
-            Delete forever
-          </button>
+          {isAdmin && (
+            <button
+              className="ghost danger"
+              onClick={async () => {
+                if (!window.confirm('Permanently delete this document and its files?')) return
+                await apiJson(`/api/documents/${id}/purge`, { method: 'DELETE' })
+                window.dispatchEvent(new Event('library-changed'))
+                navigate('/')
+              }}
+            >
+              Delete forever
+            </button>
+          )}
         </div>
       )}
 

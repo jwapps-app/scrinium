@@ -7,6 +7,7 @@ import ProgressBar from '../components/ProgressBar'
 import Shell from '../components/Shell'
 import StatusChip from '../components/StatusChip'
 import Thumb from '../components/Thumb'
+import { useIsAdmin } from '../session'
 
 // Search snippets arrive with [[match]] markers (see backend ts_headline
 // config); render the matches as <mark> without trusting any HTML.
@@ -41,6 +42,8 @@ function displayDate(d) {
 }
 
 export default function Library() {
+  // Emptying the trash destroys files for good — owner only.
+  const isAdmin = useIsAdmin()
   const [params, setParams] = useSearchParams()
   const [docs, setDocs] = useState([])
   const [total, setTotal] = useState(0)
@@ -482,13 +485,15 @@ export default function Library() {
                 >
                   Restore
                 </button>
-                <button
-                  className="ghost danger"
-                  disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
-                  onClick={() => bulk('purge')}
-                >
-                  Delete forever
-                </button>
+                {isAdmin && (
+                  <button
+                    className="ghost danger"
+                    disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
+                    onClick={() => bulk('purge')}
+                  >
+                    Delete forever
+                  </button>
+                )}
               </>
             ) : (
               <button
