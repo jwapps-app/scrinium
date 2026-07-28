@@ -189,7 +189,7 @@ export default function Insights() {
               )}
             </div>
 
-            {dupes && (dupes.pairs.length > 0 || dupes.pending_fingerprint > 0) && (
+            {dupes && (dupes.pairs.length > 0 || dupes.pending_fingerprint > 0 || dupes.rejected > 0) && (
               <section className="insight-section">
                 <h2>Possible duplicates</h2>
                 {dupes.pending_fingerprint > 0 && (
@@ -200,11 +200,24 @@ export default function Insights() {
                 )}
                 {dupes.pairs.length === 0 ? (
                   <p className="settings-help">
-                    No near-duplicates among {dupes.fingerprinted.toLocaleString()}{' '}
+                    No duplicates among {dupes.fingerprinted.toLocaleString()}{' '}
                     fingerprinted documents.
+                    {dupes.rejected > 0 &&
+                      ` ${dupes.rejected.toLocaleString()} pair${
+                        dupes.rejected === 1 ? '' : 's'
+                      } looked similar by fingerprint but shares too little
+                      actual text to be a match.`}
                   </p>
                 ) : (
                   <ul className="dup-list">
+                    {dupes.rejected > 0 && (
+                      <li className="settings-help">
+                        {dupes.rejected.toLocaleString()} further pair
+                        {dupes.rejected === 1 ? ' was' : 's were'} checked and
+                        rejected — the fingerprint put them close, but they share
+                        under {dupes.min_similarity}% of their text.
+                      </li>
+                    )}
                     {dupes.total > dupes.pairs.length && (
                       <li className="settings-help">
                         Showing the {dupes.pairs.length} closest of{' '}

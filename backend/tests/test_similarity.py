@@ -156,3 +156,55 @@ async def test_duplicates_reports_true_backlog(client, auth):
     # Highest-confidence pairs first.
     scores = [p["similarity"] for p in data["pairs"]]
     assert scores == sorted(scores, reverse=True)
+
+
+async def test_low_similarity_pairs_are_rejected_not_shown(client, auth, pdf_factory):
+    """Fingerprint proximity only nominates a candidate; shared text decides.
+    Unrelated documents that collide in the fingerprint used to be listed as
+    2% "matches", which made the report something to scroll past."""
+    import uuid
+
+    import sqlalchemy as sa
+
+    from app.config import settings
+    from app.database import SessionLocal
+    from app.models import Document
+    from app.services.similarity import simhash as sh
+
+    created = []
+    for i in range(2):
+        resp = await client.post(
+            "/api/documents", headers=auth,
+            files={"file": (f"lo{i}.pdf", pdf_factory(text=f"lo-{uuid.uuid4().hex}"), "application/pdf")},
+        )
+        created.append(resp.json()["id"])
+
+    text_a = LOREM
+    text_b = LOREM.replace("topic42", "topic43")
+    async with SessionLocal() as session:
+        for doc_id, value in zip(created, (text_a, text_b)):
+            await session.execute(
+                sa.update(Document)
+                .where(Document.id == uuid.UUID(doc_id))
+                .values(text_content=value, simhash=sh(value))
+            )
+        await session.commit()
+
+    # These two are near-identical, so they pass the default floor.
+    data = (await client.get("/api/insights/duplicates", headers=auth)).json()
+    pair_ids = {frozenset((p["a"]["id"], p["b"]["id"])) for p in data["pairs"]}
+    assert frozenset(created) in pair_ids
+    assert all(p["similarity"] >= data["min_similarity"] for p in data["pairs"])
+
+    # Raise the floor above what they share: the pair must drop out and be
+    # counted as rejected rather than silently vanishing.
+    original = settings.duplicate_min_similarity
+    settings.duplicate_min_similarity = 0.999999
+    try:
+        strict = (await client.get("/api/insights/duplicates", headers=auth)).json()
+        strict_ids = {frozenset((p["a"]["id"], p["b"]["id"])) for p in strict["pairs"]}
+        assert frozenset(created) not in strict_ids
+        assert strict["rejected"] >= 1
+        assert strict["candidates"] >= strict["total"]
+    finally:
+        settings.duplicate_min_similarity = original

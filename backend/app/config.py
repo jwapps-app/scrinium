@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     # pages alone. Only sparse/ambiguous pages risk a spurious flip.
     rotate_pages: bool = True
     rotate_pages_threshold: float = 5.0
+    # A candidate duplicate pair must share at least this fraction of its text
+    # to be offered for review. Fingerprint proximity only nominates candidates;
+    # two unrelated documents can land a couple of bits apart, and those score
+    # near zero here. A genuine rescan measures ~0.9+ even across OCR engines,
+    # so this leaves plenty of headroom.
+    duplicate_min_similarity: float = 0.5
+    # How many fingerprint candidates get scored per request. Scoring reads
+    # text, so it is bounded — but it must exceed the number displayed, or
+    # collisions crowd real duplicates out of the window before scoring.
+    duplicate_scan_limit: int = 150
     # Wall-clock budget for one classification rule against one document. A
     # regex that compiles can still backtrack exponentially, so matching is
     # bounded and an offending rule is disabled rather than stalling the queue.

@@ -2364,3 +2364,37 @@ button.linklike {
     grid-template-columns: 1fr;
   }
 }
+
+/* Weak-OCR review: the extracted text beside the scan, so OCR quality can
+   actually be judged rather than guessed at from the page image. */
+.ocr-readout {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0.75rem 1rem;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.ocr-text {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0.5rem 0 0;
+  padding: 0.6rem 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 800px) {
+  .ocr-readout {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}

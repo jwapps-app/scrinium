@@ -23,6 +23,25 @@ export default function WeakOcr() {
 
   const doc = items && items[index]
 
+  // The whole point of this screen is judging OCR quality, which is impossible
+  // from the page image alone: you have to see what the OCR actually read.
+  const [ocrText, setOcrText] = useState(null)
+  useEffect(() => {
+    if (!doc) return
+    let cancelled = false
+    setOcrText(null)
+    apiJson(`/api/documents/${doc.id}/text`)
+      .then((d) => {
+        if (!cancelled) setOcrText(d.text || '')
+      })
+      .catch(() => {
+        if (!cancelled) setOcrText('')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [doc?.id])
+
   async function act(fn) {
     if (busy || !doc) return
     setBusy(true)
@@ -118,8 +137,25 @@ export default function WeakOcr() {
         </span>
       </div>
       {error && <p className="error compare-error">{error}</p>}
-      <div className="compare-panes single">
+      <div className="compare-panes">
         <ComparePane key={doc.id} docId={doc.id} />
+        <div className="ocr-readout">
+          <p className="settings-help">
+            What the OCR read. Compare it with the page: gibberish, a handful of
+            stray characters, or text that stops after the first page all mean a
+            re-OCR is worth it. Readable text that simply happens to be sparse —
+            a title page, a photo plate, a form — is fine as it is.
+          </p>
+          {ocrText === null ? (
+            <p className="settings-help">Loading text…</p>
+          ) : ocrText.trim() === '' ? (
+            <p className="error">
+              No text at all was extracted from this document.
+            </p>
+          ) : (
+            <pre className="ocr-text">{ocrText}</pre>
+          )}
+        </div>
       </div>
     </div>
   )

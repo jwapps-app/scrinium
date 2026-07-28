@@ -13,6 +13,7 @@ from sqlalchemy.orm import aliased
 from app.services import similarity
 from app.services.similarity import find_near_duplicates
 
+from app.config import settings as app_settings
 from app.deps import DB, CurrentUser
 from app.models import (
     DismissedDuplicate,
@@ -332,10 +333,11 @@ async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
         p for p in find_near_duplicates([(r[0], r[1]) for r in rows])
         if frozenset((p[0], p[1])) not in dismissed
     ]
-    # Only a window is scored and returned, but report the true backlog: the
-    # review UI counts what it receives, so a capped list made the "N to
-    # review" tally sit frozen at the cap while work remained behind it.
-    pairs = candidates[:PAIR_WINDOW]
+    # Score more candidates than are displayed: the fingerprint shortlist is
+    # ordered by bit distance, and collisions cluster at the top of it, so a
+    # window sized to the display would let junk crowd out real duplicates
+    # before anything was measured.
+    pairs = candidates[: app_settings.duplicate_scan_limit]
     ids = {i for a, b, _ in pairs for i in (a, b)}
     docs = {}
     grams: dict = {}
@@ -401,16 +403,35 @@ async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
                 # says: a hash collision reads low, a rescan reads high.
                 "similarity": round(overlap * 100),
                 "fingerprint_distance": dist,
+                # Unrounded, for the threshold comparison below — filtering on
+                # the display value would let a 99.6% pair pass a 100% floor.
+                "_overlap": overlap,
             }
         )
-    # Likeliest matches first, so review starts where it pays off.
-    items.sort(key=lambda it: -it["similarity"])
+    # Fingerprint proximity nominates a pair; shared text decides whether it is
+    # actually a duplicate. Two unrelated documents can sit a couple of bits
+    # apart and score near zero here, and showing those as "2% matches" made the
+    # report something to scroll past rather than act on.
+    floor = app_settings.duplicate_min_similarity
+    matches = [it for it in items if it.pop("_overlap") >= floor]
+    for leftover in items:
+        leftover.pop("_overlap", None)
+    # Likeliest first, so review starts where it pays off.
+    matches.sort(key=lambda it: -it["similarity"])
     return {
         "fingerprinted": len(rows),
         "pending_fingerprint": pending,
-        "total": len(candidates),
-        "shown": len(items),
-        "pairs": items,
+        # Fingerprint candidates in total — most are not duplicates.
+        "candidates": len(candidates),
+        "scanned": len(items),
+        # Scanned, measured, and rejected as unrelated. Reported rather than
+        # silently dropped, so an empty report reads as "nothing matched"
+        # instead of "something is broken".
+        "rejected": len(items) - len(matches),
+        "min_similarity": round(floor * 100),
+        "total": len(matches),
+        "shown": min(len(matches), PAIR_WINDOW),
+        "pairs": matches[:PAIR_WINDOW],
     }
 
 
