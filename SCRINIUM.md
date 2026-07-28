@@ -238,6 +238,18 @@ Canonical patterns live in the Obsidian vault at a personal notes vault; these a
 
 ## Decisions Log
 
+This log is deliberately complete, security work included. Entries below
+describe vulnerabilities that were found and fixed — several of them serious —
+because the reasoning is the useful part and hiding it would make the log a
+sales document rather than a record.
+
+Two things follow from that, for anyone reading this outside my own deployment:
+the issues described here are fixed in current `main`, and older commits are
+therefore a map of what was wrong at the time. Only `main` and the images built
+from it are supported (see `SECURITY.md`); do not run an older revision and
+expect the fixes. New findings should go through private disclosure rather than
+this log.
+
 - **2026-07-09:** Repo/image/package name = `scrinium` (deliberate exception to the generic-naming rule). Auth = bcrypt + JWT access/refresh. Ingestion jobs = Postgres-backed queue + worker container (no Redis). Host port 8210, subdomain `scrinium.example.com`. Build order steps 1–3 scaffolded (backend core, Tesseract round-trip, PWA).
 - **2026-07-09 (later):** Step 4 built — Swift sidecar (`sidecar/`, SwiftPM, Network.framework + Vision, env `OCR_HELPER_PORT`/`OCR_HELPER_LANGUAGES`) and `AppleVisionProvider` Option B (pdftoppm rasterize → POST pages → text-for-search; **no archive PDF on this path until Option A**, viewer falls back to the original and any prior archive is kept). Fallback verified: sidecar down → Tesseract, never wedges. Settings page (`/settings`) shows live helper health — the first slice of step 5. Providers receive a suffixed symlink to the blob (opaque keys carry no extension — don't dispatch on blob paths).
 - **2026-07-09 (evening):** Steps 5–7 built. **Step 6 / Option A:** `apple_engine_plugin.py` is an ocrmypdf engine plugin (`python3 -m ocrmypdf --plugin app.services.ocr.apple_engine_plugin --pdf-renderer hocr`); Vision blocks → hOCR with the bottom-left→top-left coordinate flip; verified archive creator tag `OCRmyPDF … / Apple Vision sidecar 1.0` with extractable text layer. Option B's text-only path is superseded (OCRResult.archive_path stays optional). **Step 5:** guided setup checklist on `/settings` — `GET /api/settings/sidecar-setup` generates build commands, a port-baked launchd plist (label `com.example.scrinium-ocr-helper`), and server env; steps auto-check off the live health poll. **Step 7:** rules-based classification — `rules` table (contains/regex → add tag and/or set title, priority-ordered), `POST /api/documents/{id}/classify` and `POST /api/classify/run`, both idempotent (verified: second bulk run changes 0); managed in Settings, per-doc Classify button. Local-LLM classification pass remains deferred.
