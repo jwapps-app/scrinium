@@ -42,14 +42,16 @@ class TagOut(BaseModel):
 class TagCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     parent_id: uuid.UUID | None = None
-    color: str | None = Field(default=None, max_length=16)
+    # Hex only: the value is interpolated into a CSS property client-side.
+    color: str | None = Field(default=None, max_length=16, pattern="^#[0-9a-fA-F]{3,8}$")
 
 
 class TagUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     parent_id: uuid.UUID | None = None
     clear_parent: bool = False  # set true to move a tag to the root
-    color: str | None = Field(default=None, max_length=16)
+    # Hex only: the value is interpolated into a CSS property client-side.
+    color: str | None = Field(default=None, max_length=16, pattern="^#[0-9a-fA-F]{3,8}$")
     clear_color: bool = False
 
 

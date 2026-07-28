@@ -27,6 +27,9 @@ class User(Base):
     # so a family member's account can't create co-owners or delete the owner.
     is_admin: Mapped[bool] = mapped_column(default=False, server_default="false")
     totp_enabled: Mapped[bool] = mapped_column(default=False)
+    # Highest TOTP time step already accepted. Codes at or below it are refused,
+    # so an observed code can't be replayed within its validity window.
+    totp_last_step: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

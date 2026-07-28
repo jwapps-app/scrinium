@@ -7,4 +7,6 @@ if [ "$1" = "worker" ]; then
 fi
 
 alembic upgrade head
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Share-link tokens are path segments; nginx already logs requests, and the
+# uvicorn access log would duplicate those tokens into container stdout.
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log

@@ -1,6 +1,7 @@
 """Highlights & notes on documents, plus synced reading positions."""
 
 import json
+import re
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
@@ -8,6 +9,16 @@ from sqlalchemy import select
 
 from app.deps import DB, CurrentUser
 from app.models import Annotation, Document, ReadingPosition
+
+_HEX = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+
+
+def _safe_color(raw) -> str | None:
+    """Only a hex colour. The value lands in a CSS property client-side, so
+    keep it to something that cannot carry a url() or other function."""
+    value = (raw or "").strip()
+    return value if _HEX.match(value) else None
+
 
 router = APIRouter(tags=["annotations"])
 
@@ -74,7 +85,7 @@ async def create_annotation(
         rects=json.dumps(
             [{k: round(float(r[k]), 5) for k in ("x", "y", "w", "h")} for r in rects]
         ),
-        color=(body.get("color") or "").strip() or None,
+        color=_safe_color(body.get("color")),
     )
     db.add(annotation)
     await db.flush()

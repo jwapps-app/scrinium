@@ -82,8 +82,17 @@ async def login(body: LoginRequest, db: DB) -> TokenPair:
     if user.totp_enabled:
         if not body.totp:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "totp_required")
-        if not totp_service.verify(user.totp_secret, body.totp):
+        step = totp_service.matching_step(user.totp_secret, body.totp)
+        if step is None:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Bad one-time code")
+        # Single use: a code observed once must not authenticate a second time
+        # while it is still inside its validity window.
+        if user.totp_last_step is not None and step <= user.totp_last_step:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "That code has already been used"
+            )
+        user.totp_last_step = step
+        await db.flush()
     return _token_pair(user)
 
 
@@ -243,8 +252,10 @@ async def totp_enable(body: dict, user: CurrentUser, db: DB) -> dict:
     limit_account("totp-enable", str(user.id), 10, 300)
     if not user.totp_secret:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Run setup first")
-    if not totp_service.verify(user.totp_secret, body.get("code") or ""):
+    step = totp_service.matching_step(user.totp_secret, body.get("code") or "")
+    if step is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "That code doesn't match")
+    user.totp_last_step = step
     user.totp_enabled = True
     await db.flush()
     return {"enabled": True}
@@ -266,9 +277,11 @@ async def totp_disable(body: dict, user: CurrentUser, db: DB) -> dict:
         verify_password, body.get("password") or "", user.password_hash
     ):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Wrong password")
-    if not totp_service.verify(user.totp_secret, body.get("code") or ""):
+    step = totp_service.matching_step(user.totp_secret, body.get("code") or "")
+    if step is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "That code doesn't match")
     user.totp_enabled = False
     user.totp_secret = None
+    user.totp_last_step = None
     await db.flush()
     return {"enabled": False}

@@ -30,13 +30,22 @@ def _code_at(secret: str, timestamp: float) -> str:
     return str(value % 1_000_000).zfill(6)
 
 
-def verify(secret: str, code: str, window: int = 1) -> bool:
-    """Accept the current step ± `window` steps of clock drift."""
+def matching_step(secret: str, code: str, window: int = 1) -> int | None:
+    """The time step a code matches, or None. Callers persist the step so a
+    code can't be replayed: without that, an observed code stays usable for the
+    whole ±window (~90s), which is enough for a phished or shoulder-surfed code
+    to be reused against a second session."""
     cleaned = code.strip().replace(" ", "")
     if not cleaned.isdigit() or len(cleaned) != 6:
-        return False
+        return None
     now = time.time()
-    return any(
-        hmac.compare_digest(_code_at(secret, now + step * 30), cleaned)
-        for step in range(-window, window + 1)
-    )
+    for step in range(-window, window + 1):
+        moment = now + step * 30
+        if hmac.compare_digest(_code_at(secret, moment), cleaned):
+            return int(moment // 30)
+    return None
+
+
+def verify(secret: str, code: str, window: int = 1) -> bool:
+    """Accept the current step ± `window` steps of clock drift."""
+    return matching_step(secret, code, window) is not None

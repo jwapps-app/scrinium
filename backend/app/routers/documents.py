@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated
 
 import aiofiles
-from fastapi import APIRouter, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy import update as sqla_update
@@ -47,6 +47,32 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 # Only these render inline; everything else is forced to download so a
 # mistyped/evil content-type can never execute in the browser origin.
 _INLINE_SAFE = {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"}
+
+
+
+def _parse_ids(raw, field: str = "ids") -> list[uuid.UUID]:
+    """Parse caller-supplied ids, answering 422 rather than a 500 from an
+    uncaught ValueError."""
+    out = []
+    for value in raw or []:
+        try:
+            out.append(uuid.UUID(str(value)))
+        except (ValueError, TypeError, AttributeError):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, f"Invalid id in {field}"
+            )
+    return out
+
+
+def _parse_id(value, field: str) -> uuid.UUID | None:
+    if value in (None, ""):
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, f"Invalid {field}"
+        )
 
 
 def _light_document():
@@ -366,8 +392,8 @@ async def list_documents(
     expiring: bool = False,
     non_pdfa: bool = False,
     title_q: str | None = None,
-    offset: int = 0,
-    limit: int = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1)] = 50,
 ) -> DocumentList:
     conditions = [Document.tenant_id == user.tenant_id]
     if expiring:
@@ -872,7 +898,7 @@ async def downsample_candidates(user: CurrentUser, db: DB) -> dict:
 
 @router.post("/downsample-archives")
 async def downsample_archives(
-    user: CurrentUser, db: DB, limit: int = 1000
+    user: CurrentUser, db: DB, limit: Annotated[int, Query(ge=1)] = 1000
 ) -> dict:
     """Queue archive-downsample jobs at the LOWEST priority so they run behind
     fresh intake and OCR upgrades. Batched: queues up to `limit` documents per
@@ -1200,7 +1226,7 @@ async def build_binder_pdf(body: dict, user: CurrentUser, db: DB):
     tag_id = body.get("filter_tag_id")
     title = (body.get("title") or "").strip() or "Scrinium Binder"
     if ids:
-        docs = [await _get_owned(uuid.UUID(str(r)), user, db) for r in ids[:300]]
+        docs = [await _get_owned(i, user, db) for i in _parse_ids(ids)[:300]]
     elif tag_id:
         docs = (
             await db.execute(
@@ -1208,7 +1234,7 @@ async def build_binder_pdf(body: dict, user: CurrentUser, db: DB):
                 .where(
                     Document.tenant_id == user.tenant_id,
                     Document.deleted_at.is_(None),
-                    Document.tags.any(Tag.id == uuid.UUID(str(tag_id))),
+                    Document.tags.any(Tag.id == _parse_id(tag_id, "filter_tag_id")),
                 )
                 .order_by(func.lower(Document.title))
                 .limit(300)
@@ -1269,7 +1295,7 @@ async def download_zip(body: dict, user: CurrentUser, db: DB):
     ids = body.get("ids") or []
     tag_id = body.get("filter_tag_id")
     if ids:
-        docs = [await _get_owned(uuid.UUID(str(r)), user, db) for r in ids[:200]]
+        docs = [await _get_owned(i, user, db) for i in _parse_ids(ids)[:200]]
     elif tag_id:
         docs = (
             await db.execute(
@@ -1277,7 +1303,7 @@ async def download_zip(body: dict, user: CurrentUser, db: DB):
                 .where(
                     Document.tenant_id == user.tenant_id,
                     Document.deleted_at.is_(None),
-                    Document.tags.any(Tag.id == uuid.UUID(str(tag_id))),
+                    Document.tags.any(Tag.id == _parse_id(tag_id, "filter_tag_id")),
                 )
                 .limit(1000)
             )
@@ -1350,7 +1376,7 @@ async def merge_documents(body: dict, user: CurrentUser, db: DB) -> dict:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Pick 2-50 documents")
     docs = []
     for raw in ids:
-        docs.append(await _get_owned(uuid.UUID(str(raw)), user, db))
+        docs.append(await _get_owned(_parse_id(raw, "id"), user, db))
     for doc in docs:
         if not doc.original_filename.lower().endswith(".pdf"):
             raise HTTPException(

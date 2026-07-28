@@ -150,6 +150,11 @@ export default function RulesSection() {
                     ? ` → type ${docTypes.find((t) => t.id === r.doc_type_id)?.name || '…'}`
                     : ''}
                 </span>
+                {r.error && (
+                  <span className="error">
+                    Auto-disabled: {r.error}. Edit the pattern to try again.
+                  </span>
+                )}
               </div>
               <button className="ghost" onClick={() => toggleRule(r)}>
                 {r.enabled ? 'Disable' : 'Enable'}

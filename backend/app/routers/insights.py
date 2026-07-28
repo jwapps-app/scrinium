@@ -4,7 +4,9 @@ import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Query
 from sqlalchemy import Integer, case, cast, func, select, text
 from sqlalchemy.orm import aliased
 
@@ -112,7 +114,7 @@ async def _compute_insights(user: CurrentUser, db: DB) -> dict:
                 .where(*live)
                 .group_by(entity.id)
                 .order_by(func.count(Document.id).desc())
-                .limit(limit)
+                .limit(min(limit, 500))
             )
         ).all()
         return [{"name": n, "count": c} for n, c in rows]
@@ -229,7 +231,9 @@ def _weak_ocr_conditions(user):
 
 
 @router.get("/insights/weak-ocr")
-async def weak_ocr(user: CurrentUser, db: DB, limit: int = 200) -> dict:
+async def weak_ocr(
+    user: CurrentUser, db: DB, limit: Annotated[int, Query(ge=1)] = 200
+) -> dict:
     """The full weak-OCR worklist for the review flow (worst first)."""
     cond = _weak_ocr_conditions(user)
     total = (

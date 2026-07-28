@@ -32,8 +32,13 @@ self.addEventListener('fetch', (event) => {
       (async () => {
         try {
           const fresh = await fetch(event.request)
-          const cache = await caches.open(SHELL_CACHE)
-          cache.put('/', fresh.clone())
+          // Only a good response becomes the offline shell: a 502 from nginx
+          // during an api restart used to be stored and then served offline
+          // until the next successful load replaced it.
+          if (fresh.ok && fresh.type === 'basic') {
+            const cache = await caches.open(SHELL_CACHE)
+            cache.put('/', fresh.clone())
+          }
           return fresh
         } catch {
           const cached = await caches.match('/')

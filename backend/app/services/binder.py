@@ -25,8 +25,14 @@ class BinderError(Exception):
 
 
 def _ps_escape(text: str) -> str:
+    # Truncate *first*: slicing the escaped string could cut between a backslash
+    # and the character it escaped, leaving a trailing lone backslash. That
+    # escaped the closing paren, so the PostScript string literal ran past its
+    # terminator and Ghostscript rejected the file — one title landing on the
+    # 88-character boundary broke binder generation for any selection containing
+    # it, and titles come from filenames, so that input is not ours to trust.
     return (
-        text.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")[:88]
+        text[:88].replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
     )
 
 
@@ -91,7 +97,20 @@ def build_binder(
         front_pdf = Path(tmp) / "front.pdf"
         ps_path.write_text(_front_matter_ps(title, entries))
         result = subprocess.run(
-            ["gs", "-q", "-sDEVICE=pdfwrite", "-o", str(front_pdf), str(ps_path)],
+            # -dSAFER to match every other Ghostscript call here: this is the one
+            # whose input is built from user-controlled strings, so it's the last
+            # place that should be missing the seatbelt.
+            [
+                "gs",
+                "-q",
+                "-dSAFER",
+                "-dBATCH",
+                "-dNOPAUSE",
+                "-sDEVICE=pdfwrite",
+                "-o",
+                str(front_pdf),
+                str(ps_path),
+            ],
             capture_output=True,
             timeout=120,
         )

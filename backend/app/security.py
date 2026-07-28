@@ -51,7 +51,14 @@ def decode_token(token: str, expected_type: str) -> tuple[uuid.UUID, int] | None
     the user row so a password change invalidates older tokens. Tokens minted
     before versioning carry no "ver" and read as version 0."""
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+        payload = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=[ALGORITHM],
+            # exp is only verified when present by default: a token minted
+            # without it would never expire.
+            options={"require": ["exp", "sub", "type"]},
+        )
     except jwt.PyJWTError:
         return None
     if payload.get("type") != expected_type:

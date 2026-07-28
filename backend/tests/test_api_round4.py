@@ -66,12 +66,21 @@ async def test_totp_login_flow(client, auth):
     )
     assert partial.status_code == 401 and "totp_required" in partial.text
 
+    # A code is single use, so enabling consumed the current step: log in with
+    # the next one (still inside the accepted drift window).
+    next_code = _code_at(secret, time.time() + 30)
     full = await client.post(
         "/api/auth/login",
-        json={"email": email, "password": "password123",
-              "totp": _code_at(secret, time.time())},
+        json={"email": email, "password": "password123", "totp": next_code},
     )
     assert full.status_code == 200
+
+    # Replaying that same code is refused.
+    replay = await client.post(
+        "/api/auth/login",
+        json={"email": email, "password": "password123", "totp": next_code},
+    )
+    assert replay.status_code == 401
 
     # disable needs password + code
     off = await client.post(

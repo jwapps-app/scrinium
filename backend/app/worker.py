@@ -37,6 +37,14 @@ WATCH_LOCK_KEY = 815551
 MAIL_LOCK_KEY = 815552
 PURGE_LOCK_KEY = 815553
 BACKFILL_LOCK_KEY = 815554
+# Distinct keys: _with_advisory_lock is a no-op when the lock is held, so any
+# two sweeps sharing a key means the slower one can mute the other indefinitely.
+RECLAIM_LOCK_KEY = 815555
+ORPHAN_LOCK_KEY = 815556
+RETENTION_LOCK_KEY = 815557
+VERIFY_LOCK_KEY = 815558
+EXPIRY_LOCK_KEY = 815559
+EXPORT_LOCK_KEY = 815560
 
 
 _backfill_done = False
@@ -424,7 +432,7 @@ async def pulse_loop() -> None:
             last_reclaim = time.monotonic()
             try:
                 await _with_advisory_lock(
-                    PURGE_LOCK_KEY, lambda: reclaim_interrupted_jobs(180)
+                    RECLAIM_LOCK_KEY, lambda: reclaim_interrupted_jobs(180)
                 )
             except Exception:
                 logger.exception("stale-job reclaim crashed; continuing")
@@ -468,7 +476,7 @@ async def maintenance_loop() -> None:
         if now - last_purge >= 3600:
             last_purge = now
             try:
-                await _with_advisory_lock(BACKFILL_LOCK_KEY, _sweep_orphan_blobs)
+                await _with_advisory_lock(ORPHAN_LOCK_KEY, _sweep_orphan_blobs)
             except Exception:
                 logger.exception("orphan blob sweep crashed; continuing")
             try:
@@ -482,20 +490,20 @@ async def maintenance_loop() -> None:
                 async def _retention():
                     await asyncio.to_thread(sweep_retention)
                     await asyncio.to_thread(sweep_upload_sessions)
-                await _with_advisory_lock(WATCH_LOCK_KEY, _retention)
+                await _with_advisory_lock(RETENTION_LOCK_KEY, _retention)
             except Exception:
                 logger.exception("retention sweep crashed; continuing")
             try:
-                await _with_advisory_lock(MAIL_LOCK_KEY, _expiry_notice)
+                await _with_advisory_lock(EXPIRY_LOCK_KEY, _expiry_notice)
             except Exception:
                 logger.exception("expiry notice crashed; continuing")
             try:
-                await _with_advisory_lock(WATCH_LOCK_KEY, _verify_blobs)
+                await _with_advisory_lock(VERIFY_LOCK_KEY, _verify_blobs)
             except Exception:
                 logger.exception("integrity sweep crashed; continuing")
             if settings.export_every_days > 0:
                 try:
-                    await _with_advisory_lock(PURGE_LOCK_KEY, _scheduled_export)
+                    await _with_advisory_lock(EXPORT_LOCK_KEY, _scheduled_export)
                 except Exception:
                     logger.exception("scheduled export crashed; continuing")
 
