@@ -14,6 +14,9 @@ export default function AccountSection() {
   const [enrollCode, setEnrollCode] = useState('')
   const [disable, setDisable] = useState({ password: '', code: '' })
   const [showDisable, setShowDisable] = useState(false)
+  // Account management is owner-only server-side; hide it for everyone else
+  // rather than offering buttons that come back 403.
+  const [isAdmin, setIsAdmin] = useState(false)
 
   const load = useCallback(() => {
     apiJson('/api/auth/users').then(setUsers).catch((e) => setError(e.message))
@@ -22,6 +25,7 @@ export default function AccountSection() {
   useEffect(() => {
     load()
     apiJson('/api/auth/totp').then((d) => setTotpEnabled(d.enabled)).catch(() => {})
+    apiJson('/api/auth/me').then((d) => setIsAdmin(!!d.is_admin)).catch(() => {})
   }, [load])
 
   async function startEnroll() {
@@ -225,9 +229,13 @@ export default function AccountSection() {
             <li key={u.id} className="rule-row">
               <div className="rule-main">
                 <strong>{u.email}</strong>
-                {u.is_me && <span className="rule-detail">this is you</span>}
+                <span className="rule-detail">
+                  {[u.is_me && 'this is you', u.is_admin && 'owner']
+                    .filter(Boolean)
+                    .join(' · ')}
+                </span>
               </div>
-              {!u.is_me && (
+              {isAdmin && !u.is_me && (
                 <button className="ghost danger" onClick={() => removeUser(u)}>
                   Remove
                 </button>
@@ -237,6 +245,7 @@ export default function AccountSection() {
         </ul>
       )}
 
+      {isAdmin && (
       <form className="rule-form" onSubmit={addUser}>
         <div className="rule-form-row">
           <input
@@ -260,6 +269,7 @@ export default function AccountSection() {
           </button>
         </div>
       </form>
+      )}
     </section>
   )
 }

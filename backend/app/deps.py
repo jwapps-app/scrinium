@@ -11,13 +11,6 @@ from app.security import decode_token
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def client_ip(request: Request) -> str:
-    # Behind the Cloudflare Tunnel the socket peer is always Cloudflare.
-    return request.headers.get("CF-Connecting-IP") or (
-        request.client.host if request.client else ""
-    )
-
-
 async def get_current_user(
     credentials: Annotated[
         HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
@@ -39,5 +32,20 @@ async def get_current_user(
     return user
 
 
+async def get_admin_user(
+    user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """Owner-only operations: managing accounts, changing settings that affect
+    the whole box, and running imports/exports. Without this every account in
+    the tenant could create co-owners or delete the owner, and any user could
+    pause processing or lower the archive-DPI cap for everyone."""
+    if not user.is_admin:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This action is limited to the library owner."
+        )
+    return user
+
+
 CurrentUser = Annotated[User, Depends(get_current_user)]
+AdminUser = Annotated[User, Depends(get_admin_user)]
 DB = Annotated[AsyncSession, Depends(get_db)]

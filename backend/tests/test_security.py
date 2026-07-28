@@ -301,3 +301,89 @@ async def test_account_rate_limit_survives_a_rotating_source_address(client):
         )
         codes.append(resp.status_code)
     assert 429 in codes, codes
+
+
+async def test_owner_only_actions_are_gated(client, auth, pdf_factory):
+    """A second account must not be able to create co-owners, delete the owner,
+    change global settings, or run import/export."""
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models import User
+
+    email = f"member-{uuid.uuid4().hex[:8]}@example.com"
+    created = await client.post(
+        "/api/auth/users", headers=auth, json={"email": email, "password": "password123"}
+    )
+    assert created.status_code == 201
+    # Added accounts are not owners.
+    async with SessionLocal() as session:
+        row = (
+            await session.execute(sa.select(User).where(User.email == email))
+        ).scalar_one()
+        assert row.is_admin is False
+        owner_id = (
+            await session.execute(
+                sa.select(User.id).where(User.is_admin.is_(True)).limit(1)
+            )
+        ).scalar_one()
+
+    tokens = (
+        await client.post(
+            "/api/auth/login", json={"email": email, "password": "password123"}
+        )
+    ).json()
+    member = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    assert (await client.get("/api/auth/me", headers=member)).json()["is_admin"] is False
+
+    # Cannot mint another account, nor delete the owner.
+    assert (
+        await client.post(
+            "/api/auth/users", headers=member,
+            json={"email": "x@example.com", "password": "password123"},
+        )
+    ).status_code == 403
+    assert (
+        await client.delete(f"/api/auth/users/{owner_id}", headers=member)
+    ).status_code == 403
+
+    # Cannot change settings that affect the whole box, or move the library.
+    assert (
+        await client.post("/api/settings/archive-dpi", headers=member, json={"dpi": 150})
+    ).status_code == 403
+    assert (
+        await client.post("/api/documents/processing", headers=member, json={"paused": True})
+    ).status_code == 403
+    assert (await client.post("/api/export", headers=member, json={})).status_code == 403
+    assert (await client.get("/api/export", headers=member)).status_code == 403
+
+    # But ordinary library work still works for them.
+    doc = await client.post(
+        "/api/documents", headers=member,
+        files={"file": ("member.pdf", pdf_factory(text="member doc"), "application/pdf")},
+    )
+    assert doc.status_code == 201
+    assert (await client.get("/api/documents", headers=member)).status_code == 200
+
+    # The owner is still able to do all of it.
+    assert (
+        await client.post("/api/settings/archive-dpi", headers=auth, json={"dpi": 300})
+    ).status_code == 200
+
+
+async def test_remove_user_rejects_a_malformed_id(client, auth):
+    """Was an uncaught ValueError -> 500."""
+    assert (
+        await client.delete("/api/auth/users/not-a-uuid", headers=auth)
+    ).status_code == 422
+
+
+async def test_duplicate_dismiss_requires_owned_documents(client, auth):
+    """Accepted arbitrary UUIDs and grew junk rows: there is no FK on the pair."""
+    resp = await client.post(
+        "/api/insights/duplicates/dismiss",
+        headers=auth,
+        json={"a": str(uuid.uuid4()), "b": str(uuid.uuid4())},
+    )
+    assert resp.status_code == 404

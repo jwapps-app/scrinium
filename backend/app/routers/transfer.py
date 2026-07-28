@@ -6,7 +6,7 @@ import json
 
 from fastapi import APIRouter, HTTPException, status
 
-from app.deps import DB, CurrentUser
+from app.deps import DB, AdminUser
 from app.services.app_state import get_value
 from app.services.export import EXPORT_STATUS, run_export
 from app.services.paperless_import import (
@@ -28,7 +28,7 @@ async def _current(db, key) -> dict:
 
 
 @router.get("/import/paperless")
-async def import_status(user: CurrentUser, db: DB) -> dict:
+async def import_status(user: AdminUser, db: DB) -> dict:
     state = await _current(db, IMPORT_STATUS)
     root = import_root()
     found = find_export(root)
@@ -51,7 +51,7 @@ def _spawn(coro) -> None:
 
 
 @router.post("/import/paperless")
-async def start_import(user: CurrentUser, db: DB) -> dict:
+async def start_import(user: AdminUser, db: DB) -> dict:
     state = await _current(db, IMPORT_STATUS)
     if state.get("state") == "running":
         raise HTTPException(status.HTTP_409_CONFLICT, "An import is already running")
@@ -66,12 +66,12 @@ async def start_import(user: CurrentUser, db: DB) -> dict:
 
 
 @router.get("/export")
-async def export_status(user: CurrentUser, db: DB) -> dict:
+async def export_status(user: AdminUser, db: DB) -> dict:
     return {"status": await _current(db, EXPORT_STATUS)}
 
 
 @router.post("/export")
-async def start_export(user: CurrentUser, db: DB, body: dict | None = None) -> dict:
+async def start_export(user: AdminUser, db: DB, body: dict | None = None) -> dict:
     state = await _current(db, EXPORT_STATUS)
     if state.get("state") == "running":
         raise HTTPException(status.HTTP_409_CONFLICT, "An export is already running")

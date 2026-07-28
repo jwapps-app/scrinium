@@ -22,6 +22,10 @@ class User(Base):
     totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Bumped on password change: tokens minted before the bump stop verifying.
     token_version: Mapped[int] = mapped_column(default=0, server_default="0")
+    # Owner rights: manage users, change global settings, run import/export.
+    # The first user (created by setup) is the owner; added users are not,
+    # so a family member's account can't create co-owners or delete the owner.
+    is_admin: Mapped[bool] = mapped_column(default=False, server_default="false")
     totp_enabled: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

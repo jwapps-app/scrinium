@@ -4,7 +4,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, status
 
 from app.config import settings
-from app.deps import DB, CurrentUser
+from app.deps import DB, AdminUser, CurrentUser
 from app.models import AppSetting
 from app.services.app_state import (
     ARCHIVE_MAX_DPI,
@@ -84,7 +84,7 @@ async def ocr_settings(user: CurrentUser, db: DB) -> dict:
 
 
 @router.post("/ocr")
-async def set_ocr_engine(body: dict, user: CurrentUser, db: DB) -> dict:
+async def set_ocr_engine(body: dict, user: AdminUser, db: DB) -> dict:
     """Runtime engine choice; empty string returns to the env default.
     Applies to jobs claimed from now on — no restart needed."""
     engine = (body.get("engine") or "").strip()
@@ -110,7 +110,7 @@ async def archive_dpi_settings(user: CurrentUser, db: DB) -> dict:
 
 
 @router.post("/archive-dpi")
-async def set_archive_dpi(body: dict, user: CurrentUser, db: DB) -> dict:
+async def set_archive_dpi(body: dict, user: AdminUser, db: DB) -> dict:
     """Runtime cap on archive image DPI. 0 disables downsampling; empty string
     returns to the env default. Applies to OCR and downsample jobs from now on."""
     raw = body.get("dpi")

@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy import update as sqla_update
 
-from app.deps import DB, CurrentUser
+from app.deps import DB, AdminUser, CurrentUser
 from app.models import Blob, Document, DocumentStatus, Job, JobStatus, Tag
 from app.schemas import (
     BulkActionRequest,
@@ -724,7 +724,7 @@ async def extract_dates(user: CurrentUser, db: DB) -> dict:
 
 
 @router.post("/processing")
-async def set_processing(body: dict, user: CurrentUser, db: DB) -> dict:
+async def set_processing(body: dict, user: AdminUser, db: DB) -> dict:
     """Pause/resume the worker queue. Pausing lets the current file finish
     and stops new claims and watch-folder sweeps — safe to restart the
     server or the Mac (Apple OCR host) without losing work or quality."""

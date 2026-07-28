@@ -121,3 +121,15 @@ def make_pdf(pages: int = 1, text: str = "hello") -> bytes:
 @pytest.fixture()
 def pdf_factory():
     return make_pdf
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Auth endpoints are rate limited per IP and per account. Tests share one
+    client (hence one source address), so without a reset the limiter carries
+    over and unrelated tests start getting 429s."""
+    from app.services.ratelimit import _HITS
+
+    _HITS.clear()
+    yield
+    _HITS.clear()

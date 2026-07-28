@@ -1,11 +1,13 @@
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from starlette.concurrency import run_in_threadpool
-from app.services.ratelimit import limit_account, rate_limit
 from sqlalchemy import func, select
+from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
-from app.deps import DB, CurrentUser
+from app.deps import DB, AdminUser, CurrentUser
 from app.models import Tenant, User
+from app.services.ratelimit import limit_account, rate_limit
 from app.schemas import (
     AuthStatus,
     LoginRequest,
@@ -54,6 +56,7 @@ async def setup(body: SetupRequest, db: DB) -> TokenPair:
         tenant_id=tenant.id,
         email=body.email.lower(),
         password_hash=await run_in_threadpool(hash_password, body.password),
+        is_admin=True,  # first user owns the library
     )
     db.add(user)
     await db.flush()
@@ -129,6 +132,17 @@ async def change_password(body: dict, user: CurrentUser, db: DB) -> dict:
     }
 
 
+@router.get("/me")
+async def me(user: CurrentUser) -> dict:
+    """Who am I — used by the UI to hide owner-only controls."""
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "is_admin": user.is_admin,
+        "totp_enabled": user.totp_enabled,
+    }
+
+
 @router.get("/users")
 async def list_users(user: CurrentUser, db: DB) -> list[dict]:
     rows = (
@@ -143,12 +157,18 @@ async def list_users(user: CurrentUser, db: DB) -> list[dict]:
         .all()
     )
     return [
-        {"id": str(u.id), "email": u.email, "is_me": u.id == user.id} for u in rows
+        {
+            "id": str(u.id),
+            "email": u.email,
+            "is_me": u.id == user.id,
+            "is_admin": u.is_admin,
+        }
+        for u in rows
     ]
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)
-async def add_user(body: SetupRequest, user: CurrentUser, db: DB) -> dict:
+async def add_user(body: SetupRequest, user: AdminUser, db: DB) -> dict:
     email = body.email.lower()
     existing = (
         await db.execute(select(User).where(User.email == email))
@@ -166,10 +186,8 @@ async def add_user(body: SetupRequest, user: CurrentUser, db: DB) -> dict:
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_user(user_id: str, user: CurrentUser, db: DB) -> None:
-    import uuid as _uuid
-
-    target = await db.get(User, _uuid.UUID(user_id))
+async def remove_user(user_id: uuid.UUID, user: AdminUser, db: DB) -> None:
+    target = await db.get(User, user_id)
     if target is None or target.tenant_id != user.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
     if target.id == user.id:

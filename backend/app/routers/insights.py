@@ -339,7 +339,9 @@ async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
         detail_rows = await db.execute(
             select(
                 Document.id, Document.title, Document.page_count, Document.created_at
-            ).where(Document.id.in_(ids))
+            ).where(
+                Document.id.in_(ids), Document.tenant_id == user.tenant_id
+            )
         )
         for doc_id, title, page_count, created_at in detail_rows:
             docs[doc_id] = {
@@ -369,7 +371,13 @@ async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
         )
         text_rows = (
             await db.execute(
-                select(Document.id, sample).where(Document.id.in_(ids))
+                select(Document.id, sample).where(
+                    Document.id.in_(ids),
+                    # Restated here rather than relied upon from the fingerprint
+                    # scan above: this query reads document *text*, so its tenant
+                    # guarantee should be visible in the query itself.
+                    Document.tenant_id == user.tenant_id,
+                )
             )
         ).all()
         grams = await asyncio.to_thread(
@@ -414,6 +422,19 @@ async def dismiss_duplicate(body: dict, user: CurrentUser, db: DB) -> dict:
         from fastapi import HTTPException, status as http_status
 
         raise HTTPException(http_status.HTTP_422_UNPROCESSABLE_ENTITY, "a and b required")
+    # Both documents must be the caller's, or this accepts arbitrary UUIDs and
+    # accumulates junk rows forever (there is no FK on the pair columns).
+    owned = (
+        await db.execute(
+            select(func.count(Document.id)).where(
+                Document.id.in_([a, b]), Document.tenant_id == user.tenant_id
+            )
+        )
+    ).scalar_one()
+    if owned != 2:
+        from fastapi import HTTPException, status as http_status
+
+        raise HTTPException(http_status.HTTP_404_NOT_FOUND, "Document not found")
     lo, hi = sorted((a, b))
     existing = await db.get(DismissedDuplicate, (user.tenant_id, lo, hi))
     if existing is None:
