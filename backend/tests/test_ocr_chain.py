@@ -168,3 +168,32 @@ def test_stall_kill_skips_remedies_and_rescues(monkeypatch, tmp_path):
     )
     assert len(calls) == 1  # no pointless remedy retries after a stall
     assert result.engine == "text-only"
+
+
+def test_ingest_uses_the_configured_ocr_mode():
+    """New documents must inherit the configured mode. The old hardcoded
+    "skip" meant ocrmypdf left any page that already carried text alone — and
+    scanners routinely emit an empty or invisible text layer, so a legible scan
+    could land with nothing searchable in it."""
+    import inspect
+
+    from app.config import settings
+    from app.services import intake
+
+    assert settings.ocr_mode == "redo"
+    source = inspect.getsource(intake.ingest_file)
+    assert 'mode=settings.ocr_mode' in source
+    assert 'mode="skip"' not in source
+
+
+def test_ocr_mode_rejects_an_unknown_value():
+    """A typo in the env should fail at startup, not silently fall back."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    for good in ("skip", "redo", "force"):
+        assert Settings(ocr_mode=good).ocr_mode == good
+    with pytest.raises(ValidationError):
+        Settings(ocr_mode="sometimes")

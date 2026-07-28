@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PLACEHOLDER_SECRETS = {"dev-secret-change-me", "changeme", "secret"}
@@ -42,6 +43,19 @@ class Settings(BaseSettings):
     # more than ~300 DPI. 0 disables downsampling entirely. Runtime-adjustable
     # via Settings (app_state ARCHIVE_MAX_DPI).
     archive_max_dpi: int = 300
+    # How OCR treats pages that already carry text, for documents arriving by
+    # upload, watched folder or email:
+    #   redo  — re-OCR pages whose text looks machine-generated, keeping
+    #           genuine digital text intact (verified: a born-digital PDF comes
+    #           through byte-identical)
+    #   skip  — leave any page that has text alone
+    #   force — rasterize and re-OCR everything, discarding existing text
+    # `skip` is faster but trusts the incoming file: plenty of scanners and
+    # converters emit an empty or invisible text layer, and ocrmypdf then skips
+    # OCR entirely, leaving a perfectly legible scan with no searchable text.
+    # `redo` catches those at ingest instead of leaving them for the weak-OCR
+    # review, at the cost of some extra work on documents that didn't need it.
+    ocr_mode: str = Field(default="redo", pattern="^(skip|redo|force)$")
     # Auto-straighten sideways scans: ocrmypdf runs Tesseract OSD per page and
     # rotates only the pages that need it. An upright page reports "rotate 0"
     # regardless of confidence, so the threshold only gates non-zero rotations

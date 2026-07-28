@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import Blob, Document, DocumentStatus, Job, Tag
 from app.services import similarity, storage
 from app.services.classify import classify_document
@@ -121,7 +122,7 @@ async def ingest_file(
     session.add(doc)
     await session.flush()
     if not captured:
-        session.add(Job(document_id=doc.id, kind="ingest", mode="skip"))
+        session.add(Job(document_id=doc.id, kind="ingest", mode=settings.ocr_mode))
         await session.flush()
     else:
         # Captured docs skip the worker entirely, so classify here.
