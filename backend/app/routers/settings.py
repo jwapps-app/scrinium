@@ -142,14 +142,36 @@ async def recheck_integrity(user: AdminUser, db: DB) -> dict:
     means the next passes rebuild it honestly. Useful after a storage fault
     that made files temporarily unreadable.
     """
+    import json as _json
+    import uuid as _uuid
+
     from app.models import Blob
 
+    raw = await get_value(db, "integrity_status")
+    try:
+        state = _json.loads(raw) if raw else {}
+    except ValueError:
+        state = {}
+    flagged = set(state.get("corrupt", [])) | set(state.get("unreadable", []))
+
     await set_value(db, "integrity_status", "")
-    # Force the whole store back into the queue rather than only the batch
-    # that happened to fail.
-    await db.execute(sqla_update(Blob).values(verified_at=None))
+    # Re-queue only what was flagged, not the whole store: clearing every
+    # verified_at would drop the "N/M verified" figure to zero and take days
+    # to climb back at one batch an hour, which looks worse than the problem
+    # being cleared. The flagged blobs sort to the front and are re-checked
+    # within the hour.
+    ids = []
+    for raw_id in flagged:
+        try:
+            ids.append(_uuid.UUID(raw_id))
+        except ValueError:
+            continue
+    if ids:
+        await db.execute(
+            sqla_update(Blob).where(Blob.id.in_(ids)).values(verified_at=None)
+        )
     await db.flush()
-    return {"cleared": True}
+    return {"cleared": True, "requeued": len(ids)}
 
 
 @router.get("/health")
