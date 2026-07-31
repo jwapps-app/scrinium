@@ -51,12 +51,29 @@ export default function HealthSection() {
   ]
   if (health.integrity && health.integrity.total > 0) {
     const bad = health.integrity.corrupt.length
+    const unread = (health.integrity.unreadable || []).length
+    // Unreadable is a storage problem, not damage: say so plainly rather than
+    // reporting "corrupt", which sends you hunting for lost documents when the
+    // real answer is that a disk or mount went away.
+    let value
+    let cls
+    if (bad) {
+      value = `${bad} corrupt!`
+      cls = 'chip-flagged'
+    } else if (unread) {
+      value = `${unread} unreadable — check storage`
+      cls = 'chip-warn'
+    } else {
+      value = `${health.integrity.verified.toLocaleString()}/${health.integrity.total.toLocaleString()} verified`
+      cls = 'chip-ready'
+    }
     chips.push({
       label: 'Integrity',
-      value: bad
-        ? `${bad} corrupt!`
-        : `${health.integrity.verified.toLocaleString()}/${health.integrity.total.toLocaleString()} verified`,
-      cls: bad ? 'chip-flagged' : 'chip-ready',
+      value,
+      cls,
+      title: unread && health.integrity.unreadable_reason
+        ? `Could not open these files: ${health.integrity.unreadable_reason}`
+        : undefined,
     })
   }
   if (health.disk) {
@@ -73,7 +90,9 @@ export default function HealthSection() {
       {chips.map((c) => (
         <span key={c.label} className="health-chip">
           <span className="health-label">{c.label}</span>
-          <span className={`chip ${c.cls}`}>{c.value}</span>
+          <span className={`chip ${c.cls}`} title={c.title}>
+            {c.value}
+          </span>
         </span>
       ))}
     </div>

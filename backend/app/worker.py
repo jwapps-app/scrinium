@@ -538,7 +538,14 @@ async def _verify_blobs(batch: int = 300) -> None:
             return
 
         def check(items):
-            bad = []
+            """Separate 'the bytes changed' from 'I could not read the file'.
+
+            Conflating them is actively misleading: a dropped mount, a dead
+            disk or a permission change makes every blob in the batch
+            unreadable at once, which reads as mass corruption when it is an
+            availability problem that resolves itself when storage returns.
+            """
+            corrupt, unreadable = [], []
             for blob_id, sha in items:
                 path = _storage.blob_file(blob_id)
                 try:
@@ -546,19 +553,22 @@ async def _verify_blobs(batch: int = 300) -> None:
                     with open(path, "rb") as f:
                         for chunk in iter(lambda: f.read(1024 * 1024), b""):
                             digest.update(chunk)
-                    if digest.hexdigest() != sha:
-                        bad.append(str(blob_id))
-                except OSError:
-                    bad.append(str(blob_id))
-            return bad
+                except OSError as exc:
+                    unreadable.append((str(blob_id), str(exc)))
+                    continue
+                if digest.hexdigest() != sha:
+                    corrupt.append(str(blob_id))
+            return corrupt, unreadable
 
-        bad = await asyncio.to_thread(
+        corrupt, unreadable = await asyncio.to_thread(
             check, [(b.id, b.sha256) for b in blobs]
         )
         now_ts = datetime.now(timezone.utc)
-        bad_set = set(bad)
+        bad_set = set(corrupt)
+        unreadable_ids = {bid for bid, _ in unreadable}
         for blob in blobs:
-            if str(blob.id) not in bad_set:
+            key = str(blob.id)
+            if key not in bad_set and key not in unreadable_ids:
                 blob.verified_at = now_ts
 
         raw = await get_value(session, "integrity_status")
@@ -566,15 +576,32 @@ async def _verify_blobs(batch: int = 300) -> None:
             state = _json.loads(raw) if raw else {}
         except ValueError:
             state = {}
-        known_bad = set(state.get("corrupt", [])) | bad_set
+        # Self-healing: a blob re-checked in this pass and now good drops off
+        # the list. The old union kept every id forever, so one transient
+        # storage fault branded blobs permanently with no way to clear them.
+        rechecked = {str(b.id) for b in blobs}
+        known_bad = (set(state.get("corrupt", [])) - rechecked) | bad_set
         state = {
             "checked_at": now_ts.isoformat(),
             "corrupt": sorted(known_bad),
+            # Current-pass snapshot, deliberately not accumulated: this is a
+            # statement about storage right now, and it clears by itself.
+            "unreadable": sorted(unreadable_ids),
+            "unreadable_reason": unreadable[0][1] if unreadable else None,
         }
         await set_value(session, "integrity_status", _json.dumps(state))
         await session.commit()
-        if bad:
-            logger.error("INTEGRITY: %d blob(s) failed sha256 verification: %s", len(bad), bad)
+        if corrupt:
+            logger.error(
+                "INTEGRITY: %d blob(s) failed sha256 verification: %s",
+                len(corrupt), corrupt,
+            )
+        if unreadable:
+            logger.error(
+                "STORAGE: %d blob(s) could not be read (%s) — this is an "
+                "availability problem, not corruption",
+                len(unreadable), unreadable[0][1],
+            )
 
 
 async def _expiry_notice() -> None:

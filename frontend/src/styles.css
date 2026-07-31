@@ -1613,6 +1613,13 @@ button.linklike {
   color: var(--error);
 }
 
+/* Needs attention but isn't damage — e.g. blobs that couldn't be read because
+   storage went away, as distinct from bytes that actually changed. */
+.chip-warn {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  color: var(--warn);
+}
+
 .snippet {
   color: var(--muted);
   font-size: 0.85rem;

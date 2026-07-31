@@ -582,3 +582,67 @@ async def test_members_can_still_do_the_everyday_work(client, auth, pdf_factory)
             f"/api/documents/{doc['id']}/share", headers=member, json={"days": 7}
         )
     ).status_code in (200, 201)
+
+
+async def test_unreadable_blobs_are_not_reported_as_corrupt(tmp_path, monkeypatch):
+    """A storage fault makes every blob in the batch unreadable at once. Calling
+    that "corrupt" sends the operator hunting for lost documents when the real
+    answer is that a disk went away — and the old union-only list branded them
+    permanently, with no way to clear it from the UI."""
+    import json
+
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models import Blob
+    from app.services.app_state import get_value
+    from app.worker import _verify_blobs
+
+    good = tmp_path / "good.bin"
+    good.write_bytes(b"real content")
+    import hashlib
+
+    digest = hashlib.sha256(good.read_bytes()).hexdigest()
+
+    present_id, absent_id = uuid.uuid4(), uuid.uuid4()
+    async with SessionLocal() as s:
+        s.add(Blob(id=present_id, sha256=digest, size_bytes=12, mime_type="application/pdf"))
+        s.add(Blob(id=absent_id, sha256="0" * 64, size_bytes=1, mime_type="application/pdf"))
+        await s.commit()
+
+    from app.services import storage
+
+    def fake_path(blob_id):
+        # One readable and correct, one that cannot be opened at all.
+        return good if blob_id == present_id else tmp_path / "gone.bin"
+
+    monkeypatch.setattr(storage, "blob_file", fake_path)
+    await _verify_blobs(batch=500)
+
+    async with SessionLocal() as s:
+        state = json.loads(await get_value(s, "integrity_status") or "{}")
+        # The missing file is unreadable, NOT corrupt.
+        assert str(absent_id) in state.get("unreadable", [])
+        assert str(absent_id) not in state.get("corrupt", [])
+        assert state.get("unreadable_reason")
+        # The good one verified and is recorded as such.
+        verified = (
+            await s.execute(sa.select(Blob.verified_at).where(Blob.id == present_id))
+        ).scalar_one()
+        assert verified is not None
+
+    # Storage comes back: the unreadable entry must clear itself rather than
+    # persisting the way the old union-only list did.
+    monkeypatch.setattr(storage, "blob_file", lambda _bid: good)
+    async with SessionLocal() as s:
+        await s.execute(sa.update(Blob).values(verified_at=None))
+        await s.execute(
+            sa.update(Blob).where(Blob.id == absent_id).values(sha256=digest)
+        )
+        await s.commit()
+    await _verify_blobs(batch=500)
+
+    async with SessionLocal() as s:
+        state = json.loads(await get_value(s, "integrity_status") or "{}")
+        assert state.get("unreadable") == []
+        assert str(absent_id) not in state.get("corrupt", [])

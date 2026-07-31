@@ -4,6 +4,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, status
 
 from app.config import settings
+from sqlalchemy import update as sqla_update
+
 from app.deps import DB, AdminUser, CurrentUser
 from app.models import AppSetting
 from app.services.app_state import (
@@ -132,6 +134,24 @@ async def set_archive_dpi(body: dict, user: AdminUser, db: DB) -> dict:
     return {"dpi": dpi, "dpi_override": str(dpi)}
 
 
+@router.post("/integrity/recheck")
+async def recheck_integrity(user: AdminUser, db: DB) -> dict:
+    """Discard the stored integrity verdict and re-verify from scratch.
+
+    The sweep re-checks oldest-verified blobs first, so clearing the record
+    means the next passes rebuild it honestly. Useful after a storage fault
+    that made files temporarily unreadable.
+    """
+    from app.models import Blob
+
+    await set_value(db, "integrity_status", "")
+    # Force the whole store back into the queue rather than only the batch
+    # that happened to fail.
+    await db.execute(sqla_update(Blob).values(verified_at=None))
+    await db.flush()
+    return {"cleared": True}
+
+
 @router.get("/health")
 async def system_health(user: CurrentUser, db: DB) -> dict:
     """One-glance operational status for the Settings page."""
@@ -228,6 +248,12 @@ async def system_health(user: CurrentUser, db: DB) -> dict:
             "verified": verified,
             "total": total_blobs,
             "corrupt": integrity.get("corrupt", []),
+            # Distinct from corrupt: the file could not be opened at all.
+            # That is a storage-availability problem and resolves itself,
+            # so it must not read as "your documents are damaged".
+            "unreadable": integrity.get("unreadable", []),
+            "unreadable_reason": integrity.get("unreadable_reason"),
+            "checked_at": integrity.get("checked_at"),
         },
     }
 
