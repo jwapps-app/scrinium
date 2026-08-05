@@ -3,4 +3,3 @@
 export const APP_NAME = 'Scrinium'
 export const APP_TAGLINE = 'Your documents, searchable.'
 export const APP_URL = 'https://scrinium.example.com'
-export const SUPPORT_EMAIL = 'support@example.com'
