@@ -18,4 +18,4 @@ pyzbar==0.1.*
 defusedxml==0.7.*
 # Backtracking-safe matching: unlike stdlib re, it supports a wall-clock
 # timeout, so a user-authored rule pattern cannot run forever.
-regex==2024.*
+regex==2026.*
