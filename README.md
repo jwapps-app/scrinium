@@ -39,6 +39,11 @@ frontend/   React + Vite PWA; nginx serves the build and proxies /api
 sidecar/    Swift Apple Vision OCR helper for a Mac host (see its README)
 ```
 
+The iOS companion app is **not in this repository**. It is a native SwiftUI
+client that talks to the same API as the PWA — nothing here depends on it, and
+the server is fully usable without it. The PWA installs to an iOS home screen
+and covers the same ground if you want a phone client.
+
 ## Dev loop
 
 ```bash
