@@ -331,7 +331,9 @@ export default function Shell({ children }) {
                         ? 'preparing…'
                         : r.phase === 'finishing'
                           ? 'finishing…'
-                          : formatEta(r.eta_seconds) || ''}
+                          : r.phase === 'text-only'
+                            ? 'reading text…'
+                            : formatEta(r.eta_seconds) || ''}
                     </span>
                   </div>
                   <ProgressBar value={r.progress} />

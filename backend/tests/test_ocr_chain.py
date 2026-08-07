@@ -197,3 +197,61 @@ def test_ocr_mode_rejects_an_unknown_value():
         assert Settings(ocr_mode=good).ocr_mode == good
     with pytest.raises(ValidationError):
         Settings(ocr_mode="sometimes")
+
+
+def test_fallback_keeps_page_order_when_run_in_parallel(monkeypatch, tmp_path):
+    """Pages are OCR'd concurrently but must be stitched back in page order."""
+    import time
+
+    monkeypatch.setattr(T.settings, "ocr_jobs", 4)
+    monkeypatch.setattr(T.settings, "ocr_fallback_minutes", 60)
+    # Finish out of order: later pages return first.
+    monkeypatch.setattr(
+        T, "_tesseract_image",
+        lambda p: (time.sleep(0.01 * (10 - int(p.stem[3:]))), f"[{p.stem}]")[1],
+    )
+    pages = [Path(f"pg-{i:03d}.png") for i in range(1, 11)]
+
+    text = T._ocr_pages(pages, tmp_path)
+
+    assert text == "\f".join(f"[pg-{i:03d}]" for i in range(1, 11))
+
+
+def test_fallback_reports_progress_the_worker_can_read(monkeypatch, tmp_path):
+    """Without this the bar sits on whatever the failed ocrmypdf run left
+    behind, and a multi-hour fallback looks like a wedged job."""
+    import json
+
+    monkeypatch.setattr(T.settings, "ocr_jobs", 2)
+    monkeypatch.setattr(T.settings, "ocr_fallback_minutes", 60)
+    monkeypatch.setattr(T, "_tesseract_image", lambda p: "x")
+
+    T._ocr_pages([Path(f"pg-{i}.png") for i in range(4)], tmp_path)
+
+    report = json.loads((tmp_path / "progress").read_text())
+    assert report == {"phase": "text-only", "done": 4, "total": 4}
+
+
+def test_fallback_budget_keeps_partial_text(monkeypatch, tmp_path):
+    """Expiring must not throw away the pages already read."""
+    monkeypatch.setattr(T.settings, "ocr_jobs", 1)
+    monkeypatch.setattr(T.settings, "ocr_fallback_minutes", 0)  # already expired
+    monkeypatch.setattr(T, "_tesseract_image", lambda p: f"[{p.stem}]")
+    pages = [Path(f"pg-{i:03d}.png") for i in range(1, 21)]
+
+    text = T._ocr_pages(pages, tmp_path)
+
+    assert text.startswith("[pg-001]")
+    assert text.count("[pg-") == 1          # stopped after the first page
+    assert text.endswith("\f" * 19)         # the rest stay as empty slots
+
+
+def test_one_bad_page_does_not_sink_the_document(monkeypatch):
+    """This is already the last-resort path; a page that times out is dropped."""
+    import subprocess
+
+    def explode(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="tesseract", timeout=600)
+
+    monkeypatch.setattr(T.subprocess, "run", explode)
+    assert T._tesseract_image(Path("pg-001.png")) == ""

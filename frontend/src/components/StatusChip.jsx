@@ -9,6 +9,7 @@ const PHASE_LABELS = {
   preparing: 'Preparing',
   ocr: 'Processing',
   finishing: 'Finishing',
+  'text-only': 'Reading text',
 }
 
 export default function StatusChip({ status, progress = null, phase = null }) {

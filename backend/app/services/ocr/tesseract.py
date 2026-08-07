@@ -1,7 +1,9 @@
+import json
 import logging
 import os
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from app.config import settings
@@ -15,6 +17,18 @@ PROGRESS_PLUGIN = "app.services.ocr.progress_plugin"
 def progress_env(workdir: Path) -> dict[str, str]:
     """Env for ocrmypdf subprocesses: page progress lands in the workdir."""
     return {**os.environ, "SCRINIUM_PROGRESS_FILE": str(workdir / "progress")}
+
+
+def write_progress(workdir: Path, phase: str, done: int, total: int) -> None:
+    """Write the same JSON ocrmypdf's plugin writes (see progress_plugin.py),
+    for the stages that run in this process instead of in ocrmypdf."""
+    try:
+        (workdir / "progress").write_text(
+            json.dumps({"phase": phase, "done": done, "total": total})
+        )
+    except OSError:
+        pass  # never let progress reporting break OCR
+
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 
@@ -187,14 +201,20 @@ def extract_text(pdf: Path) -> str:
 
 
 def _tesseract_image(image: Path) -> str:
-    result = subprocess.run(
-        ["tesseract", str(image), "stdout", "-l", settings.ocr_languages],
-        capture_output=True,
-        stdin=subprocess.DEVNULL,
-        encoding="utf-8",
-        errors="replace",
-        timeout=600,
-    )
+    try:
+        result = subprocess.run(
+            ["tesseract", str(image), "stdout", "-l", settings.ocr_languages],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",
+            timeout=600,
+        )
+    except subprocess.SubprocessError as exc:
+        # One bad page must not sink a 900-page book: this is already the
+        # last-resort path, so drop the page and keep the rest.
+        logger.warning("tesseract failed on %s: %s", image.name, str(exc)[:200])
+        return ""
     return result.stdout if result.returncode == 0 else ""
 
 
@@ -244,7 +264,43 @@ def text_only_fallback(source: Path, workdir: Path) -> str:
         raise OCRError(
             f"poppler rasterize failed: {result.stderr.strip()[:1000]}"
         )
-    return "\f".join(_tesseract_image(p) for p in pages)
+    return _ocr_pages(pages, workdir)
+
+
+def _ocr_pages(pages: list[Path], workdir: Path) -> str:
+    """OCR rasterized pages, reporting progress and honoring a wall clock.
+
+    Done page-at-a-time and silently, this is where a big book disappears: the
+    progress file still holds whatever the failed ocrmypdf run last wrote, so
+    the bar parks at some arbitrary percentage for hours while a worker slot
+    stays occupied and nothing is logged until the very end. Report the real
+    phase, use the page parallelism ocrmypdf would have used, and give up with
+    partial text rather than never giving up at all.
+    """
+    total = len(pages)
+    texts = [""] * total
+    deadline = time.monotonic() + settings.ocr_fallback_minutes * 60
+    write_progress(workdir, "text-only", 0, total)
+    pool = ThreadPoolExecutor(max_workers=max(1, settings.ocr_jobs))
+    try:
+        pending = {pool.submit(_tesseract_image, p): i for i, p in enumerate(pages)}
+        for done, future in enumerate(as_completed(pending), start=1):
+            texts[pending[future]] = future.result()
+            write_progress(workdir, "text-only", done, total)
+            if time.monotonic() > deadline:
+                logger.warning(
+                    "text-only fallback stopped at %d/%d pages after %d minutes; "
+                    "keeping the text read so far",
+                    done,
+                    total,
+                    settings.ocr_fallback_minutes,
+                )
+                break
+    finally:
+        # Pages not yet started are dropped; ones already running end on their
+        # own timeout. Either way this call does not block the worker.
+        pool.shutdown(wait=False, cancel_futures=True)
+    return "\f".join(texts)
 
 
 def process_with_fallbacks(
@@ -258,12 +314,18 @@ def process_with_fallbacks(
             archive_path=archive, text=extract_text(archive), engine=engine
         )
     except OCRError as exc:
+        # Logged on the way in, not on the way out: on a long document the
+        # fallback runs for hours, and a line that only appears afterwards is
+        # no help to anyone wondering what the worker is doing.
+        logger.warning(
+            "%s: ocrmypdf failed (%s); starting text-only fallback",
+            original.name,
+            str(exc)[:200],
+        )
         text = text_only_fallback(original, workdir)
         if text.strip():
             logger.warning(
-                "%s: ocrmypdf failed (%s); stored text-only, original preserved",
-                original.name,
-                str(exc)[:200],
+                "%s: stored text-only, original preserved", original.name
             )
             return OCRResult(archive_path=None, text=text, engine="text-only")
         raise

@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     # Tesseract may healthily grind for hours. Hard ceiling as a backstop.
     ocr_stall_minutes: int = 30
     ocr_max_hours: int = 24
+    # Budget for the text-only fallback, which OCRs page by page and cannot be
+    # watched the way an ocrmypdf run can. On expiry it keeps the pages it got
+    # rather than throwing the work away.
+    ocr_fallback_minutes: int = 180
 
     worker_poll_seconds: float = 2.0
     # Documents processed at once per worker container. Raise to fill the
