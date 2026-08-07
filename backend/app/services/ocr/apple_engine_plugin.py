@@ -11,6 +11,7 @@ top = (1 - y_max) * height and bottom = (1 - y_min) * height.
 """
 
 import html
+import re
 from argparse import Namespace
 from pathlib import Path
 
@@ -54,6 +55,22 @@ def _recognize(input_file: Path) -> dict:
     return resp.json()
 
 
+# XML 1.0 forbids most control characters outright, and there is no way to
+# escape them — html.escape() only handles & < >. Vision occasionally returns
+# one (and can return an unpaired surrogate for an odd glyph), which lands in
+# the hOCR and makes ocrmypdf's ElementTree.parse throw "not well-formed".
+# That kills the whole run, so the document falls through the remedy chain to
+# --force-ocr and re-rasterizes every page — for one stray byte.
+_XML_ILLEGAL = re.compile(
+    "[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd"
+    "\U00010000-\U0010ffff]"
+)
+
+
+def _xml_safe(text: str) -> str:
+    return _XML_ILLEGAL.sub("", text)
+
+
 def _to_hocr(result: dict) -> str:
     width, height = result["width"], result["height"]
     lines = []
@@ -62,7 +79,7 @@ def _to_hocr(result: dict) -> str:
         left, right = round(x0 * width), round(x1 * width)
         top, bottom = round((1 - y1) * height), round((1 - y0) * height)
         conf = round(block.get("confidence", 1.0) * 100)
-        text = html.escape(block["text"])
+        text = html.escape(_xml_safe(block["text"]))
         # Vision reports whole lines, not words; emit each line as a single
         # ocrx_word spanning the line box. Positioning is line-accurate.
         lines.append(
@@ -112,7 +129,8 @@ class AppleVisionEngine(OcrEngine):
         result = _recognize(input_file)
         output_hocr.write_text(_to_hocr(result), encoding="utf-8")
         output_text.write_text(
-            "\n".join(b["text"] for b in result.get("blocks", [])), encoding="utf-8"
+            _xml_safe("\n".join(b["text"] for b in result.get("blocks", []))),
+            encoding="utf-8",
         )
 
     @staticmethod
