@@ -39,12 +39,18 @@ def test_rotate_flags_survive_force_raster_fallback(monkeypatch):
 def test_remedy_chain_shape():
     chain = T.pdfa_fallback_commands(BASE_CMD)
     labels = [label for label, _ in chain]
-    assert labels == ["pdfa", "pdfa-rgb", "force-raster"]
+    assert labels == ["pdfa", "pdfa-rgb", "plain-pdf", "force-raster"]
 
     _, rgb = chain[1]
     assert "--color-conversion-strategy" in rgb and "RGB" in rgb
 
-    _, force = chain[2]
+    # Same pages and same OCR mode; only the PDF/A container is given up.
+    _, plain = chain[2]
+    assert plain[plain.index("--output-type") + 1] == "pdf"
+    assert "--skip-text" in plain
+    assert "--force-ocr" not in plain
+
+    _, force = chain[3]
     assert "--force-ocr" in force
     assert "--continue-on-soft-render-error" in force
     # mode flags dropped (force-ocr is exclusive), output downgraded to pdf
@@ -79,7 +85,10 @@ def test_escalates_on_generic_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(T, "_run_watched", watched)
     T.run_ocrmypdf(BASE_CMD, tmp_path)  # should not raise
     assert len(calls) == 3
-    assert "--force-ocr" in calls[2]
+    # Third rung is plain-pdf: PDF/A dropped, pages and mode untouched.
+    assert "--force-ocr" not in calls[2]
+    assert calls[2][calls[2].index("--output-type") + 1] == "pdf"
+    assert "--skip-text" in calls[2]
 
 
 def test_unfixable_stops_immediately(monkeypatch, tmp_path):
@@ -95,7 +104,7 @@ def test_total_failure_raises_with_last_error(monkeypatch, tmp_path):
     monkeypatch.setattr(T, "_run_watched", watched)
     with pytest.raises(T.OCRError, match="JPEG data is corrupt"):
         T.run_ocrmypdf(BASE_CMD, tmp_path)
-    assert len(calls) == 3  # walked the whole chain
+    assert len(calls) == 4  # walked the whole chain
 
 
 def test_text_only_fallback_rescues(monkeypatch, tmp_path):
@@ -290,3 +299,48 @@ def test_escalation_logs_why_not_just_that(monkeypatch, tmp_path, caplog):
     assert escalation, "escalation must be logged"
     assert "rangecheck in setscreen" in escalation[0].getMessage()
     assert "exit 7" in escalation[0].getMessage()
+
+
+def test_chain_tries_plain_pdf_before_rasterizing_everything():
+    """PDF/A conversion failing says nothing about whether the page content
+    is readable. Dropping to a full re-raster turns a born-digital page into
+    a picture of itself to fix a problem it does not have."""
+    labels = [label for label, _ in T.pdfa_fallback_commands(BASE_CMD)]
+
+    assert labels == ["pdfa", "pdfa-rgb", "plain-pdf", "force-raster"]
+
+    chain = dict(T.pdfa_fallback_commands(BASE_CMD))
+    plain = chain["plain-pdf"]
+    # Same pages, same OCR mode — only the archival container is given up.
+    assert "--output-type" in plain and plain[plain.index("--output-type") + 1] == "pdf"
+    assert "--skip-text" in plain, "must keep the requested mode"
+    assert "--force-ocr" not in plain, "must not re-rasterize at this rung"
+    # And it still precedes the nuclear option.
+    assert labels.index("plain-pdf") < labels.index("force-raster")
+
+
+
+def test_error_logging_keeps_the_reason_not_the_licence_banner():
+    """Ghostscript leads with a copyright banner; the reason is the last line."""
+    stderr = (
+        "GPL Ghostscript 10.05.1 (2025-04-29)\n"
+        "Copyright (C) 2025 Artifex Software, Inc.  All rights reserved.\n"
+        "This software is supplied under the GNU AGPLv3 and comes with\n"
+        "NO WARRANTY: see the file COPYING for details.\n"
+        "Processing pages 1 through 8.\n"
+        "Loading font Helvetica (or substitute) from /usr/share/...\n"
+        "SubprocessOutputError: Ghostscript PDF/A rendering failed\n"
+    )
+
+    kept = T._meaningful_error(stderr)
+
+    assert "Ghostscript PDF/A rendering failed" in kept
+    assert "Copyright" not in kept
+    assert "AGPLv3" not in kept
+    assert "Loading font" not in kept
+
+
+def test_meaningful_error_falls_back_when_everything_is_noise():
+    """Never swallow the message entirely just because it looks like banner."""
+    assert T._meaningful_error("GPL Ghostscript 10.05.1\n").startswith("GPL Ghostscript")
+    assert T._meaningful_error("") == ""

@@ -69,9 +69,18 @@ def pdfa_fallback_commands(cmd: list[str]) -> list[tuple[str, list[str]]]:
       1. as requested (strict PDF/A, honoring skip/redo/force)
       2. + --color-conversion-strategy RGB — normalizes print-shop color
          spaces (DeviceN/spot) that Ghostscript won't carry into PDF/A
-      3. --force-ocr --output-type pdf — rebuilds every page from a fresh
+      3. --output-type pdf — same pages, same OCR, minus the PDF/A
+         conversion that just failed. Costs only the archival container;
+         a born-digital page keeps its real, selectable text
+      4. --force-ocr --output-type pdf — rebuilds every page from a fresh
          raster, discarding bad halftone dictionaries (setscreen rangecheck)
          and corrupt embedded JPEGs; plain PDF, tolerating soft render errors
+
+    Step 3 exists because attempts 1 and 2 fail inside Ghostscript's PDF/A
+    conversion, which says nothing about whether the page content is
+    readable. Going straight from there to a full re-raster flattens text
+    documents into pictures of themselves to solve a problem they don't
+    have.
 
     A final Ghostscript-free text-only path (see text_only_fallback) runs
     only if all of these fail.
@@ -84,6 +93,9 @@ def pdfa_fallback_commands(cmd: list[str]) -> list[tuple[str, list[str]]]:
 
     rgb = cmd + ["--color-conversion-strategy", "RGB"]
 
+    # Keep the original pages and the requested mode; only drop PDF/A.
+    plain = set_output(cmd, "pdf")
+
     # Rebuild-from-raster: drop mode flags (force-ocr is exclusive) and
     # insert force-ocr right after `python3 -m ocrmypdf`.
     force = set_output([a for a in cmd if a not in ALL_MODE_FLAGS], "pdf")
@@ -92,7 +104,12 @@ def pdfa_fallback_commands(cmd: list[str]) -> list[tuple[str, list[str]]]:
         "--continue-on-soft-render-error",
     ] + force[3:]
 
-    return [("pdfa", cmd), ("pdfa-rgb", rgb), ("force-raster", force)]
+    return [
+        ("pdfa", cmd),
+        ("pdfa-rgb", rgb),
+        ("plain-pdf", plain),
+        ("force-raster", force),
+    ]
 
 
 def _run_watched(attempt: list[str], workdir: Path):
@@ -161,6 +178,35 @@ def _kill_group(proc: subprocess.Popen) -> None:
         logger.warning("killed OCR process did not reap within 60s; continuing")
 
 
+# Ghostscript prints a multi-line copyright banner before it says anything
+# useful, and per-page chatter after it. The real error is at the end.
+_NOISE = (
+    "gpl ghostscript",
+    "copyright",
+    "agplv3",
+    "no warranty",
+    "artifex",
+    "see the file",
+    "this software",
+    "loading font",
+    "processing pages",
+)
+
+
+def _meaningful_error(stderr_text: str) -> str:
+    """Keep the tail of stderr, minus the boilerplate.
+
+    Logging the head of a Ghostscript failure just reprints its licence
+    banner and truncates the one line that says what went wrong.
+    """
+    lines = [
+        line.strip()
+        for line in stderr_text.strip().splitlines()
+        if line.strip() and not any(n in line.lower() for n in _NOISE)
+    ]
+    return " | ".join(lines[-6:])[:2000] if lines else stderr_text.strip()[:2000]
+
+
 def run_ocrmypdf(cmd: list[str], workdir: Path) -> None:
     """Run ocrmypdf, escalating through the remedy chain. Raises OCRError
     if every attempt fails (the caller then tries text-only extraction)."""
@@ -172,7 +218,7 @@ def run_ocrmypdf(cmd: list[str], workdir: Path) -> None:
             if label != "pdfa":
                 logger.warning("ocrmypdf succeeded via fallback '%s'", label)
             return
-        last_error = stderr_text.strip()[:2000]
+        last_error = _meaningful_error(stderr_text)
         last_code = returncode
         if any(sig in last_error.lower() for sig in UNFIXABLE):
             break  # no escalation can fix this
