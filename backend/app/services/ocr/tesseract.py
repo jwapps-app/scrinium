@@ -209,6 +209,12 @@ def _tesseract_image(image: Path) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=600,
+            # One OpenMP thread per page. Tesseract otherwise spreads a single
+            # page over ~2 cores, so OCR_JOBS pages at once quietly costs twice
+            # that — ocrmypdf pins the same limit when it runs pages in
+            # parallel. Without it WORKER_CONCURRENCY x OCR_JOBS understates
+            # the real load and the box ends up oversubscribed.
+            env={**os.environ, "OMP_THREAD_LIMIT": "1"},
         )
     except subprocess.SubprocessError as exc:
         # One bad page must not sink a 900-page book: this is already the

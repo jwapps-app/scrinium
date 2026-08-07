@@ -255,3 +255,19 @@ def test_one_bad_page_does_not_sink_the_document(monkeypatch):
 
     monkeypatch.setattr(T.subprocess, "run", explode)
     assert T._tesseract_image(Path("pg-001.png")) == ""
+
+
+def test_fallback_pages_are_pinned_to_one_openmp_thread(monkeypatch):
+    """Tesseract spreads one page over ~2 cores by default, so running
+    OCR_JOBS pages at once would cost double what the setting implies."""
+    seen = {}
+
+    def capture(cmd, **kwargs):
+        seen.update(kwargs.get("env") or {})
+        return SimpleNamespace(returncode=0, stdout="text")
+
+    monkeypatch.setattr(T.subprocess, "run", capture)
+    T._tesseract_image(Path("pg-001.png"))
+
+    assert seen.get("OMP_THREAD_LIMIT") == "1"
+    assert "PATH" in seen, "must extend the real environment, not replace it"
