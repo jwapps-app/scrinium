@@ -179,7 +179,16 @@ def run_ocrmypdf(cmd: list[str], workdir: Path) -> None:
         if returncode == 137 and "killed:" in last_error:
             # A stalled run won't behave differently under the remedies.
             break
-        logger.warning("ocrmypdf attempt '%s' failed; escalating", label)
+        # Log why, not just that. Only the final attempt's error reaches the
+        # OCRError, so without this the reason the cheap attempts fail is
+        # never recorded anywhere — and if they fail for every document, the
+        # whole library silently runs in the most expensive mode.
+        logger.warning(
+            "ocrmypdf attempt '%s' failed (exit %d): %s; escalating",
+            label,
+            returncode,
+            last_error.replace("\n", " ")[:400] or "(no stderr)",
+        )
     raise OCRError(f"ocrmypdf exited {last_code}: {last_error}")
 
 

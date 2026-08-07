@@ -271,3 +271,22 @@ def test_fallback_pages_are_pinned_to_one_openmp_thread(monkeypatch):
 
     assert seen.get("OMP_THREAD_LIMIT") == "1"
     assert "PATH" in seen, "must extend the real environment, not replace it"
+
+
+def test_escalation_logs_why_not_just_that(monkeypatch, tmp_path, caplog):
+    """Only the last attempt's error reaches the OCRError. If the cheap
+    attempts fail for every document, the reason has to be in the log or the
+    whole library silently runs in the most expensive mode."""
+    watched, _ = _fake_watched([
+        (7, "GPL Ghostscript: rangecheck in setscreen"),
+        (0, ""),
+    ])
+    monkeypatch.setattr(T, "_run_watched", watched)
+
+    with caplog.at_level("WARNING"):
+        T.run_ocrmypdf(BASE_CMD, tmp_path)
+
+    escalation = [r for r in caplog.records if "escalating" in r.getMessage()]
+    assert escalation, "escalation must be logged"
+    assert "rangecheck in setscreen" in escalation[0].getMessage()
+    assert "exit 7" in escalation[0].getMessage()
