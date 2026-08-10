@@ -196,6 +196,12 @@ async def process_job(session: AsyncSession, job: Job) -> None:
         )
         return
 
+    # Nothing beats the heartbeat while the lock below is waited on, so stamp
+    # it here: the wait then starts from a full window rather than from
+    # whatever was left of the last beat during OCR.
+    job.heartbeat_at = datetime.now(timezone.utc)
+    await session.commit()
+
     # Lock the row for the swap itself (the OCR above ran unlocked, so nothing
     # was held for hours) and confirm nobody replaced the archive meanwhile.
     # Without this, two jobs on one document silently discard each other's work.

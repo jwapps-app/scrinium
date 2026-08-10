@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, delete, func, or_, select, text, union
+from sqlalchemy import true as sqla_true
 from sqlalchemy import update as sqla_update
 
 from app.config import settings
@@ -197,6 +198,15 @@ logger = logging.getLogger("worker")
 # ordinary failures.
 MAX_JOB_ATTEMPTS = 5
 
+# Jobs this process is actively running. The reclaimer must never requeue one
+# of them. A heartbeat can legitimately fall quiet mid-job — waiting on the
+# document row lock after OCR is the obvious case, and it beats nothing while
+# it waits — and requeuing our own live work spawns a duplicate that blocks on
+# that same lock, falls quiet in turn, and gets reclaimed too. Five rounds of
+# that and the document is abandoned, which is how the largest books in the
+# library were failing after an hour of perfectly good OCR.
+IN_FLIGHT: set = set()
+
 
 async def claim_and_run() -> bool:
     """Claim one queued job and run it. Returns True if a job was processed."""
@@ -238,11 +248,15 @@ async def claim_and_run() -> bool:
             "processing job %s (document %s, kind %s, mode %s)",
             job.id, job.document_id, job.kind, job.mode,
         )
-        if job.kind == "downsample":
-            target = await resolve_archive_dpi(session)
-            await process_downsample_job(session, job, target)
-        else:
-            await process_job(session, job)
+        IN_FLIGHT.add(job.id)
+        try:
+            if job.kind == "downsample":
+                target = await resolve_archive_dpi(session)
+                await process_downsample_job(session, job, target)
+            else:
+                await process_job(session, job)
+        finally:
+            IN_FLIGHT.discard(job.id)
         return True
 
 
@@ -698,10 +712,14 @@ async def reclaim_interrupted_jobs(stale_after_seconds: int | None = None) -> No
         seconds=stale_after_seconds if stale_after_seconds is not None else 120
     )
     async with SessionLocal() as session:
+        # Anything this process is still working on is alive by definition,
+        # whatever its heartbeat says.
+        mine = set(IN_FLIGHT)
         jobs = (
             await session.execute(
                 select(Job).where(
                     Job.status == JobStatus.RUNNING,
+                    Job.id.not_in(mine) if mine else sqla_true(),
                     or_(
                         Job.heartbeat_at < threshold,
                         # Not yet beating: stale only if it also STARTED

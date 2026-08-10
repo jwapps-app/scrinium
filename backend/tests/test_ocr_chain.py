@@ -344,3 +344,36 @@ def test_meaningful_error_falls_back_when_everything_is_noise():
     """Never swallow the message entirely just because it looks like banner."""
     assert T._meaningful_error("GPL Ghostscript 10.05.1\n").startswith("GPL Ghostscript")
     assert T._meaningful_error("") == ""
+
+
+def test_worker_never_reclaims_its_own_running_job():
+    """A heartbeat can fall quiet mid-job — waiting on the document row lock
+    beats nothing while it waits. Requeuing our own live work spawns a
+    duplicate that blocks on the same lock and goes quiet in turn, which is
+    how large documents were reaching the five-attempt cap."""
+    import inspect
+
+    from app import worker
+
+    assert hasattr(worker, "IN_FLIGHT"), "worker must track its live jobs"
+
+    claim = inspect.getsource(worker.claim_and_run)
+    assert "IN_FLIGHT.add(job.id)" in claim
+    assert "IN_FLIGHT.discard(job.id)" in claim
+    assert "finally:" in claim, "must release even when the job raises"
+
+    reclaim = inspect.getsource(worker.reclaim_interrupted_jobs)
+    assert "IN_FLIGHT" in reclaim, "reclaimer must exclude this process's jobs"
+    assert "not_in" in reclaim
+
+
+def test_heartbeat_is_stamped_before_the_post_ocr_lock():
+    """The row lock is the one long wait with no heartbeat behind it."""
+    import inspect
+
+    from app.services import ingest
+
+    source = inspect.getsource(ingest.process_job)
+    beat = source.index("job.heartbeat_at = datetime.now(timezone.utc)")
+    lock = source.index("with_for_update=True")
+    assert beat < lock, "stamp the heartbeat before waiting on the lock"
