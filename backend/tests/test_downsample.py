@@ -124,3 +124,48 @@ async def test_downsample_queues_low_priority_and_is_idempotent(
             )
         ).scalar_one()
     assert count == 1  # not double-queued
+
+
+def test_acceptable_says_why_it_rejected():
+    """"Already as small as it gets" and "the rebuild lost the text layer" are
+    different problems. The sweep spent a day guessing between them."""
+    from app.services import compress
+
+    assert compress._acceptable.__doc__  # documented contract
+    import inspect
+
+    source = inspect.getsource(compress._acceptable)
+    for reason in ("page_mismatch", "lost_text", "not_smaller"):
+        assert f'"{reason}"' in source, reason
+    assert "return None" in source, "None must mean acceptable"
+
+
+def test_downsample_returns_reason_rather_than_stashing_it():
+    """Several of these run at once in worker threads; a shared slot would
+    have them overwriting each other's reason."""
+    import inspect
+
+    from app.services import compress
+
+    assert not hasattr(compress, "last_reason"), "no shared mutable slot"
+    sig = inspect.signature(compress.downsample_archive)
+    assert "tuple" in str(sig.return_annotation)
+
+
+def test_eligibility_excludes_archives_already_proven_unshrinkable():
+    """The loop that burned CPU on 999 documents.
+
+    A rebuild Ghostscript cannot make smaller leaves the archive — and its
+    measured DPI — untouched, so on DPI alone the document stayed eligible and
+    was queued to fail the same way for ever. Keyed on the blob, not a flag, so
+    a re-OCR that writes a new archive re-qualifies it.
+    """
+    import inspect
+
+    from app.routers import documents
+
+    source = inspect.getsource(documents._downsample_eligible)
+    assert "downsample_tried_blob" in source
+    assert "is_distinct_from" in source, (
+        "must compare against the current archive, so a re-OCR re-qualifies"
+    )

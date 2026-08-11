@@ -109,6 +109,13 @@ class Document(Base):
     # Character count of text_content, cached so weak-OCR stats don't detoast
     # and re-measure the (large) text on every Insights load.
     text_length: Mapped[int | None] = mapped_column(nullable=True)
+    # The archive a downsample pass already tried and could not shrink, with
+    # the reason. Keyed on the blob rather than a flag so a later re-OCR, which
+    # produces a different archive, re-qualifies the document by itself.
+    downsample_tried_blob: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    downsample_note: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Titles are indexed separately from page text: a title is a handful of
     # words, so unlike the old combined vector it can never approach the 1 MB
     # tsvector ceiling, and "find the document called X" keeps working.

@@ -199,25 +199,32 @@ def _gs_downsample(src: Path, dst: Path, target_dpi: int, pdfa: bool) -> bool:
     return True
 
 
-def _acceptable(src: Path, dst: Path, src_pages: int, src_had_text: bool) -> bool:
-    """A rebuilt archive is only usable if it keeps every page, keeps its text
-    layer, and is genuinely smaller than the original."""
+def _acceptable(src: Path, dst: Path, src_pages: int, src_had_text: bool) -> str | None:
+    """None when the rebuild is usable, otherwise why it is not.
+
+    The reason is worth keeping: "already as small as it gets" and "the rebuild
+    dropped the text layer" are different problems, and the sweep should not be
+    guessing between them.
+    """
     if _page_count(dst) != src_pages:
-        return False
+        return "page_mismatch"
     if src_had_text and not _has_text(dst):
-        return False
-    return dst.stat().st_size < src.stat().st_size
+        return "lost_text"
+    if dst.stat().st_size >= src.stat().st_size:
+        return "not_smaller"
+    return None
 
 
 def downsample_archive(
     src: Path, dst: Path, target_dpi: int, keep_pdfa: bool = True
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """Write a downsampled-to-`target_dpi` copy of `src` at `dst`.
 
-    Only images above the target are resampled. Returns the format of the
-    accepted result — "pdfa" or "pdf" — or None when nothing usable was
-    produced (invalid, changed page count, lost text, or not smaller), in which
-    case the caller keeps the original archive untouched.
+    Returns (format, reason): the accepted format — "pdfa" or "pdf" — with no
+    reason, or None with the reason nothing usable was produced. The caller
+    keeps the original archive untouched in that case, and records the reason
+    so the document is not queued to fail the same way again. Returned rather
+    than stashed, because several of these run concurrently in worker threads.
 
     When `keep_pdfa`, a PDF/A pass is tried first so archival conformance is
     preserved; only if that can't produce a clean smaller file do we fall back
@@ -225,7 +232,7 @@ def downsample_archive(
     """
     src_pages = _page_count(src)
     if src_pages is None:
-        return None
+        return None, "unreadable"
     src_had_text = _has_text(src)
 
     attempts = []
@@ -233,15 +240,18 @@ def downsample_archive(
         attempts.append(True)
     attempts.append(False)
 
+    reason = "unreadable"
     for pdfa in attempts:
-        if _gs_downsample(src, dst, target_dpi, pdfa) and _acceptable(
-            src, dst, src_pages, src_had_text
-        ):
-            # A PDF/A pass that didn't actually stamp conformance still counts
-            # as a valid smaller plain PDF — report it honestly.
-            return "pdfa" if (pdfa and is_pdfa(dst)) else "pdf"
+        if _gs_downsample(src, dst, target_dpi, pdfa):
+            reason = _acceptable(src, dst, src_pages, src_had_text)
+            if reason is None:
+                # A PDF/A pass that didn't actually stamp conformance still
+                # counts as a valid smaller plain PDF — report it honestly.
+                return ("pdfa" if (pdfa and is_pdfa(dst)) else "pdf"), None
+        else:
+            reason = "gs_failed"
         dst.unlink(missing_ok=True)  # clear a bad output before the next pass
-    return None
+    return None, reason
 
 
 async def _run_with_heartbeat(session: AsyncSession, job: Job, fn, *args):
@@ -309,12 +319,20 @@ async def process_downsample_job(
     try:
         with tempfile.TemporaryDirectory(prefix="downsample-") as tmp:
             out = Path(tmp) / "archive.pdf"
-            result = await _run_with_heartbeat(
+            result, why = await _run_with_heartbeat(
                 session, job, downsample_archive, archive_path, out, target_dpi
             )
             if result is None:
-                # No usable win; leave the archive untouched but record its
-                # current status and mark done so we don't retry every sweep.
+                # No usable win. Leave the archive alone, and record which blob
+                # was tried and why it could not be improved — without that the
+                # document stays over the cap, stays eligible, and is queued to
+                # fail identically for ever. Keying on the blob means a later
+                # re-OCR, which produces a different archive, qualifies again.
+                logger.info(
+                    "downsample: %s cannot be reduced (%s)", document.id, why
+                )
+                document.downsample_tried_blob = document.archive_blob_id
+                document.downsample_note = why
                 document.archive_pdfa = await asyncio.to_thread(is_pdfa, archive_path)
                 job.status = JobStatus.DONE
                 job.finished_at = datetime.now(timezone.utc)

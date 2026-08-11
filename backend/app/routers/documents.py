@@ -859,6 +859,13 @@ def _downsample_eligible(tenant_id, target_dpi: int):
         Document.status == DocumentStatus.READY,
         Document.archive_blob_id.is_not(None),
         ~Document.id.in_(active_jobs),
+        # Not one we have already tried and could not shrink. A rebuild that
+        # Ghostscript cannot make smaller leaves the archive, and therefore the
+        # measured DPI, unchanged — so on DPI alone the document stays eligible
+        # and is queued to fail identically for ever. 999 were in that loop.
+        # Comparing blobs rather than a flag means a later re-OCR, which writes
+        # a different archive, becomes a candidate again by itself.
+        Document.downsample_tried_blob.is_distinct_from(Document.archive_blob_id),
         or_(
             Document.archive_dpi.is_(None),
             # Above the cap by more than rounding slack. Ghostscript targets the
