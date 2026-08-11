@@ -21,7 +21,12 @@ def test_compress_fail_soft_on_imageless_pdf():
         pdf.save(str(src))
         assert compress.max_image_dpi(src) is None
         # No raster images to shrink → no usable result → keep the original.
-        assert compress.downsample_archive(src, Path(tmp) / "out.pdf", 300) is None
+        # The reason comes back with it now, so a document that cannot be
+        # improved is recorded rather than queued to fail again.
+        fmt, why = compress.downsample_archive(src, Path(tmp) / "out.pdf", 300)
+        assert fmt is None
+        assert why in {"not_smaller", "page_mismatch", "lost_text",
+                       "gs_failed", "unreadable"}, why
         assert compress.is_pdfa(src) is False  # a bare pikepdf is not PDF/A
 
 
