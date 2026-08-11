@@ -17,7 +17,7 @@ which is what snippets are drawn from.
 
 import uuid
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Document, DocumentPage
@@ -33,39 +33,40 @@ PAGE_BREAK = "\f"
 MAX_PAGE_CHARS = 90_000
 
 
-def split_pages(text: str | None) -> list[str]:
-    """Stored text → one string per page, form feeds removed."""
-    if not text:
-        return []
-    return [part[:MAX_PAGE_CHARS] for part in text.split(PAGE_BREAK)]
-
-
 async def reindex_pages(session: AsyncSession, document: Document) -> int:
     """Replace a document's page vectors. Returns how many were written.
 
     Whole-document replacement rather than a diff: page numbering shifts
     whenever pages are rotated, deleted or extracted, so a partial update
     would leave vectors pointing at content that has moved.
+
+    Done as a single statement that splits the text inside Postgres. The
+    obvious version — read the text, split in Python, add one row per page —
+    ships every page back across the connection and spends minutes of
+    event-loop time on a thousand-page book, long enough that the job's
+    heartbeat goes stale while it runs.
     """
     await session.execute(
         delete(DocumentPage).where(DocumentPage.document_id == document.id)
     )
-    pages = split_pages(document.text_content)
-    written = 0
-    for number, body in enumerate(pages, start=1):
-        if not body.strip():
-            continue  # blank page: nothing to match, no row worth keeping
-        session.add(
-            DocumentPage(
-                document_id=document.id,
-                page=number,
-                # Computed by Postgres so the text never round-trips through
-                # Python just to be thrown away.
-                search_vector=func.to_tsvector("english", body),
-            )
-        )
-        written += 1
-    return written
+    if not document.text_content:
+        return 0
+    result = await session.execute(
+        text(
+            """
+            INSERT INTO document_pages (document_id, page, search_vector)
+            SELECT d.id,
+                   part.ordinality,
+                   to_tsvector('english', left(part.body, :max_chars))
+            FROM documents d,
+                 unnest(string_to_array(d.text_content, chr(12)))
+                     WITH ORDINALITY AS part(body, ordinality)
+            WHERE d.id = :doc_id AND btrim(part.body) <> ''
+            """
+        ),
+        {"doc_id": document.id, "max_chars": MAX_PAGE_CHARS},
+    )
+    return result.rowcount or 0
 
 
 async def documents_missing_pages(

@@ -282,16 +282,6 @@ async def test_search_pages_and_reports_the_true_total(client, auth, pdf_factory
     assert len(set(ids)) == 3, "a document appeared on two pages or on neither"
 
 
-async def test_page_index_splits_on_form_feeds():
-    """Stored text keeps its page breaks, so indexing needs no re-OCR."""
-    from app.services.page_index import split_pages
-
-    assert split_pages("one\ftwo\fthree") == ["one", "two", "three"]
-    assert split_pages(None) == []
-    assert split_pages("") == []
-    # A single runaway "page" is clamped rather than blowing the position cap.
-    assert len(split_pages("x" * 200_000)[0]) == 90_000
-
 
 async def test_long_document_outranks_a_passing_mention(client, auth, pdf_factory):
     """The bug this whole table exists for.
