@@ -22,10 +22,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Document, DocumentPage
 
-# pdftotext and the OCR paths both separate pages with a form feed, and the
-# count matches page_count exactly across the library — so existing documents
-# can be indexed from stored text without re-running OCR.
-PAGE_BREAK = "\f"
+# Pages are separated by a form feed (chr(12)) by both pdftotext and the OCR
+# paths, and the count matches page_count exactly across the library — so
+# existing documents index from stored text with no re-OCR. The split happens
+# in SQL below; nothing here needs the character itself.
 
 # A page of dense print is a few thousand words; this only guards against a
 # pathological "page" (a broken split, a text-only fallback that produced one
@@ -46,6 +46,13 @@ async def reindex_pages(session: AsyncSession, document: Document) -> int:
     event-loop time on a thousand-page book, long enough that the job's
     heartbeat goes stale while it runs.
     """
+    # The statement below reads text_content straight from the table, and the
+    # sessions here run with autoflush off — so a caller that has just assigned
+    # new text (which is exactly what the ingest path does) would otherwise be
+    # indexing whatever was stored before. For a freshly OCR'd document that is
+    # NULL, and it would silently produce no pages at all.
+    await session.flush()
+
     await session.execute(
         delete(DocumentPage).where(DocumentPage.document_id == document.id)
     )

@@ -333,3 +333,44 @@ async def test_long_document_outranks_a_passing_mention(client, auth, pdf_factor
     hits = {r["id"]: r["pages_hit"] for r in resp["results"]}
     assert hits[ids["throughout"]] == 12
     assert hits[ids["passing"]] == 1
+
+
+async def test_reindex_sees_text_assigned_but_not_yet_committed():
+    """The page split runs in SQL against documents.text_content, and these
+    sessions have autoflush off — so text the caller has only assigned in
+    memory (exactly what the ingest path does) must still be flushed first.
+    Without it a freshly OCR'd document indexes the previous value, which is
+    NULL, and silently gets no pages at all."""
+    from sqlalchemy import func, select
+
+    from app.database import SessionLocal
+    from app.models import Document, DocumentPage, Tenant
+    from app.services import page_index
+
+    async with SessionLocal() as session:
+        tenant = (await session.execute(select(Tenant).limit(1))).scalar_one()
+        doc = Document(
+            tenant_id=tenant.id,
+            title="flush check",
+            original_filename="flush.pdf",
+            original_blob_id=(
+                await session.execute(select(Document.original_blob_id).limit(1))
+            ).scalar_one(),
+        )
+        session.add(doc)
+        await session.flush()
+
+        # Assigned, deliberately not committed — the ingest path's exact shape.
+        doc.text_content = "alpha page\fbeta page\fgamma page"
+        written = await page_index.reindex_pages(session, doc)
+        assert written == 3, "pending text must be visible to the split"
+
+        rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(DocumentPage)
+                .where(DocumentPage.document_id == doc.id)
+            )
+        ).scalar_one()
+        assert rows == 3
+        await session.rollback()
