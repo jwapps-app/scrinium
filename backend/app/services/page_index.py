@@ -34,25 +34,17 @@ MAX_PAGE_CHARS = 90_000
 
 
 async def reindex_pages(session: AsyncSession, document: Document) -> int:
-    """Replace a document's page vectors. Returns how many were written.
+    """Build page vectors for a document written before the trigger existed.
 
-    Whole-document replacement rather than a diff: page numbering shifts
-    whenever pages are rotated, deleted or extracted, so a partial update
-    would leave vectors pointing at content that has moved.
+    Ongoing correctness is the database's job (migration 0028): a trigger on
+    documents.text_content rebuilds these on every write, so no caller can
+    store document text and forget to index it. That property is why the old
+    generated column never had coverage gaps, and losing it briefly made
+    anything writing text_content directly invisible to search.
 
-    Done as a single statement that splits the text inside Postgres. The
-    obvious version — read the text, split in Python, add one row per page —
-    ships every page back across the connection and spends minutes of
-    event-loop time on a thousand-page book, long enough that the job's
-    heartbeat goes stale while it runs.
+    This exists only for the backfill, which has rows the trigger never saw.
     """
-    # The statement below reads text_content straight from the table, and the
-    # sessions here run with autoflush off — so a caller that has just assigned
-    # new text (which is exactly what the ingest path does) would otherwise be
-    # indexing whatever was stored before. For a freshly OCR'd document that is
-    # NULL, and it would silently produce no pages at all.
     await session.flush()
-
     await session.execute(
         delete(DocumentPage).where(DocumentPage.document_id == document.id)
     )

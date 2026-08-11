@@ -473,3 +473,46 @@ async def test_title_only_match_is_still_found(client, auth, pdf_factory):
     resp = (await client.get(f"/api/search?q={marker}", headers=auth)).json()
     assert doc["id"] in [r["id"] for r in resp["results"]], resp
     assert resp["total"] >= 1
+
+
+async def test_any_write_to_document_text_is_indexed(client, auth, pdf_factory):
+    """Indexing must not be something a caller can forget.
+
+    The generated column this replaced was maintained by Postgres, so every
+    writer got it free — ingest, capture, the Paperless importer, a
+    hand-written UPDATE. Moving indexing into application code silently made
+    the paths that were not updated unsearchable, which is how the scoped
+    search test failed. A trigger puts the guarantee back.
+    """
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models import Document
+
+    marker = f"windlass{uuid.uuid4().hex[:6]}"
+    doc = await upload(client, auth, pdf_factory(text="nothing relevant"), "w.pdf")
+
+    # Deliberately bypass every service layer.
+    async with SessionLocal() as session:
+        await session.execute(
+            sa.update(Document)
+            .where(Document.id == uuid.UUID(doc["id"]))
+            .values(text_content=f"page one\f{marker} on page two\fpage three")
+        )
+        await session.commit()
+
+    resp = (await client.get(f"/api/search?q={marker}", headers=auth)).json()
+    assert doc["id"] in [r["id"] for r in resp["results"]], resp
+    hit = next(r for r in resp["results"] if r["id"] == doc["id"])
+    assert hit["pages_hit"] == 1
+
+    # And clearing the text must clear the index with it.
+    async with SessionLocal() as session:
+        await session.execute(
+            sa.update(Document)
+            .where(Document.id == uuid.UUID(doc["id"]))
+            .values(text_content=None)
+        )
+        await session.commit()
+    resp = (await client.get(f"/api/search?q={marker}", headers=auth)).json()
+    assert doc["id"] not in [r["id"] for r in resp["results"]]
