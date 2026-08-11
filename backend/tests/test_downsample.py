@@ -174,3 +174,25 @@ def test_eligibility_excludes_archives_already_proven_unshrinkable():
     assert "is_distinct_from" in source, (
         "must compare against the current archive, so a re-OCR re-qualifies"
     )
+
+
+def test_migrations_fail_fast_rather_than_queue_for_a_lock():
+    """A DDL statement waiting for a lock parks every query behind it.
+
+    Postgres grants locks in order, so a migration queued behind the nightly
+    pg_dump also blocks the ordinary reads that arrive after it — the API stays
+    up and answers nothing, and the app reads as permanently "loading". It
+    happened on two consecutive deploys, and got worse once document_pages
+    (2.4M rows) joined the dump.
+    """
+    from pathlib import Path
+
+    env = Path(__file__).resolve().parents[1] / "alembic" / "env.py"
+    source = env.read_text()
+    assert "lock_timeout" in source, "a migration must not queue for its lock"
+    assert "MIGRATION_LOCK_TIMEOUT" in source, "and the wait must be tunable"
+
+    entry = Path(__file__).resolve().parents[1] / "entrypoint.sh"
+    script = entry.read_text()
+    assert "until alembic upgrade head" in script, "a timed-out migration retries"
+    assert "MIGRATION_MAX_ATTEMPTS" in script, "and gives up rather than looping"

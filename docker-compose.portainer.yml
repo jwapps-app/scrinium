@@ -28,6 +28,10 @@ services:
       SECRET_KEY: ${SECRET_KEY:?set in Portainer}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://scrinium.example.com}
       DATA_DIR: /data
+      # A migration that cannot get its lock retries instead of parking
+      # every other query behind it (nightly pg_dump, long export).
+      MIGRATION_LOCK_TIMEOUT: ${MIGRATION_LOCK_TIMEOUT:-4s}
+      MIGRATION_MAX_ATTEMPTS: ${MIGRATION_MAX_ATTEMPTS:-40}
       OCR_ENGINE: ${OCR_ENGINE:-tesseract}
       OCR_LANGUAGES: ${OCR_LANGUAGES:-eng}
       APPLE_OCR_URL: ${APPLE_OCR_URL:-}
