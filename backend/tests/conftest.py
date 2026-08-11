@@ -57,13 +57,21 @@ def _recreate_database() -> None:
 
 
 def _migrate() -> None:
-    subprocess.run(
+    result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=BACKEND_DIR,
         env={**os.environ},
-        check=True,
         capture_output=True,
+        text=True,
     )
+    if result.returncode != 0:
+        # Say what actually went wrong. Swallowed, a failed migration surfaces
+        # as dozens of 'relation "users" does not exist' errors from every
+        # fixture, which says nothing about the cause.
+        raise RuntimeError(
+            "alembic upgrade head failed:\n"
+            f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+        )
 
 
 _recreate_database()
