@@ -51,6 +51,10 @@ class IngestOutcome:
     thumb: tuple[uuid.UUID, str, int] | None = None  # (blob_id, sha256, size)
     archive_pdfa: bool | None = None  # PDF/A conformance of the stored archive
     archive_dpi: int | None = None  # highest embedded-image DPI of the archive
+    # The source's own resolution. Measured because it is the ceiling on any
+    # later rebuild — an archive at the cap tells you nothing about whether a
+    # higher-resolution version is even possible.
+    original_dpi: int | None = None
 
 
 def _run_ocr(
@@ -66,6 +70,11 @@ def _run_ocr(
     # so hand them a properly-named symlink to the untouched original.
     source = workdir / f"input{suffix.lower()}"
     source.symlink_to(original)
+    # Cheap (samples a couple of pages) and only meaningful for PDFs; an
+    # image original has no embedded images to probe.
+    original_dpi = (
+        compress.max_image_dpi(source) if suffix.lower() == ".pdf" else None
+    )
     result = provider.process(source, workdir, mode)
 
     archive_path = result.archive_path
@@ -92,7 +101,8 @@ def _run_ocr(
     if archive_path is None:
         pages = _page_count(source) if suffix.lower() == ".pdf" else 1
         return IngestOutcome(
-            None, None, None, result.text, result.engine, pages, thumb
+            None, None, None, result.text, result.engine, pages, thumb,
+            original_dpi=original_dpi,
         )
     pages = _page_count(archive_path)
     # Measure the final archive's PDF/A status (ocrmypdf usually emits PDF/A,
@@ -102,7 +112,8 @@ def _run_ocr(
     # Copy the archive into the blob store before the tempdir vanishes.
     blob_id, sha256, size = storage.store_file(archive_path)
     return IngestOutcome(
-        blob_id, sha256, size, result.text, result.engine, pages, thumb, pdfa, dpi
+        blob_id, sha256, size, result.text, result.engine, pages, thumb, pdfa, dpi,
+        original_dpi=original_dpi,
     )
 
 
@@ -256,6 +267,9 @@ async def process_job(session: AsyncSession, job: Job) -> None:
     if document.doc_date is None:
         document.doc_date = extract_document_date(outcome.text)
     document.page_count = outcome.page_count
+    # 0 (not None) when the original has no raster images, so it reads as
+    # measured rather than requeueing for ever as a backfill candidate.
+    document.original_dpi = outcome.original_dpi or 0
     document.ocr_engine = outcome.engine
     document.status = DocumentStatus.READY
     document.error = None

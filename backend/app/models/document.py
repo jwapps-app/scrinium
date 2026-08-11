@@ -69,6 +69,10 @@ class Document(Base):
     # False marks the plain PDFs that couldn't be made PDF/A.
     archive_pdfa: Mapped[bool | None] = mapped_column(nullable=True)
     # Highest embedded-image DPI in the archive (None = not yet measured).
+    # The source's own resolution — the ceiling on any rebuild, since no
+    # setting creates detail the scanner never captured. NULL = unmeasured,
+    # 0 = measured and has no raster images (a born-digital PDF).
+    original_dpi: Mapped[int | None] = mapped_column(nullable=True)
     archive_dpi: Mapped[int | None] = mapped_column(nullable=True)
     # Dismissed from the weak-OCR review ("the scan is fine as-is").
     weak_ocr_dismissed: Mapped[bool] = mapped_column(

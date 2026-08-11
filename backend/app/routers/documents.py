@@ -16,6 +16,8 @@ from sqlalchemy import update as sqla_update
 from app.deps import DB, AdminUser, CurrentUser
 from app.models import Blob, Document, DocumentStatus, Job, JobStatus, Tag
 from app.schemas import (
+    FileDetails,
+    FileFacet,
     BulkActionRequest,
     BulkActionResult,
     CopyTagsRequest,
@@ -968,6 +970,56 @@ async def download(
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Blob missing from store")
     return _serve_blob(path, media_type, filename, disposition)
+
+
+@router.get("/{doc_id}/files", response_model=FileDetails)
+async def file_details(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> FileDetails:
+    """What is actually stored for this document, and whether it can be better.
+
+    The question this answers is one the document row cannot: an archive at the
+    DPI cap might have been downsampled from a much higher-resolution scan — in
+    which case a rebuild recovers real detail — or it might be untouched
+    because the source was never any better, in which case no setting helps.
+    Identical in the list view, opposite answers here.
+    """
+    doc = await _get_owned(doc_id, user, db)
+    cap = await resolve_archive_dpi(db)
+
+    async def facet(blob_id, label):
+        if blob_id is None:
+            return FileFacet(exists=False, label=label)
+        blob = await db.get(Blob, blob_id)
+        return FileFacet(
+            exists=True,
+            size_bytes=blob.size_bytes if blob else None,
+            label=label,
+        )
+
+    original = await facet(doc.original_blob_id, doc.original_filename)
+    original.dpi = doc.original_dpi
+    archive = await facet(doc.archive_blob_id, "PDF/A" if doc.archive_pdfa else "PDF")
+    archive.dpi = doc.archive_dpi
+
+    # Only claim an improvement is possible when the source actually holds more
+    # than the archive does. Unmeasured (None) is not a promise either way, and
+    # 0 means the original has no raster images to gain from.
+    can_improve = bool(
+        archive.exists
+        and doc.original_dpi
+        and doc.archive_dpi
+        and doc.original_dpi > compress.cap_threshold(doc.archive_dpi)
+    )
+    return FileDetails(
+        original=original,
+        archive=archive,
+        page_count=doc.page_count,
+        ocr_engine=doc.ocr_engine,
+        archive_pdfa=doc.archive_pdfa,
+        dpi_cap=cap,
+        can_improve=can_improve,
+        max_useful_dpi=doc.original_dpi or None,
+        downsample_note=doc.downsample_note,
+    )
 
 
 @router.get("/{doc_id}/search")

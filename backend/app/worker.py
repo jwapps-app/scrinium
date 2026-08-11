@@ -26,7 +26,7 @@ from app.services.app_state import (
     resolve_archive_dpi,
     set_value,
 )
-from app.services import page_index, similarity
+from app.services import compress, page_index, similarity
 from app.services.compress import process_downsample_job
 from app.services.deletion import purge_expired, sweep_upload_sessions
 from app.services.export import run_export
@@ -50,10 +50,12 @@ VERIFY_LOCK_KEY = 815558
 EXPIRY_LOCK_KEY = 815559
 EXPORT_LOCK_KEY = 815560
 PAGE_INDEX_LOCK_KEY = 815561
+ORIGINAL_DPI_LOCK_KEY = 815562
 
 
 _backfill_done = False
 _page_index_done = False
+_original_dpi_done = False
 
 
 async def _backfill_text_length() -> None:
@@ -98,6 +100,56 @@ async def _backfill_page_index() -> None:
             await page_index.reindex_pages(session, document)
         await session.commit()
         logger.info("page index: %d document(s) indexed", len(ids))
+
+
+async def _backfill_original_dpi() -> None:
+    """Measure the resolution of originals ingested before it was recorded.
+
+    Without it, an archive sitting at the cap is ambiguous: downsampled from a
+    600 DPI scan, where a rebuild would recover real detail, or untouched from
+    a 300 DPI scan, where a rebuild only makes a larger file. The document row
+    looks identical either way.
+
+    Small batches — each measurement reads a couple of pages off the NAS.
+    """
+    from app.services import storage
+
+    global _original_dpi_done
+    async with SessionLocal() as session:
+        docs = (
+            await session.execute(
+                select(Document)
+                .where(
+                    Document.deleted_at.is_(None),
+                    Document.original_dpi.is_(None),
+                    Document.original_blob_id.is_not(None),
+                )
+                .limit(20)
+            )
+        ).scalars().all()
+        if not docs:
+            _original_dpi_done = True
+            return
+
+        def measure(paths):
+            out = {}
+            for doc_id, path in paths:
+                try:
+                    out[doc_id] = compress.max_image_dpi(path) or 0
+                except Exception:
+                    # Unreadable or not a PDF: 0 means measured-and-nothing-
+                    # to-find, so it does not come back every sweep.
+                    out[doc_id] = 0
+            return out
+
+        measured = await asyncio.to_thread(
+            measure,
+            [(d.id, storage.blob_file(d.original_blob_id)) for d in docs],
+        )
+        for doc in docs:
+            doc.original_dpi = measured.get(doc.id, 0)
+        await session.commit()
+        logger.info("original-dpi backfill: measured %d", len(docs))
 
 
 async def _sweep_orphan_blobs() -> None:
@@ -524,6 +576,7 @@ async def maintenance_loop() -> None:
     locks keep these singular even across multiple worker replicas."""
     last_watch = last_mail = last_purge = last_backfill = 0.0
     last_page_index = 0.0
+    last_original_dpi = 0.0
     while True:
         now = time.monotonic()
         paused = await _is_paused()
@@ -562,6 +615,15 @@ async def maintenance_loop() -> None:
                 )
             except Exception:
                 logger.exception("page-index backfill crashed; continuing")
+
+        if now - last_original_dpi >= (3600 if _original_dpi_done else 20):
+            last_original_dpi = now
+            try:
+                await _with_advisory_lock(
+                    ORIGINAL_DPI_LOCK_KEY, _backfill_original_dpi
+                )
+            except Exception:
+                logger.exception("original-dpi backfill crashed; continuing")
 
         if now - last_purge >= 3600:
             last_purge = now

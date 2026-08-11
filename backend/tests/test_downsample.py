@@ -196,3 +196,54 @@ def test_migrations_fail_fast_rather_than_queue_for_a_lock():
     script = entry.read_text()
     assert "until alembic upgrade head" in script, "a timed-out migration retries"
     assert "MIGRATION_MAX_ATTEMPTS" in script, "and gives up rather than looping"
+
+
+async def test_file_details_distinguishes_cap_limited_from_source_limited(
+    client, auth, pdf_factory
+):
+    """The question the panel exists to answer.
+
+    An archive sitting at the DPI cap is ambiguous in the list view: it might
+    have been downsampled from a much higher-resolution scan, where a rebuild
+    recovers detail, or it might be untouched because the source was never
+    better, where no setting helps. Same row, opposite answers.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy import update
+
+    from app.database import SessionLocal
+    from app.models import Document
+
+    doc = await upload(client, auth, pdf_factory(text="detail"), "d.pdf")
+    doc_id = _uuid.UUID(doc["id"])
+
+    async def set_dpi(original, archive):
+        async with SessionLocal() as session:
+            await session.execute(
+                update(Document).where(Document.id == doc_id)
+                .values(original_dpi=original, archive_dpi=archive)
+            )
+            await session.commit()
+
+    # Source has more than the archive → a rebuild would gain something.
+    await set_dpi(600, 300)
+    got = (await client.get(f"/api/documents/{doc['id']}/files", headers=auth)).json()
+    assert got["can_improve"] is True
+    assert got["max_useful_dpi"] == 600
+    assert got["original"]["dpi"] == 600 and got["archive"]["dpi"] == 300
+
+    # Source is the limit → no setting can help, so do not offer.
+    await set_dpi(300, 300)
+    got = (await client.get(f"/api/documents/{doc['id']}/files", headers=auth)).json()
+    assert got["can_improve"] is False
+
+    # Unmeasured is not a promise in either direction.
+    await set_dpi(None, 300)
+    got = (await client.get(f"/api/documents/{doc['id']}/files", headers=auth)).json()
+    assert got["can_improve"] is False
+    assert got["original"]["dpi"] is None
+
+    # Original and archive are reported separately, not as one total.
+    assert got["original"]["size_bytes"] > 0
+    assert "size_bytes" in got["archive"]

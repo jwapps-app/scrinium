@@ -7,9 +7,18 @@ import ProgressBar from '../components/ProgressBar'
 import PageOrganizer from '../components/PageOrganizer'
 import { isOffline, keepOffline, offlineFile, offlineMeta, removeOffline } from '../offline'
 import PdfViewer from '../components/PdfViewer'
+import { fmtBytes } from '../format'
 import Menu from '../components/Menu'
 import DocumentDetails from '../components/DocumentDetails'
 import { useIsAdmin } from '../session'
+
+// null = never measured, 0 = measured and holds no raster images at all
+// (a born-digital PDF). Rendering either as "0 DPI" would be a lie.
+function describeDpi(dpi) {
+  if (dpi === null || dpi === undefined) return 'not measured'
+  if (dpi === 0) return 'no images (text PDF)'
+  return `${dpi} DPI`
+}
 
 export default function DocumentView() {
   // Permanent deletion is owner only; trashing stays available to all.
@@ -308,6 +317,16 @@ export default function DocumentView() {
     }
   }
 
+  const [fileDetails, setFileDetails] = useState(null)
+
+  async function loadFileDetails() {
+    try {
+      setFileDetails(await apiJson(`/api/documents/${id}/files`))
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   async function classify() {
     setError('')
     setNotice('')
@@ -509,6 +528,11 @@ export default function DocumentView() {
               doc.status === 'flagged' && {
                 label: 'Retry OCR',
                 onClick: () => reprocess('skip'),
+              },
+              {
+                label: 'File details…',
+                hint: 'original vs archive, resolution',
+                onClick: loadFileDetails,
               },
               {
                 label: 'Run classification',
@@ -741,6 +765,65 @@ export default function DocumentView() {
             ? 'Processing…'
             : 'Loading…'}
         </p>
+      )}
+      {fileDetails && (
+        <div className="filedetails-backdrop" onClick={() => setFileDetails(null)}>
+          <div
+            className="filedetails"
+            role="dialog"
+            aria-label="File details"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3>File details</h3>
+            <table className="filedetails-table">
+              <thead>
+                <tr>
+                  <th />
+                  <th>Original</th>
+                  <th>Archive</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th>Size</th>
+                  <td>{fmtBytes(fileDetails.original.size_bytes)}</td>
+                  <td>
+                    {fileDetails.archive.exists
+                      ? fmtBytes(fileDetails.archive.size_bytes)
+                      : '—'}
+                  </td>
+                </tr>
+                <tr>
+                  <th>Resolution</th>
+                  <td>{describeDpi(fileDetails.original.dpi)}</td>
+                  <td>
+                    {fileDetails.archive.exists
+                      ? describeDpi(fileDetails.archive.dpi)
+                      : '—'}
+                  </td>
+                </tr>
+                <tr>
+                  <th>Format</th>
+                  <td>{fileDetails.original.label}</td>
+                  <td>{fileDetails.archive.exists ? fileDetails.archive.label : 'none'}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="filedetails-verdict">
+              {!fileDetails.archive.exists
+                ? 'No archive — the original is the only copy, and is what you read.'
+                : fileDetails.can_improve
+                  ? `Limited by the ${fileDetails.dpi_cap} DPI setting. The original holds ` +
+                    `${fileDetails.max_useful_dpi} DPI, so a rebuild would recover real detail.`
+                  : fileDetails.downsample_note === 'not_smaller'
+                    ? 'Already as small as it can be made — a rebuild produced a larger file.'
+                    : 'Limited by the original, not by the setting. A rebuild would add size without adding detail.'}
+            </p>
+            <button className="ghost" onClick={() => setFileDetails(null)}>
+              Close
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )

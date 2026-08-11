@@ -213,6 +213,34 @@ class BulkClassifyResult(BaseModel):
     documents_changed: int
 
 
+class FileFacet(BaseModel):
+    """One stored copy of a document."""
+
+    exists: bool = False
+    size_bytes: int | None = None
+    dpi: int | None = None  # None = unmeasured, 0 = no raster images
+    label: str | None = None  # filename or format, whichever is meaningful
+
+
+class FileDetails(BaseModel):
+    """Original versus archive, and whether the archive can be improved."""
+
+    original: FileFacet
+    archive: FileFacet
+    page_count: int | None = None
+    ocr_engine: str | None = None
+    archive_pdfa: bool | None = None
+    dpi_cap: int = 0
+    # True when the archive is limited by the cap rather than by the source, so
+    # a rebuild would recover detail that exists. False when the source is the
+    # limit and no setting can help — the distinction the panel exists for.
+    can_improve: bool = False
+    # The most a rebuild could usefully ask for: the original's own resolution.
+    max_useful_dpi: int | None = None
+    # Why a downsample could not shrink it, when that is why it sits over cap.
+    downsample_note: str | None = None
+
+
 class SearchResult(BaseModel):
     id: uuid.UUID
     title: str
