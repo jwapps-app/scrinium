@@ -6,6 +6,15 @@ import uuid
 from pathlib import Path
 
 
+async def upload(client, auth, pdf_bytes, filename):
+    resp = await client.post(
+        "/api/documents", headers=auth,
+        files={"file": (filename, pdf_bytes, "application/pdf")},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
 
 def test_compress_fail_soft_on_imageless_pdf():
     """A blank/vector PDF has no raster images to shrink, so the DPI probe is
