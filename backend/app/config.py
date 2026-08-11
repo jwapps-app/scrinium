@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     app_name: str = "Scrinium"
     app_tagline: str = "Your documents, searchable."
     database_url: str = "postgresql+asyncpg://app:app@postgres:5432/app"
+    # Ceiling on a single database round-trip. pool_pre_ping only checks a
+    # connection as it leaves the pool; it does nothing for one that dies
+    # mid-query, and asyncpg will then await a reply that never comes — no
+    # timeout, no error. Two OCR jobs were found suspended that way for over
+    # an hour, holding worker slots with no thread, no server-side query and
+    # no lock to show for it. Generous enough for the slowest legitimate
+    # statement (ts_headline over a large document, a page-index rebuild).
+    db_command_timeout: int = 300
     secret_key: str = "dev-secret-change-me"
     allowed_origins: str = "http://localhost:5173"
 

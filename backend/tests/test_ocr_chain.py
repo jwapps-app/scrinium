@@ -398,3 +398,26 @@ def test_in_flight_exclusion_has_a_ceiling():
     # Ours is only spared while its heartbeat is younger than the ceiling.
     assert "Job.heartbeat_at < wedged" in source
     assert "or_(Job.id.not_in(mine)" in source
+
+
+def test_database_engine_bounds_a_single_round_trip():
+    """A connection that dies mid-statement must raise, not hang.
+
+    pool_pre_ping validates a connection on checkout and does nothing during a
+    query, so without a command timeout asyncpg awaits a reply that never
+    arrives. Two jobs were found suspended that way for over an hour, each
+    holding a worker slot with no thread, no server-side query and no lock —
+    invisible to every liveness check and never retried, because a hung await
+    raises nothing for the job loop to catch.
+    """
+    import inspect
+
+    from app import database
+    from app.config import settings
+
+    source = inspect.getsource(database)
+    assert "command_timeout" in source, "an unbounded round trip can hang forever"
+    assert settings.db_command_timeout > 0
+    # Generous enough for the slowest legitimate statement, short enough that a
+    # dead connection surfaces well inside the OCR stall window.
+    assert settings.db_command_timeout <= settings.ocr_stall_minutes * 60
