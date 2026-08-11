@@ -1,4 +1,4 @@
-from sqlalchemy import Float, cast, func, select
+from sqlalchemy import Float, cast, func, or_, select
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -67,10 +67,13 @@ async def search(
         .correlate(Document)
         .exists()
     )
+    # Title or page text. Dropping the combined vector removed title matching
+    # outright — "find the document called X" returned nothing — which is the
+    # same class of silent gap as the one that started this.
     matches = [
         Document.tenant_id == user.tenant_id,
         Document.deleted_at.is_(None),
-        page_match,
+        or_(page_match, Document.title_vector.op("@@")(tsquery)),
         # Scoped search: restrict to the active tag filter.
         *([Document.tags.any(Tag.id == tag_uuid)] if tag_uuid else []),
     ]
@@ -96,7 +99,11 @@ async def search(
         .correlate(Document)
         .scalar_subquery()
     )
-    score = cast(page_score, Float)
+    # A title hit counts for a lot: a document named for the term is usually
+    # what was wanted, and it may have no page rows at all (an image-only scan
+    # with a meaningful filename).
+    title_rank = func.ts_rank(Document.title_vector, tsquery) * 2.0
+    score = cast(page_score + title_rank, Float)
 
     rows = (
         await db.execute(

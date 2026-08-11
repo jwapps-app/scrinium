@@ -457,3 +457,19 @@ async def test_backfill_ignores_documents_whose_text_is_only_page_breaks():
         pending = await page_index.documents_missing_pages(session, limit=500)
         assert doc.id not in pending, "would be reselected forever"
         await session.rollback()
+
+
+async def test_title_only_match_is_still_found(client, auth, pdf_factory):
+    """Moving matching to the page index removed title search, and CI caught
+    it: a word in the title with no page rows behind it returned nothing.
+    A document named for the term is usually the one wanted."""
+    marker = f"thornfield{uuid.uuid4().hex[:6]}"
+    doc = await upload(client, auth, pdf_factory(text="unrelated body text"), "t.pdf")
+    await client.patch(
+        f"/api/documents/{doc['id']}", headers=auth,
+        json={"title": f"{marker} survey notes"},
+    )
+
+    resp = (await client.get(f"/api/search?q={marker}", headers=auth)).json()
+    assert doc["id"] in [r["id"] for r in resp["results"]], resp
+    assert resp["total"] >= 1

@@ -41,9 +41,27 @@ depends_on = None
 def upgrade() -> None:
     op.drop_index("ix_documents_search_vector", table_name="documents")
     op.drop_column("documents", "search_vector")
+    # Titles still need to be searchable — "find the document called X" is not
+    # served by the page index, which only holds page text. A title is a few
+    # words, so this vector can never come near the 1 MB ceiling that made the
+    # combined one unsafe.
+    op.add_column(
+        "documents",
+        sa.Column(
+            "title_vector",
+            TSVECTOR(),
+            sa.Computed("to_tsvector('english', coalesce(title, ''))", persisted=True),
+        ),
+    )
+    op.create_index(
+        "ix_documents_title_vector", "documents", ["title_vector"],
+        postgresql_using="gin",
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("ix_documents_title_vector", table_name="documents")
+    op.drop_column("documents", "title_vector")
     op.add_column(
         "documents",
         sa.Column(
