@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, status
 from app.deps import DB, CurrentUser
 import uuid
 
-from app.models import Correspondent, Document, Tag
+from app.models import Correspondent, Document, DocumentPage, Tag
 from app.schemas import SearchResponse, SearchResult
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -52,13 +52,54 @@ async def search(
         # Scoped search: restrict to the active tag filter.
         *([Document.tags.any(Tag.id == tag_uuid)] if tag_uuid else []),
     ]
+
+    # Score from the per-page vectors, not the whole-document one. Postgres
+    # records token positions only for roughly the first 16,383 words, and
+    # ts_rank reads positions — so one vector over a whole book describes its
+    # opening pages. A 4.75 MB encyclopedia scored as though a word appearing
+    # twenty-eight times appeared twice, and sat 82nd of 376 matches.
+    #
+    # Pages are individually small, so their positions are complete; summing
+    # them reflects the real distribution. It also demotes long volumes
+    # honestly: a thousand-page book with two matching pages ranks below a
+    # short work on the subject, which is the opposite of what scaling the
+    # whole-document rank by length would do.
+    page_score = (
+        select(
+            func.coalesce(func.sum(func.ts_rank(DocumentPage.search_vector, tsquery)), 0.0)
+        )
+        .where(
+            DocumentPage.document_id == Document.id,
+            DocumentPage.search_vector.op("@@")(tsquery),
+        )
+        .correlate(Document)
+        .scalar_subquery()
+    )
+    pages_hit = (
+        select(func.count())
+        .select_from(DocumentPage)
+        .where(
+            DocumentPage.document_id == Document.id,
+            DocumentPage.search_vector.op("@@")(tsquery),
+        )
+        .correlate(Document)
+        .scalar_subquery()
+    )
+    # Documents indexed before the page table existed have no rows yet; fall
+    # back to the whole-document rank so they stay findable during the
+    # backfill rather than dropping to the bottom of every search.
+    score = cast(func.greatest(page_score, rank), Float)
+
     rows = (
         await db.execute(
-            select(Document.id, Document.title, Document.status, snippet, rank)
+            select(
+                Document.id, Document.title, Document.status, snippet,
+                score, pages_hit,
+            )
             .where(*matches)
             # id breaks ties, so paging can't repeat or skip a row when two
             # documents score identically.
-            .order_by(rank.desc(), Document.id)
+            .order_by(score.desc(), Document.id)
             .limit(min(limit, 100))
             .offset(offset)
         )
@@ -105,7 +146,10 @@ async def search(
     return SearchResponse(
         query=q,
         results=[
-            SearchResult(id=r[0], title=r[1], status=r[2], snippet=r[3], rank=r[4])
+            SearchResult(
+                id=r[0], title=r[1], status=r[2], snippet=r[3],
+                rank=r[4], pages_hit=r[5],
+            )
             for r in rows
         ],
         suggestions=suggestions,

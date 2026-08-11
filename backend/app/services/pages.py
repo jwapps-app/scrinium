@@ -22,7 +22,7 @@ import pikepdf
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Blob, Document, DocumentStatus, Job, Tag
-from app.services import storage
+from app.services import page_index, storage
 from app.services.intake import ingest_file
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,10 @@ async def _replace_original(
     doc.thumbnail_blob_id = None
     doc.status = DocumentStatus.PENDING
     doc.text_content = None
+    # Drop the page vectors with it. Page numbers have just shifted, so
+    # leaving them would have searches pointing at content that moved until
+    # the re-OCR below finishes.
+    await page_index.reindex_pages(session, doc)
     # Force: the copied text layer (if any) no longer matches the new layout.
     session.add(Job(document_id=doc.id, kind="ingest", mode="force"))
     await session.flush()

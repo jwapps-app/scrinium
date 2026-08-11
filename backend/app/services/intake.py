@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import Blob, Document, DocumentStatus, Job, Tag
-from app.services import similarity, storage
+from app.services import page_index, similarity, storage
 from app.services.classify import classify_document
 from app.services.dates import extract_document_date
 from app.services.tag_tree import with_ancestors
@@ -125,8 +125,10 @@ async def ingest_file(
         session.add(Job(document_id=doc.id, kind="ingest", mode=settings.ocr_mode))
         await session.flush()
     else:
-        # Captured docs skip the worker entirely, so classify here.
+        # Captured docs skip the worker entirely, so classify and build the
+        # page vectors here — nothing else will.
         await classify_document(session, doc)
+        await page_index.reindex_pages(session, doc)
         await session.flush()
     await session.refresh(doc)
     return doc

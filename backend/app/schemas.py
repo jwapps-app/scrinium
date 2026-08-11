@@ -219,6 +219,10 @@ class SearchResult(BaseModel):
     status: str
     snippet: str
     rank: float
+    # How many pages of this document mention the query. Falls out of the
+    # per-page index and says more than a score does: "28 pages" is why a
+    # thousand-page encyclopedia is worth opening and a passing mention isn't.
+    pages_hit: int = 0
 
 
 class SearchResponse(BaseModel):

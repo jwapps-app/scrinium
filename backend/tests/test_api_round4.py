@@ -280,3 +280,66 @@ async def test_search_pages_and_reports_the_true_total(client, auth, pdf_factory
     # Paging must not repeat or drop a row, even when ranks tie.
     ids = [r["id"] for r in first["results"]] + [r["id"] for r in second["results"]]
     assert len(set(ids)) == 3, "a document appeared on two pages or on neither"
+
+
+async def test_page_index_splits_on_form_feeds():
+    """Stored text keeps its page breaks, so indexing needs no re-OCR."""
+    from app.services.page_index import split_pages
+
+    assert split_pages("one\ftwo\fthree") == ["one", "two", "three"]
+    assert split_pages(None) == []
+    assert split_pages("") == []
+    # A single runaway "page" is clamped rather than blowing the position cap.
+    assert len(split_pages("x" * 200_000)[0]) == 90_000
+
+
+async def test_long_document_outranks_a_passing_mention(client, auth, pdf_factory):
+    """The bug this whole table exists for.
+
+    ts_rank reads token positions and Postgres records them only for roughly
+    the first 16,383 words, so a long book was scored on its opening pages. A
+    volume that mentions the term throughout must beat one that mentions it
+    once in passing, however large either is.
+    """
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import Document
+    from app.services import page_index
+
+    term = f"blueberrium{uuid.uuid4().hex[:6]}"
+    filler = "orchard husbandry and the tending of trees. " * 400
+
+    # Both documents are long. One mentions the term on many pages, the other
+    # once, buried past the position window.
+    throughout = "\f".join(f"{filler} {term} more text here." for _ in range(12))
+    passing = "\f".join(
+        (f"{filler} {term} only here." if i == 11 else filler) for i in range(12)
+    )
+
+    ids = {}
+    for label, body in (("throughout", throughout), ("passing", passing)):
+        doc = await upload(client, auth, pdf_factory(text="placeholder"), f"{label}.pdf")
+        ids[label] = doc["id"]
+        async with SessionLocal() as session:
+            row = (
+                await session.execute(
+                    select(Document).where(Document.id == uuid.UUID(doc["id"]))
+                )
+            ).scalar_one()
+            row.text_content = body
+            row.title = f"{label} volume"
+            await page_index.reindex_pages(session, row)
+            await session.commit()
+
+    resp = (await client.get(f"/api/search?q={term}", headers=auth)).json()
+    order = [r["id"] for r in resp["results"]]
+    assert ids["throughout"] in order and ids["passing"] in order, resp
+    assert order.index(ids["throughout"]) < order.index(ids["passing"]), (
+        "a document mentioning the term throughout must outrank a passing "
+        f"mention: {[(r['title'], r['rank'], r['pages_hit']) for r in resp['results']]}"
+    )
+
+    hits = {r["id"]: r["pages_hit"] for r in resp["results"]}
+    assert hits[ids["throughout"]] == 12
+    assert hits[ids["passing"]] == 1

@@ -132,3 +132,35 @@ class Document(Base):
     __table_args__ = (
         Index("ix_documents_search_vector", "search_vector", postgresql_using="gin"),
     )
+
+
+class DocumentPage(Base):
+    """One search vector per page.
+
+    The whole-document vector still exists and still drives snippets; this
+    exists because ts_rank scores from token positions, and Postgres stops
+    recording positions after roughly the first 16,383 words. A long book was
+    therefore ranked on its opening pages alone. A page is small enough that
+    its positions are complete, so summing pages gives a score that reflects
+    the whole document — and a thousand-page volume with two matching pages
+    correctly ranks below a short work about the subject.
+
+    The page text is not duplicated here; documents.text_content already holds
+    it and is what ts_headline reads for snippets.
+    """
+
+    __tablename__ = "document_pages"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    page: Mapped[int] = mapped_column(primary_key=True)
+    search_vector = mapped_column(TSVECTOR, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_document_pages_search_vector",
+            "search_vector",
+            postgresql_using="gin",
+        ),
+    )

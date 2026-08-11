@@ -1,7 +1,12 @@
 from app.models.app_setting import AppSetting
 from app.models.blob import Blob
 from app.models.device import DeviceToken
-from app.models.document import Document, DocumentStatus, document_tags
+from app.models.document import (
+    Document,
+    DocumentPage,
+    DocumentStatus,
+    document_tags,
+)
 from app.models.job import Job, JobStatus
 from app.models.share import ShareLink
 from app.models.userdata import Annotation, DismissedDuplicate, ReadingPosition
@@ -22,6 +27,7 @@ __all__ = [
     "Blob",
     "DeviceToken",
     "Document",
+    "DocumentPage",
     "DocumentStatus",
     "document_tags",
     "Correspondent",

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import Blob, Document, DocumentStatus, Job, JobStatus
-from app.services import compress, push, similarity, storage, thumbnails
+from app.services import compress, page_index, push, similarity, storage, thumbnails
 from app.services.classify import classify_document
 from app.services.dates import extract_document_date
 from app.services.app_state import (
@@ -256,6 +256,9 @@ async def process_job(session: AsyncSession, job: Job) -> None:
     document.ocr_engine = outcome.engine
     document.status = DocumentStatus.READY
     document.error = None
+    # Per-page vectors, so a long book ranks on its whole text rather than on
+    # the first 16,383 words Postgres records positions for.
+    await page_index.reindex_pages(session, document)
     job.status = JobStatus.DONE
     job.finished_at = datetime.now(timezone.utc)
     await session.commit()

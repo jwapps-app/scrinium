@@ -723,7 +723,11 @@ export default function Library() {
                   >
                     <Thumb id={r.id} className="thumb-row" />
                     <span className="doc-title">{r.title}</span>
-                    <span className="doc-meta">jump to matches →</span>
+                    <span className="doc-meta">
+                      {r.pages_hit > 1
+                        ? `${r.pages_hit} pages · jump to matches →`
+                        : 'jump to matches →'}
+                    </span>
                     <StatusChip status={r.status} />
                   </Link>
                   <Snippet text={r.snippet} />

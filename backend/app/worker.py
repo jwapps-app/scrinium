@@ -23,7 +23,7 @@ from app.services.app_state import (
     resolve_archive_dpi,
     set_value,
 )
-from app.services import similarity
+from app.services import page_index, similarity
 from app.services.compress import process_downsample_job
 from app.services.deletion import purge_expired, sweep_upload_sessions
 from app.services.export import run_export
@@ -46,9 +46,11 @@ RETENTION_LOCK_KEY = 815557
 VERIFY_LOCK_KEY = 815558
 EXPIRY_LOCK_KEY = 815559
 EXPORT_LOCK_KEY = 815560
+PAGE_INDEX_LOCK_KEY = 815561
 
 
 _backfill_done = False
+_page_index_done = False
 
 
 async def _backfill_text_length() -> None:
@@ -67,6 +69,32 @@ async def _backfill_text_length() -> None:
         )
         await session.commit()
         _backfill_done = (result.rowcount or 0) == 0
+
+
+async def _backfill_page_index() -> None:
+    """Gradually build per-page search vectors for documents OCR'd before the
+    table existed.
+
+    Needs no re-OCR: the stored text still carries its form-feed page breaks,
+    and the count matches page_count exactly across the library.
+
+    Deliberately small batches. There are ~9 GB of text across the library and
+    tokenising it is real work; a handful of documents per pass keeps the
+    database responsive while the queue is still running OCR.
+    """
+    global _page_index_done
+    async with SessionLocal() as session:
+        ids = await page_index.documents_missing_pages(session, limit=25)
+        if not ids:
+            _page_index_done = True
+            return
+        for doc_id in ids:
+            document = await session.get(Document, doc_id)
+            if document is None:
+                continue
+            await page_index.reindex_pages(session, document)
+        await session.commit()
+        logger.info("page index: %d document(s) indexed", len(ids))
 
 
 async def _sweep_orphan_blobs() -> None:
@@ -457,6 +485,7 @@ async def maintenance_loop() -> None:
     """Single lane for the periodic sweeps (watch/mail/purge). Advisory
     locks keep these singular even across multiple worker replicas."""
     last_watch = last_mail = last_purge = last_backfill = 0.0
+    last_page_index = 0.0
     while True:
         now = time.monotonic()
         paused = await _is_paused()
@@ -486,6 +515,15 @@ async def maintenance_loop() -> None:
                 await _with_advisory_lock(BACKFILL_LOCK_KEY, _backfill_text_length)
             except Exception:
                 logger.exception("text-length backfill crashed; continuing")
+
+        if now - last_page_index >= (3600 if _page_index_done else 15):
+            last_page_index = now
+            try:
+                await _with_advisory_lock(
+                    PAGE_INDEX_LOCK_KEY, _backfill_page_index
+                )
+            except Exception:
+                logger.exception("page-index backfill crashed; continuing")
 
         if now - last_purge >= 3600:
             last_purge = now
