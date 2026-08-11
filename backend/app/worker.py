@@ -9,6 +9,7 @@ import io
 import logging
 import signal
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, delete, func, or_, select, text, union
@@ -846,6 +847,17 @@ async def main() -> None:
         settings.watch_dir or "disabled",
     )
     _install_task_dumper()
+    # Everything blocking goes through asyncio.to_thread, which uses the loop's
+    # default executor. Python sizes that at min(32, cpu+4) — 12 here — and an
+    # OCR run holds its thread for as long as the document takes. Saturate it
+    # and the next to_thread waits for a slot with no timeout, invisible to
+    # every liveness check. Size it so job work and the maintenance sweeps
+    # never compete.
+    pool = ThreadPoolExecutor(
+        max_workers=settings.thread_pool_size(), thread_name_prefix="scrinium"
+    )
+    asyncio.get_running_loop().set_default_executor(pool)
+    logger.info("thread pool: %d workers", settings.thread_pool_size())
     try:
         # Single container → reclaim every RUNNING job at startup (all are
         # orphans; this worker owns none yet). Replicas → heartbeat-only.

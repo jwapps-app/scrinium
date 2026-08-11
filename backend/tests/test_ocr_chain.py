@@ -421,3 +421,38 @@ def test_database_engine_bounds_a_single_round_trip():
     # Generous enough for the slowest legitimate statement, short enough that a
     # dead connection surfaces well inside the OCR stall window.
     assert settings.db_command_timeout <= settings.ocr_stall_minutes * 60
+
+
+def test_thread_pool_is_sized_above_the_concurrent_job_count():
+    """asyncio.to_thread shares one executor across everything that blocks.
+
+    Python's default is min(32, cpu+4) — 12 on an eight-core host — and an OCR
+    run holds its thread for the whole document, sometimes hours. Add the
+    maintenance sweeps (watch scan, retention, integrity hashing, export) and
+    five concurrent jobs sit right at that limit. Saturated, the next
+    to_thread waits for a slot with no timeout and no thread of its own: no
+    query, no lock, nothing a heartbeat or py-spy can see. Jobs were found
+    wedged over an hour that way, which took four wrong diagnoses to find.
+    """
+    from app.config import Settings
+
+    for concurrency in (1, 5, 10):
+        settings = Settings(worker_concurrency=concurrency)
+        size = settings.thread_pool_size()
+        assert size > concurrency, "job threads must not consume the whole pool"
+        # Every sweep must be able to run at once without touching job slots.
+        assert size - concurrency >= 8, f"too little headroom at {concurrency}"
+
+    # An explicit value always wins.
+    assert Settings(worker_concurrency=5, worker_thread_pool=40).thread_pool_size() == 40
+
+
+def test_worker_installs_that_pool_as_the_default_executor():
+    """Sizing it is no use unless to_thread actually gets it."""
+    import inspect
+
+    from app import worker
+
+    source = inspect.getsource(worker.main)
+    assert "set_default_executor" in source
+    assert "thread_pool_size" in source

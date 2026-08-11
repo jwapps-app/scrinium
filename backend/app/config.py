@@ -107,6 +107,24 @@ class Settings(BaseSettings):
     # from the previous life and is reclaimed at once. Set False only when
     # running multiple worker replicas (then rely on heartbeat staleness).
     worker_single: bool = True
+    # Threads available to asyncio.to_thread. Everything blocking shares this
+    # pool — OCR runs that hold a thread for hours, Ghostscript downsamples,
+    # the watch-folder scan, integrity hashing, exports — and Python's default
+    # is only min(32, cpu+4), which is 12 on an eight-core box. At
+    # WORKER_CONCURRENCY=5 that sits right at the limit, and when it saturates
+    # a to_thread call queues with no timeout and no thread of its own: no
+    # query, no lock, nothing for py-spy or the heartbeat to show. Jobs were
+    # observed wedged for over an hour that way. The threads are almost always
+    # blocked on a subprocess rather than burning CPU, so headroom is cheap.
+    # 0 = size it from worker_concurrency.
+    worker_thread_pool: int = 0
+
+    def thread_pool_size(self) -> int:
+        if self.worker_thread_pool > 0:
+            return self.worker_thread_pool
+        # One per concurrent job, plus room for every maintenance sweep to run
+        # at once without ever competing with job work.
+        return max(1, self.worker_concurrency) + 16
     max_upload_mb: int = 500
     # /documents/stats micro-cache TTL; 0 disables (tests need fresh counts).
     stats_cache_seconds: float = 3.0
