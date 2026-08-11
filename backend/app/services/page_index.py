@@ -17,7 +17,7 @@ which is what snippets are drawn from.
 
 import uuid
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Document, DocumentPage
@@ -85,6 +85,11 @@ async def documents_missing_pages(
         .where(
             Document.deleted_at.is_(None),
             Document.text_content.is_not(None),
+            # Strip form feeds too, not just spaces. A document whose OCR
+            # produced nothing but page breaks yields no rows however often it
+            # is indexed, so without this it comes back every sweep forever and
+            # the backfill never reports itself finished.
+            func.btrim(Document.text_content, " \t\r\n\f") != "",
             ~select(DocumentPage.document_id)
             .where(DocumentPage.document_id == Document.id)
             .exists(),

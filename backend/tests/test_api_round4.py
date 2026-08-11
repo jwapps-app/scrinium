@@ -374,3 +374,86 @@ async def test_reindex_sees_text_assigned_but_not_yet_committed():
         ).scalar_one()
         assert rows == 3
         await session.rollback()
+
+
+async def test_a_huge_vocabulary_document_still_ingests_and_is_searchable(
+    client, auth, pdf_factory
+):
+    """The bug that took the whole ingest down.
+
+    A tsvector caps at 1,048,575 bytes and its size tracks distinct lexemes,
+    not characters — so an encyclopedia blew past the ceiling where a far
+    larger catalogue did not. The whole-document generated column made that
+    Postgres's problem with the UPDATE that wrote the OCR text, so the write
+    failed, the exception escaped, and the job sat at RUNNING forever.
+    """
+    from sqlalchemy import func, select
+
+    from app.database import SessionLocal
+    from app.models import Document, DocumentPage
+    from app.services import page_index
+
+    term = f"zephyrine{uuid.uuid4().hex[:6]}"
+    # Distinct words are what costs vector space; make a lot of them, spread
+    # over pages, with the search term deep inside rather than at the front.
+    pages = []
+    for page in range(60):
+        words = " ".join(f"w{page}x{i}word{i * 7}" for i in range(700))
+        pages.append(f"{words} {term}" if page > 40 else words)
+    body = "\f".join(pages)
+
+    doc = await upload(client, auth, pdf_factory(text="placeholder"), "huge.pdf")
+    async with SessionLocal() as session:
+        row = (
+            await session.execute(
+                select(Document).where(Document.id == uuid.UUID(doc["id"]))
+            )
+        ).scalar_one()
+        row.text_content = body
+        row.title = "vocabulary heavy volume"
+        await page_index.reindex_pages(session, row)
+        await session.commit()  # must not raise on the whole-document vector
+
+        rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(DocumentPage)
+                .where(DocumentPage.document_id == row.id)
+            )
+        ).scalar_one()
+        assert rows == 60
+
+    # Found on a term that appears only past page 40 — nothing truncated.
+    resp = (await client.get(f"/api/search?q={term}", headers=auth)).json()
+    assert doc["id"] in [r["id"] for r in resp["results"]], resp
+    hit = next(r for r in resp["results"] if r["id"] == doc["id"])
+    assert hit["pages_hit"] == 19, hit
+
+
+async def test_backfill_ignores_documents_whose_text_is_only_page_breaks():
+    """OCR that produced nothing yields no rows however often it is indexed.
+    Without excluding it, the sweep reselects it every pass and the backfill
+    never reports itself finished."""
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import Document, Tenant
+    from app.services import page_index
+
+    async with SessionLocal() as session:
+        tenant = (await session.execute(select(Tenant).limit(1))).scalar_one()
+        blob = (
+            await session.execute(select(Document.original_blob_id).limit(1))
+        ).scalar_one()
+        doc = Document(
+            tenant_id=tenant.id, title="empty scan",
+            original_filename="e.pdf", original_blob_id=blob,
+            text_content="\f\f\f",
+        )
+        session.add(doc)
+        await session.flush()
+
+        assert await page_index.reindex_pages(session, doc) == 0
+        pending = await page_index.documents_missing_pages(session, limit=500)
+        assert doc.id not in pending, "would be reselected forever"
+        await session.rollback()

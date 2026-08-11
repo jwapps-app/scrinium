@@ -77,13 +77,13 @@ def _parse_id(value, field: str) -> uuid.UUID | None:
 
 def _light_document():
     """select(Document) without the heavy payload columns. text_content is
-    megabytes of TOASTed OCR text per book and search_vector mirrors it —
+    megabytes of TOASTed OCR text per book —
     list/detail serialization never needs either, so loading them detoasts
     and ships huge data just to throw it away."""
     from sqlalchemy.orm import defer
 
     return select(Document).options(
-        defer(Document.text_content), defer(Document.search_vector)
+        defer(Document.text_content)
     )
 
 

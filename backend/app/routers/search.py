@@ -36,7 +36,6 @@ async def search(
             )
 
     tsquery = func.websearch_to_tsquery("english", q)
-    rank = cast(func.ts_rank(Document.search_vector, tsquery), Float)
     snippet = func.ts_headline(
         "english",
         func.coalesce(Document.text_content, ""),
@@ -45,25 +44,37 @@ async def search(
         # frontend renders highlights itself.
         "StartSel=[[, StopSel=]], MaxWords=30, MinWords=15, MaxFragments=2",
     )
+    # Matching and ranking both come from the per-page index. The old
+    # whole-document vector is gone: a tsvector caps at 1 MB, its size tracks
+    # distinct lexemes rather than characters, and an encyclopedia therefore
+    # blew straight past the ceiling — failing not just its indexing but the
+    # entire UPDATE that wrote its OCR text, which took the ingest down with
+    # it. A page is small enough that no such limit is in reach.
+    #
+    # It ranks better too. Postgres records token positions only for roughly
+    # the first 16,383 words and ts_rank reads positions, so one vector over a
+    # whole book described its opening pages: a 4.75 MB encyclopedia scored as
+    # though a word appearing twenty-eight times appeared twice, and sat 82nd
+    # of 376 matches. Summed pages reflect the real distribution, and demote
+    # long volumes honestly — a thousand-page book with two matching pages
+    # ranks below a short work on the subject.
+    page_match = (
+        select(DocumentPage.document_id)
+        .where(
+            DocumentPage.document_id == Document.id,
+            DocumentPage.search_vector.op("@@")(tsquery),
+        )
+        .correlate(Document)
+        .exists()
+    )
     matches = [
         Document.tenant_id == user.tenant_id,
         Document.deleted_at.is_(None),
-        Document.search_vector.op("@@")(tsquery),
+        page_match,
         # Scoped search: restrict to the active tag filter.
         *([Document.tags.any(Tag.id == tag_uuid)] if tag_uuid else []),
     ]
 
-    # Score from the per-page vectors, not the whole-document one. Postgres
-    # records token positions only for roughly the first 16,383 words, and
-    # ts_rank reads positions — so one vector over a whole book describes its
-    # opening pages. A 4.75 MB encyclopedia scored as though a word appearing
-    # twenty-eight times appeared twice, and sat 82nd of 376 matches.
-    #
-    # Pages are individually small, so their positions are complete; summing
-    # them reflects the real distribution. It also demotes long volumes
-    # honestly: a thousand-page book with two matching pages ranks below a
-    # short work on the subject, which is the opposite of what scaling the
-    # whole-document rank by length would do.
     page_score = (
         select(
             func.coalesce(func.sum(func.ts_rank(DocumentPage.search_vector, tsquery)), 0.0)
@@ -85,10 +96,7 @@ async def search(
         .correlate(Document)
         .scalar_subquery()
     )
-    # Documents indexed before the page table existed have no rows yet; fall
-    # back to the whole-document rank so they stay findable during the
-    # backfill rather than dropping to the bottom of every search.
-    score = cast(func.greatest(page_score, rank), Float)
+    score = cast(page_score, Float)
 
     rows = (
         await db.execute(

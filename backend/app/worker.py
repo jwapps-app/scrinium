@@ -239,6 +239,30 @@ MAX_JOB_ATTEMPTS = 5
 IN_FLIGHT: set = set()
 
 
+async def _fail_orphaned_job(job_id, document_id, exc: Exception) -> None:
+    """Mark a job failed after its own session has already gone bad.
+
+    A fresh session on purpose: the usual reason for landing here is a
+    statement the database rejected, which leaves the original session
+    unusable for anything but a rollback.
+    """
+    try:
+        async with SessionLocal() as session:
+            job = await session.get(Job, job_id)
+            if job is None or job.status is not JobStatus.RUNNING:
+                return
+            job.status = JobStatus.FAILED
+            job.error = f"{type(exc).__name__}: {exc}"[:4000]
+            job.finished_at = datetime.now(timezone.utc)
+            document = await session.get(Document, document_id)
+            if document is not None:
+                document.status = DocumentStatus.FLAGGED
+                document.error = f"Processing failed: {exc}"[:4000]
+            await session.commit()
+    except Exception:
+        logger.exception("could not record failure for job %s", job_id)
+
+
 async def claim_and_run() -> bool:
     """Claim one queued job and run it. Returns True if a job was processed."""
     async with SessionLocal() as session:
@@ -280,12 +304,23 @@ async def claim_and_run() -> bool:
             job.id, job.document_id, job.kind, job.mode,
         )
         IN_FLIGHT.add(job.id)
+        job_id, document_id = job.id, job.document_id
         try:
             if job.kind == "downsample":
                 target = await resolve_archive_dpi(session)
                 await process_downsample_job(session, job, target)
             else:
                 await process_job(session, job)
+        except Exception as exc:
+            # process_job only catches OCR failures. Anything else — a write
+            # rejected by the database, a bug — escaped and left the row at
+            # RUNNING with nothing working on it. That reads exactly like a
+            # hang: no task, no thread, no query, no lock, and a heartbeat
+            # frozen at the moment it died. It cost five wrong diagnoses.
+            # Whatever goes wrong, the job says so.
+            logger.exception("job %s failed unexpectedly", job_id)
+            await _fail_orphaned_job(job_id, document_id, exc)
+            raise
         finally:
             IN_FLIGHT.discard(job.id)
         return True

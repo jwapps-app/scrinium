@@ -109,13 +109,6 @@ class Document(Base):
     # Character count of text_content, cached so weak-OCR stats don't detoast
     # and re-measure the (large) text on every Insights load.
     text_length: Mapped[int | None] = mapped_column(nullable=True)
-    search_vector = mapped_column(
-        TSVECTOR,
-        Computed(
-            "to_tsvector('english', coalesce(title, '') || ' ' || coalesce(text_content, ''))",
-            persisted=True,
-        ),
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -129,9 +122,6 @@ class Document(Base):
     correspondent = relationship("Correspondent", lazy="selectin")
     doc_type = relationship("DocType", lazy="selectin")
 
-    __table_args__ = (
-        Index("ix_documents_search_vector", "search_vector", postgresql_using="gin"),
-    )
 
 
 class DocumentPage(Base):
