@@ -5,7 +5,9 @@ Jobs are claimed with FOR UPDATE SKIP LOCKED so multiple workers are safe.
 """
 
 import asyncio
+import io
 import logging
+import signal
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -804,6 +806,38 @@ async def reclaim_interrupted_jobs(stale_after_seconds: int | None = None) -> No
                     )
 
 
+def _install_task_dumper() -> None:
+    """SIGUSR1 → log the stack of every asyncio task.
+
+    A coroutine suspended on an await has no thread, so py-spy, /proc and the
+    thread list all show nothing for it: the one job that is stuck is the one
+    thing you cannot see. That cost several wrong diagnoses of a hang whose
+    only symptom was a heartbeat that stopped.
+
+        docker kill -s USR1 scrinium-worker-1 && docker logs --tail 200 ...
+
+    Cheap, off unless signalled, and the only way to find out what a wedged
+    job is actually waiting on.
+    """
+
+    def dump() -> None:
+        tasks = asyncio.all_tasks()
+        logger.error("=== asyncio task dump: %d task(s) ===", len(tasks))
+        for task in tasks:
+            buf = io.StringIO()
+            try:
+                task.print_stack(file=buf, limit=12)
+            except Exception as exc:  # never let a diagnostic take the worker down
+                buf.write(f"<could not read stack: {exc}>")
+            logger.error("task %r\n%s", task.get_name(), buf.getvalue())
+        logger.error("=== end task dump ===")
+
+    try:
+        asyncio.get_running_loop().add_signal_handler(signal.SIGUSR1, dump)
+    except (NotImplementedError, RuntimeError):
+        logger.warning("SIGUSR1 task dump unavailable on this platform")
+
+
 async def main() -> None:
     concurrency = max(1, settings.worker_concurrency)
     logger.info(
@@ -811,6 +845,7 @@ async def main() -> None:
         concurrency,
         settings.watch_dir or "disabled",
     )
+    _install_task_dumper()
     try:
         # Single container → reclaim every RUNNING job at startup (all are
         # orphans; this worker owns none yet). Replicas → heartbeat-only.
