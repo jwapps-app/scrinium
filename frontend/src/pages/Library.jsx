@@ -52,6 +52,11 @@ export default function Library() {
   const [correspondents, setCorrespondents] = useState([])
   const [results, setResults] = useState(null)
   const [suggestions, setSuggestions] = useState([])
+  // How many documents matched, not how many are on screen. A common word
+  // matches hundreds, and without this the first page reads as the whole
+  // answer — a large book ranked past it looks like it isn't in the library.
+  const [matchTotal, setMatchTotal] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [query, setQuery] = useState(params.get('q') || '')
   const [uploading, setUploading] = useState(false)
   const [uploadNote, setUploadNote] = useState('')
@@ -154,9 +159,26 @@ export default function Library() {
       .then((data) => {
         setResults(data.results)
         setSuggestions(data.suggestions || [])
+        setMatchTotal(data.total ?? data.results.length)
       })
       .catch((err) => setError(err.message))
   }, [q, tag])
+
+  async function loadMoreResults() {
+    setLoadingMore(true)
+    try {
+      const data = await apiJson(
+        `/api/search?q=${encodeURIComponent(q)}` +
+          `${tag ? `&tag_id=${tag}` : ''}&offset=${results.length}`,
+      )
+      setResults((prev) => [...prev, ...data.results])
+      setMatchTotal(data.total ?? matchTotal)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
   // Tunnels commonly cap request bodies (Cloudflare: 100 MB), so large
   // files go up as a session of 32 MB chunks assembled server-side.
@@ -666,7 +688,10 @@ export default function Library() {
         {results !== null ? (
           <section>
             <h2>
-              {results.length} result{results.length === 1 ? '' : 's'} for “{q}”
+              {matchTotal > results.length
+                ? `${results.length} of ${matchTotal} results`
+                : `${matchTotal} result${matchTotal === 1 ? '' : 's'}`}{' '}
+              for “{q}”
               {tag && tagName && <span className="scope-hint"> in {tagName}</span>}
             </h2>
             {results.length === 0 && suggestions.length > 0 && (
@@ -705,6 +730,17 @@ export default function Library() {
                 </li>
               ))}
             </ul>
+            {results.length < matchTotal && (
+              <button
+                className="ghost load-more"
+                onClick={loadMoreResults}
+                disabled={loadingMore}
+              >
+                {loadingMore
+                  ? 'Loading…'
+                  : `Show more (${matchTotal - results.length} left)`}
+              </button>
+            )}
           </section>
         ) : (
           <section>

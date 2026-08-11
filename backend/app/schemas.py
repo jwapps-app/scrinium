@@ -225,6 +225,11 @@ class SearchResponse(BaseModel):
     query: str
     results: list[SearchResult]
     suggestions: list[str] = []
+    # How many documents matched in total, not how many are in `results`.
+    # A common word matches hundreds; without this the first page looks like
+    # the whole answer, and a large book ranked past it looks absent.
+    total: int = 0
+    offset: int = 0
 
 
 class NamedEntityOut(BaseModel):

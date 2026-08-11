@@ -2405,3 +2405,10 @@ button.linklike {
     border-top: 1px solid var(--border);
   }
 }
+
+/* Search paging. A common word matches hundreds of documents; the count in
+   the heading says how many, and this reaches the ones past the first page. */
+.load-more {
+  display: block;
+  margin: 0.9rem auto 0;
+}

@@ -17,9 +17,11 @@ async def search(
     user: CurrentUser,
     db: DB,
     limit: int = 25,
+    offset: int = 0,
     tag_id: str | None = None,
 ) -> SearchResponse:
     q = q.strip()
+    offset = max(0, offset)
     if not q:
         return SearchResponse(query=q, results=[])
 
@@ -43,24 +45,31 @@ async def search(
         # frontend renders highlights itself.
         "StartSel=[[, StopSel=]], MaxWords=30, MinWords=15, MaxFragments=2",
     )
+    matches = [
+        Document.tenant_id == user.tenant_id,
+        Document.deleted_at.is_(None),
+        Document.search_vector.op("@@")(tsquery),
+        # Scoped search: restrict to the active tag filter.
+        *([Document.tags.any(Tag.id == tag_uuid)] if tag_uuid else []),
+    ]
     rows = (
         await db.execute(
             select(Document.id, Document.title, Document.status, snippet, rank)
-            .where(
-                Document.tenant_id == user.tenant_id,
-                Document.deleted_at.is_(None),
-                Document.search_vector.op("@@")(tsquery),
-                # Scoped search: restrict to the active tag filter.
-                *(
-                    [Document.tags.any(Tag.id == tag_uuid)]
-                    if tag_uuid
-                    else []
-                ),
-            )
-            .order_by(rank.desc())
+            .where(*matches)
+            # id breaks ties, so paging can't repeat or skip a row when two
+            # documents score identically.
+            .order_by(rank.desc(), Document.id)
             .limit(min(limit, 100))
+            .offset(offset)
         )
     ).all()
+    # The count comes from the same predicate, so "showing 25 of 376" is
+    # honest even when the page is the last one.
+    total = (
+        await db.execute(
+            select(func.count()).select_from(Document).where(*matches)
+        )
+    ).scalar_one()
     suggestions: list[str] = []
     if not rows and len(q) >= 3 and " " not in q:
         # Zero hits on a single word: offer close matches from titles,
@@ -100,6 +109,8 @@ async def search(
             for r in rows
         ],
         suggestions=suggestions,
+        total=total,
+        offset=offset,
     )
 
 

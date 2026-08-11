@@ -244,3 +244,39 @@ async def test_scrinium_restore(client, auth, pdf_factory):
         await client.get("/api/documents?limit=500", headers=auth)
     ).json()
     assert sum(1 for d in listed["items"] if d["title"] == "Well Guide") == 1
+
+
+async def test_search_pages_and_reports_the_true_total(client, auth, pdf_factory):
+    """The first page is not the whole answer.
+
+    A common word matches far more documents than one page holds, and with no
+    total and no way to page, a document ranked past the cut looks as though
+    it is not in the library at all — which is exactly how a large reference
+    work goes missing while an in-document search still finds it.
+    """
+    marker = f"quincewort{uuid.uuid4().hex[:6]}"
+    for i in range(3):
+        doc = await upload(client, auth, pdf_factory(text=marker), f"q{i}.pdf")
+        await client.patch(
+            f"/api/documents/{doc['id']}",
+            headers=auth,
+            json={"title": f"{marker} volume {i}"},
+        )
+
+    first = (
+        await client.get(f"/api/search?q={marker}&limit=2", headers=auth)
+    ).json()
+    assert len(first["results"]) == 2
+    assert first["total"] == 3, "total counts every match, not the page"
+    assert first["offset"] == 0
+
+    second = (
+        await client.get(f"/api/search?q={marker}&limit=2&offset=2", headers=auth)
+    ).json()
+    assert len(second["results"]) == 1
+    assert second["total"] == 3
+    assert second["offset"] == 2
+
+    # Paging must not repeat or drop a row, even when ranks tie.
+    ids = [r["id"] for r in first["results"]] + [r["id"] for r in second["results"]]
+    assert len(set(ids)) == 3, "a document appeared on two pages or on neither"
