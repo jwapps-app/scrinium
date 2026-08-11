@@ -228,10 +228,22 @@ async def test_file_details_distinguishes_cap_limited_from_source_limited(
     doc_id = _uuid.UUID(doc["id"])
 
     async def set_dpi(original, archive):
+        """Give the document an archive as well as the DPI values.
+
+        Tests do not run the worker, so an uploaded document has no archive at
+        all — and 'archive_dpi with no archive' is a state production cannot
+        produce. Pointing the archive at the same blob keeps the row coherent;
+        what is under test is the comparison, not blob distinctness.
+        """
         async with SessionLocal() as session:
+            doc_row = await session.get(Document, doc_id)
             await session.execute(
                 update(Document).where(Document.id == doc_id)
-                .values(original_dpi=original, archive_dpi=archive)
+                .values(
+                    original_dpi=original,
+                    archive_dpi=archive,
+                    archive_blob_id=doc_row.original_blob_id,
+                )
             )
             await session.commit()
 
@@ -256,3 +268,15 @@ async def test_file_details_distinguishes_cap_limited_from_source_limited(
     # Original and archive are reported separately, not as one total.
     assert got["original"]["size_bytes"] > 0
     assert "size_bytes" in got["archive"]
+
+    # No archive at all — the original is the document, and there is nothing
+    # a rebuild could improve.
+    async with SessionLocal() as session:
+        await session.execute(
+            update(Document).where(Document.id == doc_id)
+            .values(archive_blob_id=None, archive_dpi=None, original_dpi=600)
+        )
+        await session.commit()
+    got = (await client.get(f"/api/documents/{doc['id']}/files", headers=auth)).json()
+    assert got["archive"]["exists"] is False
+    assert got["can_improve"] is False
