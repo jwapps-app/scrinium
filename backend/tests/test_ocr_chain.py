@@ -377,3 +377,24 @@ def test_heartbeat_is_stamped_before_the_post_ocr_lock():
     beat = source.index("job.heartbeat_at = datetime.now(timezone.utc)")
     lock = source.index("with_for_update=True")
     assert beat < lock, "stamp the heartbeat before waiting on the lock"
+
+
+def test_in_flight_exclusion_has_a_ceiling():
+    """Protecting our own running jobs from reclaim must not be unconditional.
+
+    The exclusion exists because the post-OCR stretch legitimately goes quiet
+    for longer than the 120s window. But with no upper bound it also protects
+    a coroutine that has genuinely hung: the job keeps its worker slot, never
+    finishes, and is never retried — observed at 60+ minutes stale, which is
+    strictly worse than the reclaim storm the exclusion was added to stop.
+    """
+    import inspect
+
+    from app import worker
+
+    source = inspect.getsource(worker.reclaim_interrupted_jobs)
+    assert "IN_FLIGHT" in source
+    assert "wedged" in source, "the exclusion needs an upper bound"
+    # Ours is only spared while its heartbeat is younger than the ceiling.
+    assert "Job.heartbeat_at < wedged" in source
+    assert "or_(Job.id.not_in(mine)" in source

@@ -750,14 +750,24 @@ async def reclaim_interrupted_jobs(stale_after_seconds: int | None = None) -> No
         seconds=stale_after_seconds if stale_after_seconds is not None else 120
     )
     async with SessionLocal() as session:
-        # Anything this process is still working on is alive by definition,
-        # whatever its heartbeat says.
+        # A job this process is running is normally alive whatever its
+        # heartbeat says — the post-OCR stretch legitimately goes quiet for
+        # longer than the ordinary window. But the exclusion needs a ceiling.
+        # Unconditional, it protects a genuinely hung coroutine forever: the
+        # job holds its worker slot, never completes, and is never retried,
+        # which is worse than the reclaim storm it was added to stop. Past
+        # `wedged`, believe the heartbeat and take the job back.
         mine = set(IN_FLIGHT)
+        wedged = datetime.now(timezone.utc) - timedelta(
+            minutes=settings.ocr_stall_minutes
+        )
         jobs = (
             await session.execute(
                 select(Job).where(
                     Job.status == JobStatus.RUNNING,
-                    Job.id.not_in(mine) if mine else sqla_true(),
+                    or_(Job.id.not_in(mine), Job.heartbeat_at < wedged)
+                    if mine
+                    else sqla_true(),
                     or_(
                         Job.heartbeat_at < threshold,
                         # Not yet beating: stale only if it also STARTED
@@ -783,6 +793,15 @@ async def reclaim_interrupted_jobs(stale_after_seconds: int | None = None) -> No
         if jobs:
             await session.commit()
             logger.info("requeued %d interrupted job(s) from a prior run", len(jobs))
+            for job in jobs:
+                if job.id in mine:
+                    logger.error(
+                        "job %s was still held by this worker but had not "
+                        "beaten in %d minutes; took it back. Something in the "
+                        "post-OCR path is not returning.",
+                        job.id,
+                        settings.ocr_stall_minutes,
+                    )
 
 
 async def main() -> None:
