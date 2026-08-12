@@ -18,9 +18,11 @@ DEPTH_LIGHT_STEP = 8.0
 DEPTH_SAT_STEP = 4.0
 MAX_LIGHT = 76.0
 MIN_SAT = 42.0
-# How far siblings are pushed either side of the parent's hue. Small, so a
-# child still reads as belonging to its parent's family.
-SIBLING_HUE_STEP = 12.0
+# Half-width of the hue band a parent's children live in. assign_palette gives
+# a parent a slice of the wheel and keeps its children inside it — measured on
+# a real tree, a twelve-child parent spans about 20 degrees — so a child must
+# stay near its parent's hue to still read as one of the family.
+SIBLING_HUE_BAND = 24.0
 
 
 def hsl_to_hex(h: float, s: float, light: float) -> str:
@@ -45,20 +47,55 @@ def hex_to_hsl(value: str) -> tuple[float, float, float] | None:
     return h * 360, s * 100, light * 100
 
 
-def child_hsl(parent_hsl: tuple[float, float, float], sibling_index: int):
-    """A shade for a new child, derived from its parent alone.
+def child_hue(parent_hue: float, sibling_hues: list[float]) -> float:
+    """The emptiest hue in the parent's band, given what the siblings hold.
+
+    An earlier version fanned siblings out by a fixed step per child, counting
+    them rather than looking at them. Two things went wrong. The fan had no
+    bound, so the twelfth child of a pink parent landed 72 degrees away and
+    came out olive; and a count cannot see the colours actually in use, so it
+    collided with anything assigned out of order — a hand-picked colour, a gap
+    left by a deleted sibling, or a tree coloured by assign_palette, which
+    partitions the wheel differently.
+
+    Searching the band instead fixes both: the result is always in the family,
+    and always as far as possible from the siblings that already exist.
+    """
+    lo, hi = -SIBLING_HUE_BAND, SIBLING_HUE_BAND
+    # Work relative to the parent, folded to (-180, 180], so a band spanning
+    # 0/360 needs no special case.
+    offsets = sorted(
+        d
+        for d in (((h - parent_hue + 180) % 360) - 180 for h in sibling_hues)
+        if lo <= d <= hi
+    )
+    if not offsets:
+        # A lone child takes the parent's own hue, exactly as assign_palette
+        # gives a single child its parent's whole slice.
+        return parent_hue % 360
+
+    # Widest gap between consecutive siblings, the band edges included so a
+    # child can also be placed outside the current spread.
+    bounds = [lo, *offsets, hi]
+    widest, best = -1.0, 0.0
+    for left, right in zip(bounds, bounds[1:]):
+        gap = right - left
+        if gap > widest:
+            widest, best = gap, (left + right) / 2
+    return (parent_hue + best) % 360
+
+
+def child_hsl(parent_hsl: tuple[float, float, float], sibling_hues: list[float]):
+    """A shade for a new child, derived from its parent and its siblings.
 
     assign_palette partitions the whole wheel, so recomputing it to colour one
     new tag would shift every other tag — and silently overwrite any colour
     picked by hand. This stays local: the same one-step-lighter, one-step-less
-    saturated relationship that palette gives a child, with siblings fanned
-    out either side of the parent's hue so they stay distinguishable.
+    saturated relationship palette gives a child, at a hue that is free.
     """
     parent_h, parent_s, parent_l = parent_hsl
-    step = (sibling_index + 1) // 2 * SIBLING_HUE_STEP
-    offset = step if sibling_index % 2 else -step
     return (
-        (parent_h + offset) % 360,
+        child_hue(parent_h, sibling_hues),
         max(parent_s - DEPTH_SAT_STEP, MIN_SAT),
         min(parent_l + DEPTH_LIGHT_STEP, MAX_LIGHT),
     )

@@ -117,14 +117,27 @@ async def _auto_color(user, db, parent) -> str:
     if parent is not None:
         parent_hsl = palette.hex_to_hsl(parent.color or "")
         if parent_hsl is not None:
-            siblings = (
-                await db.execute(
-                    select(func.count(Tag.id)).where(
-                        Tag.tenant_id == user.tenant_id, Tag.parent_id == parent.id
+            # The colours in use, not how many there are: a count cannot avoid
+            # a hue a sibling already holds.
+            sibling_colors = (
+                (
+                    await db.execute(
+                        select(Tag.color).where(
+                            Tag.tenant_id == user.tenant_id,
+                            Tag.parent_id == parent.id,
+                            Tag.color.is_not(None),
+                        )
                     )
                 )
-            ).scalar_one()
-            return palette.hsl_to_hex(*palette.child_hsl(parent_hsl, siblings))
+                .scalars()
+                .all()
+            )
+            hues = [
+                hsl[0]
+                for hsl in (palette.hex_to_hsl(c) for c in sibling_colors)
+                if hsl
+            ]
+            return palette.hsl_to_hex(*palette.child_hsl(parent_hsl, hues))
 
     # A root, or a parent that has no colour of its own to derive from.
     used = (

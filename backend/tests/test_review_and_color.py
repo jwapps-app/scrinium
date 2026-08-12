@@ -189,23 +189,79 @@ async def test_a_new_child_tag_gets_a_shade_of_its_parent(client, auth):
     assert child_hsl[2] > parent_hsl[2], "a child should be the lighter shade"
 
 
-async def test_siblings_do_not_all_come_out_the_same(client, auth):
+async def test_siblings_stay_distinct_and_stay_in_the_family(client, auth):
+    """The reported bug: the twelfth child of a pink parent came out olive.
+
+    Fanning by a fixed step per child had no bound, so a big family walked
+    right off its own hue — and counting siblings could not see the colours
+    they actually held.
+    """
+    from app.services.palette import SIBLING_HUE_BAND
+
     parent = (
-        await client.post("/api/tags", json={"name": f"Home-{uuid.uuid4().hex[:6]}"}, headers=auth)
+        await client.post(
+            "/api/tags", json={"name": f"Home-{uuid.uuid4().hex[:6]}"}, headers=auth
+        )
     ).json()
-    colors = set()
-    for leaf in ("Roof", "Boiler", "Garden"):
-        name = f"{leaf}-{uuid.uuid4().hex[:6]}"
+    parent_hue = palette.hex_to_hsl(parent["color"])[0]
+
+    colors = []
+    for _ in range(12):
         made = (
             await client.post(
                 "/api/tags",
-                json={"name": name, "parent_id": parent["id"]},
+                json={
+                    "name": f"leaf-{uuid.uuid4().hex[:8]}",
+                    "parent_id": parent["id"],
+                },
                 headers=auth,
             )
         ).json()
-        colors.add(made["color"])
+        colors.append(made["color"])
 
-    assert len(colors) == 3, f"siblings collided: {colors}"
+    assert len(set(colors)) == 12, f"siblings collided: {colors}"
+    for color in colors:
+        hue = palette.hex_to_hsl(color)[0]
+        drift = abs(((hue - parent_hue + 180) % 360) - 180)
+        # +2 for the hue quantisation of an 8-bit-per-channel round trip.
+        assert drift <= SIBLING_HUE_BAND + 2, (
+            f"{color} is {drift:.0f} deg from its parent — out of the family"
+        )
+
+
+async def test_a_new_child_avoids_the_hues_its_siblings_hold(client, auth):
+    """Colours assigned by the whole-tree pass, or by hand, or left behind by
+    a deleted sibling — a count cannot see any of them."""
+    parent = (
+        await client.post(
+            "/api/tags", json={"name": f"Fleet-{uuid.uuid4().hex[:6]}"}, headers=auth
+        )
+    ).json()
+    parent_hue = palette.hex_to_hsl(parent["color"])[0]
+    taken = palette.hsl_to_hex(parent_hue, 50, 55)
+
+    await client.post(
+        "/api/tags",
+        json={
+            "name": f"taken-{uuid.uuid4().hex[:8]}",
+            "parent_id": parent["id"],
+            "color": taken,
+        },
+        headers=auth,
+    )
+    made = (
+        await client.post(
+            "/api/tags",
+            json={"name": f"next-{uuid.uuid4().hex[:8]}", "parent_id": parent["id"]},
+            headers=auth,
+        )
+    ).json()
+
+    assert made["color"] != taken
+    gap = abs(
+        ((palette.hex_to_hsl(made["color"])[0] - parent_hue + 180) % 360) - 180
+    )
+    assert gap > 5, f"landed on the hand-picked hue: {made['color']} vs {taken}"
 
 
 async def test_an_explicit_colour_still_wins(client, auth):
