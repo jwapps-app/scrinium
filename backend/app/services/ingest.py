@@ -101,8 +101,13 @@ def _run_ocr(
         dpi = compress.max_image_dpi(archive_path)
         if compress.over_cap(dpi, max_dpi):
             reduced = workdir / "archive_reduced.pdf"
+            # keep_pdfa defaults to True, which quietly undid the format
+            # choice: a 600 DPI scan asked for plain PDF, got it from the OCR
+            # pass, and then the downsample handed it back as PDF/A. Verified
+            # live — wanted=false, got=true, on the one document of five that
+            # was over the cap.
             fmt, _why = compress.downsample_archive(
-                archive_path, reduced, max_dpi
+                archive_path, reduced, max_dpi, keep_pdfa=pdfa_wanted
             )
             if fmt:
                 archive_path = reduced

@@ -319,8 +319,13 @@ async def process_downsample_job(
     try:
         with tempfile.TemporaryDirectory(prefix="downsample-") as tmp:
             out = Path(tmp) / "archive.pdf"
+            # Carry the document's own intent. A DPI rebuild must not change
+            # the archive format underneath it: a document deliberately kept
+            # as plain PDF would come back PDF/A — four times the size — for
+            # no reason other than having been over the cap.
             result, why = await _run_with_heartbeat(
-                session, job, downsample_archive, archive_path, out, target_dpi
+                session, job, downsample_archive, archive_path, out, target_dpi,
+                document.archive_pdfa_wanted,
             )
             if result is None:
                 # No usable win. Leave the archive alone, and record which blob

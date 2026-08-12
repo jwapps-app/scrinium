@@ -571,3 +571,71 @@ def test_run_ocr_records_the_intent_for_a_born_digital_original(
     assert outcome.original_dpi == 0
     assert outcome.archive_pdfa_wanted is True
     assert outcome.archive_pdfa is True
+
+
+def test_downsampling_does_not_resurrect_pdfa_over_a_plain_pdf(monkeypatch, tmp_path):
+    """downsample_archive keeps PDF/A by default, which silently undid the
+    format choice for any document above the DPI cap.
+
+    Caught live on the first re-OCR trial: a 600 DPI scan asked for plain PDF,
+    the OCR pass produced it, and the downsample handed back PDF/A —
+    wanted=false, got=true. Since the cap is what large scans exceed, this
+    would have quietly cancelled most of the saving the setting exists for.
+    """
+    from app.services import compress, ingest, storage, thumbnails
+
+    captured = {}
+
+    class _Result:
+        text = "t"
+        engine = "stub"
+
+        def __init__(self, archive):
+            self.archive_path = archive
+
+    class _Provider:
+        def process(self, source, workdir, mode, pdfa):
+            archive = workdir / "archive.pdf"
+            archive.write_bytes(b"%PDF-1.7\n")
+            return _Result(archive)
+
+    def _fake_downsample(src, dst, target, keep_pdfa=True):
+        captured["keep_pdfa"] = keep_pdfa
+        dst.write_bytes(b"%PDF-1.7\n")
+        return "pdf", None
+
+    monkeypatch.setattr(ingest, "get_provider", lambda engine: _Provider())
+    monkeypatch.setattr(compress, "max_image_dpi", lambda path: 600)
+    monkeypatch.setattr(compress, "over_cap", lambda dpi, cap: True)  # above cap
+    monkeypatch.setattr(compress, "downsample_archive", _fake_downsample)
+    monkeypatch.setattr(compress, "is_pdfa", lambda path: False)
+    monkeypatch.setattr(thumbnails, "make_thumbnail", lambda src, out: None)
+    monkeypatch.setattr(ingest, "_page_count", lambda path: 1)
+    monkeypatch.setattr(
+        storage, "store_file", lambda path: (uuid.uuid4(), "sha", 10)
+    )
+
+    original = tmp_path / "orig"
+    original.write_bytes(b"%PDF-1.7\n")
+    workdir = tmp_path / "w"
+    workdir.mkdir()
+
+    outcome = ingest._run_ocr(original, ".pdf", "redo", workdir, None, 300, "auto")
+
+    assert captured["keep_pdfa"] is False, (
+        "a scan archived as plain PDF must not be handed back as PDF/A"
+    )
+    assert outcome.archive_pdfa_wanted is False
+
+
+def test_the_downsample_job_preserves_the_documents_format(monkeypatch):
+    """The standalone backfill has the same hazard: rebuilding for DPI must
+    not change the format underneath the document."""
+    import inspect
+
+    from app.services import compress
+
+    source = inspect.getsource(compress.process_downsample_job)
+    assert "document.archive_pdfa_wanted" in source, (
+        "the DPI rebuild must carry the document's own format intent"
+    )
