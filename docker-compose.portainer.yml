@@ -112,14 +112,55 @@ services:
     # three times longer than it needs to be, and every minute of dump is a
     # minute a deploy's migration has to wait for its lock. The table
     # definition and trigger are still dumped; only the rows are skipped.
-    entrypoint: >
-      /bin/sh -c 'while true; do
-        pg_dump -h postgres -U ${POSTGRES_USER:-app} -Fc
-          --exclude-table-data=document_pages ${POSTGRES_DB:-app} |
-          gzip > /backups/$$(date +%Y%m%d-%H%M%S).dump.gz &&
-          find /backups -name "*.dump.gz" -mtime +${BACKUP_RETENTION_DAYS:-14} -delete;
-        sleep 86400;
-      done'
+    # A literal block, and a list-form entrypoint, on purpose. Written as a
+    # folded scalar (>), YAML turned the indented continuation lines into real
+    # newlines, which the shell reads as statement separators: `pg_dump ... -Fc`
+    # ran on its own — whole database, no exclusion, straight to the container
+    # log — and the next line began `--exclude-table-data=...: not found`,
+    # feeding an empty pipe. gzip still succeeded, so `&&` still ran the
+    # deletion: empty dumps written, good ones pruned on schedule. Here every
+    # line is a complete statement and a newline means what it looks like.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -u
+        INTERVAL=${BACKUP_INTERVAL_SECONDS:-86400}
+        KEEP=${BACKUP_KEEP:-3}
+        # Completed dumps only: *.dump now, *.dump.gz from before the pointless
+        # second round of compression was dropped. The in-progress file is
+        # hidden so neither glob can ever see a half-written dump.
+        GLOB='/backups/*.dump*'
+        TMP=/backups/.in-progress
+        rm -f "$$TMP"
+        while true; do
+          newest=$$(ls -t $$GLOB 2>/dev/null | head -1)
+          last=0
+          if [ -n "$$newest" ]; then last=$$(stat -c %Y "$$newest"); fi
+          age=$$(( $$(date +%s) - last ))
+          # Sleeping first, and only for what is left of the interval, is what
+          # keeps a deploy from triggering a dump: this container is recreated
+          # on every stack update, and dumping before sleeping turned eight
+          # repulls in a day into eight 5 GB dumps.
+          if [ "$$age" -lt "$$INTERVAL" ]; then
+            sleep $$(( INTERVAL - age ))
+            continue
+          fi
+          out=/backups/$$(date +%Y%m%d-%H%M%S).dump
+          # -Fc is already zlib-compressed, so the old `| gzip` was a second
+          # pass over the same bytes for nothing — and it hid pg_dump's exit
+          # status behind gzip's, so a failed dump left a truncated file that
+          # looked fine. No pipe, so a failure is visible and discarded.
+          if pg_dump -h postgres -U ${POSTGRES_USER:-app} -Fc \
+               --exclude-table-data=document_pages ${POSTGRES_DB:-app} > "$$TMP"; then
+            mv "$$TMP" "$$out"
+            ls -t $$GLOB 2>/dev/null | tail -n +$$(( KEEP + 1 )) | xargs -r rm -f
+          else
+            echo "backup: pg_dump failed, keeping the previous dumps" >&2
+            rm -f "$$TMP"
+          fi
+          sleep "$$INTERVAL"
+        done
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD}
     volumes:
