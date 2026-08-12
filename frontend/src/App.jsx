@@ -13,6 +13,7 @@ import OfflineDocs from './pages/OfflineDocs'
 import Review from './pages/Review'
 import TagsPage from './pages/TagsPage'
 import SharedDocument from './pages/SharedDocument'
+import StartupGate from './components/StartupGate'
 
 function RequireAuth({ children }) {
   if (!getTokens()) return <Navigate to="/login" replace />
@@ -33,6 +34,7 @@ export default function App() {
   }, [navigate])
 
   return (
+    <StartupGate>
     <Routes>
       <Route path="/share/:token" element={<SharedDocument />} />
       <Route path="/login" element={<Login />} />
@@ -111,5 +113,6 @@ export default function App() {
       />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </StartupGate>
   )
 }

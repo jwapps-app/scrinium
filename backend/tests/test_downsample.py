@@ -201,10 +201,9 @@ def test_migrations_fail_fast_rather_than_queue_for_a_lock():
     assert "lock_timeout" in source, "a migration must not queue for its lock"
     assert "MIGRATION_LOCK_TIMEOUT" in source, "and the wait must be tunable"
 
-    entry = Path(__file__).resolve().parents[1] / "entrypoint.sh"
-    script = entry.read_text()
-    assert "until alembic upgrade head" in script, "a timed-out migration retries"
-    assert "MIGRATION_MAX_ATTEMPTS" in script, "and gives up rather than looping"
+    # The retry that pairs with that timeout now lives in the API process
+    # rather than the entrypoint; test_startup.py covers it against the real
+    # code instead of by grepping a shell script.
 
 
 async def test_file_details_distinguishes_cap_limited_from_source_limited(
@@ -282,19 +281,17 @@ async def test_file_details_distinguishes_cap_limited_from_source_limited(
     assert got["can_improve"] is False
 
 
-def test_startup_only_waits_when_there_is_a_migration_to_run():
-    """The API cannot serve before the schema matches the code, so a real
-    migration is worth waiting for. Most deploys carry none, and those were
-    waiting anyway — the app stayed down for the whole nightly dump for no
-    reason at all.
+def test_the_worker_still_waits_for_the_schema_in_the_entrypoint():
+    """The API owns migrations now, but the worker does not — it has to keep
+    waiting for someone else to finish them, which is a shell-level concern
+    because it happens before the worker process exists.
     """
     from pathlib import Path
 
     script = (Path(__file__).resolve().parents[1] / "entrypoint.sh").read_text()
-    assert "alembic current" in script and "alembic heads" in script
-    assert "nothing to apply" in script, "skip the wait when already current"
-    # And when there is one, still retry rather than block the queue.
-    assert "until alembic upgrade head" in script
+    worker_branch = script.split("exec python -m app.worker")[0]
+    assert "alembic current" in worker_branch and "alembic heads" in worker_branch
+    assert "SCHEMA_WAIT_ATTEMPTS" in worker_branch, "and gives up rather than looping"
 
 
 def test_backup_skips_the_derivable_page_index():

@@ -24,6 +24,18 @@ class Settings(BaseSettings):
     secret_key: str = "dev-secret-change-me"
     allowed_origins: str = "http://localhost:5173"
 
+    # Bring the schema to head from inside the API process rather than from
+    # the entrypoint. Doing it here is what lets the app answer /api/status
+    # while it works, instead of the whole container being unreachable and the
+    # UI rendering an empty library. Set false to hand migrations back to an
+    # external step (a one-shot job, or a manual `alembic upgrade head`); the
+    # API then serves immediately and assumes the schema is already current.
+    manage_migrations: bool = True
+    # Attempts before a migration is called failed rather than merely blocked.
+    # Read from the same MIGRATION_MAX_ATTEMPTS the entrypoint used, so an
+    # existing deployment that tuned it does not silently lose the setting.
+    migration_max_attempts: int = 40
+
     data_dir: str = "/data"
 
     access_token_minutes: int = 30

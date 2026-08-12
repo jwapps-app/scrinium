@@ -118,6 +118,9 @@ export default function Library() {
       const data = await apiJson(`/api/documents?${search.toString()}`)
       setDocs(data.items)
       setTotal(data.total)
+      // Clear a previous failure: without this the banner from an outage
+      // stayed up for the rest of the session, long after it had recovered.
+      setError('')
     } catch (err) {
       setError(err.message)
     }
@@ -767,11 +770,16 @@ export default function Library() {
             )}
             {docs.length === 0 && (
               <p className="empty">
-                {inTrash
-                  ? 'The trash is empty.'
-                  : hasFilters
-                    ? 'Nothing matches these filters.'
-                    : 'Drop a PDF here or hit Upload to get started.'}
+                {/* A failed load leaves docs empty too, and the first-run
+                    copy is the worst possible thing to show then: it reads as
+                    "your library is gone" and invites the user to fix it. */}
+                {error
+                  ? 'Couldn’t load your documents — this is a connection problem, not a missing library. Nothing has been deleted.'
+                  : inTrash
+                    ? 'The trash is empty.'
+                    : hasFilters
+                      ? 'Nothing matches these filters.'
+                      : 'Drop a PDF here or hit Upload to get started.'}
               </p>
             )}
 

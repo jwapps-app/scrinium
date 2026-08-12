@@ -14,7 +14,9 @@ from app import models  # noqa: F401  (register models on Base.metadata)
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
-if config.config_file_name is not None:
+# When the API runs migrations in-process (services/startup.py) the app owns
+# logging already, and fileConfig would tear its handlers down mid-startup.
+if config.config_file_name is not None and not config.attributes.get("in_app"):
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
@@ -32,7 +34,14 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    # on_version_apply lets the caller watch each step land. Nothing is set
+    # when alembic is run from the command line; the API sets it so it can
+    # report "3 of 5" instead of an unqualified "please wait".
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        on_version_apply=config.attributes.get("on_version_apply"),
+    )
     with context.begin_transaction():
         context.run_migrations()
 
