@@ -11,7 +11,7 @@ import uuid
 from sqlalchemy import select, update
 
 from app.database import SessionLocal
-from app.models import Document
+from app.models import Document, DocumentStatus
 from app.services import palette, review
 
 
@@ -143,10 +143,24 @@ async def test_the_api_says_why_a_document_is_in_review(
 ):
     doc = await _upload(client, auth, pdf_factory)
 
+    # Still pending: no worker runs here, and a document that has not finished
+    # processing is not asking to be filed yet.
+    fresh = (await client.get(f"/api/documents/{doc['id']}", headers=auth)).json()
+    assert fresh["review_reasons"] == [], "a pending document is not in review"
+
+    async with SessionLocal() as session:
+        await session.execute(
+            update(Document)
+            .where(Document.id == doc["id"])
+            .values(status=DocumentStatus.READY, page_count=2, text_length=9000)
+        )
+        await session.commit()
+
     body = (await client.get(f"/api/documents/{doc['id']}", headers=auth)).json()
 
     unfiled = [r for r in body["review_reasons"] if r["key"] == "unfiled"]
-    assert unfiled and unfiled[0]["severity"] == "info"
+    assert unfiled, f"finished and unfiled, but got {body['review_reasons']}"
+    assert unfiled[0]["severity"] == "info"
     assert unfiled[0]["label"] and unfiled[0]["detail"]
 
 

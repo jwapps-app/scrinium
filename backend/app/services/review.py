@@ -13,6 +13,8 @@ action beyond filing; `problem` is something that actually did not work.
 
 from dataclasses import dataclass
 
+from app.models.document import DocumentStatus
+
 # Under this many characters of recognised text per page, a scan is suspect.
 # Same threshold as the /insights/weak-ocr worklist — one definition, so the
 # review label and that page can never disagree about which scans are thin.
@@ -38,7 +40,7 @@ def reasons_for(doc) -> list[ReviewReason]:
     """
     reasons: list[ReviewReason] = []
 
-    if doc.status == "flagged" or doc.error:
+    if doc.status == DocumentStatus.FLAGGED or doc.error:
         reasons.append(
             ReviewReason(
                 key="ocr_failed",
@@ -104,7 +106,7 @@ def _is_unfiled(doc) -> bool:
     # three counts as filed, so a books library is not asked to invent
     # correspondents for everything.
     return (
-        doc.status == "ready"
+        doc.status == DocumentStatus.READY
         and doc.correspondent_id is None
         and doc.doc_type_id is None
         and not doc.tags
@@ -112,7 +114,7 @@ def _is_unfiled(doc) -> bool:
 
 
 def _is_weak_ocr(doc) -> bool:
-    if doc.status != "ready" or doc.weak_ocr_dismissed:
+    if doc.status != DocumentStatus.READY or doc.weak_ocr_dismissed:
         return False
     if not doc.page_count or doc.text_length is None:
         return False
