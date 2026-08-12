@@ -20,6 +20,47 @@ function describeDpi(dpi) {
   return `${dpi} DPI`
 }
 
+// Two separate facts, said separately. One sentence trying to cover both
+// produced things like "already as small as it can be made" about an archive
+// three times the size of its own original — true about the rebuild attempt,
+// absurd as a description of the file.
+function verdictResolution(d) {
+  if (!d.archive.exists) {
+    return 'No archive — the original is the only copy, and is what you read.'
+  }
+  if (d.can_improve) {
+    return `Stored at ${d.archive.dpi} DPI because of the ${d.dpi_cap} DPI setting. ` +
+      `The original holds ${d.max_useful_dpi} DPI, so a rebuild would recover real detail.`
+  }
+  if (d.archive.dpi > d.dpi_cap && d.downsample_note === 'not_smaller') {
+    return `Above the ${d.dpi_cap} DPI setting, and left that way: a reduced ` +
+      'rebuild came out larger than what is already stored, so it was discarded.'
+  }
+  if (d.archive.dpi > d.dpi_cap) {
+    return `Above the ${d.dpi_cap} DPI setting; a reduction has not succeeded on this one.`
+  }
+  return 'Matches the original\u2019s resolution — no setting can add detail the scan does not have.'
+}
+
+// The fact most worth knowing about these archives, and the one the panel was
+// silent on: OCR frequently rebuilds a page far larger than it arrived, at the
+// same resolution, for nothing but the text layer.
+function sizeComparison(d) {
+  const o = d.original.size_bytes
+  const a = d.archive.size_bytes
+  if (!d.archive.exists || !o || !a) return null
+  const ratio = a / o
+  if (ratio >= 1.5) {
+    return `The archive is ${ratio.toFixed(1)}\u00d7 the size of the original` +
+      (d.archive.dpi === d.original.dpi ? ' at the same resolution' : '') +
+      ' — the text layer is all it adds.'
+  }
+  if (ratio <= 0.67) {
+    return `The archive is ${(1 / ratio).toFixed(1)}\u00d7 smaller than the original.`
+  }
+  return null
+}
+
 export default function DocumentView() {
   // Permanent deletion is owner only; trashing stays available to all.
   const isAdmin = useIsAdmin()
@@ -810,15 +851,11 @@ export default function DocumentView() {
               </tbody>
             </table>
             <p className="filedetails-verdict">
-              {!fileDetails.archive.exists
-                ? 'No archive — the original is the only copy, and is what you read.'
-                : fileDetails.can_improve
-                  ? `Limited by the ${fileDetails.dpi_cap} DPI setting. The original holds ` +
-                    `${fileDetails.max_useful_dpi} DPI, so a rebuild would recover real detail.`
-                  : fileDetails.downsample_note === 'not_smaller'
-                    ? 'Already as small as it can be made — a rebuild produced a larger file.'
-                    : 'Limited by the original, not by the setting. A rebuild would add size without adding detail.'}
+              {verdictResolution(fileDetails)}
             </p>
+            {sizeComparison(fileDetails) && (
+              <p className="filedetails-verdict">{sizeComparison(fileDetails)}</p>
+            )}
             <button className="ghost" onClick={() => setFileDetails(null)}>
               Close
             </button>
