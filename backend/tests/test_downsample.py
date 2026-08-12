@@ -311,3 +311,21 @@ def test_backup_skips_the_derivable_page_index():
     assert "--exclude-table-data=document_pages" in compose
     # Data only — the schema and its trigger must survive a restore.
     assert "--exclude-table=document_pages" not in compose
+
+
+def test_worker_waits_for_the_schema_it_expects():
+    """The worker's own comment said it waits for the schema; it did not.
+
+    It starts querying immediately with code expecting the new columns, so a
+    migration delayed behind the nightly dump left it crash-looping on
+    UndefinedColumn for eleven minutes. No jobs were harmed only because the
+    failure hit the claim query before any attempt counter moved — a few lines
+    later and every restart would have burned an attempt on a real document.
+    """
+    from pathlib import Path
+
+    script = (Path(__file__).resolve().parents[1] / "entrypoint.sh").read_text()
+    worker_branch = script.split('if [ "$1" = "worker" ]; then')[1].split("fi")[0]
+    assert "alembic current" in worker_branch
+    assert "waiting for schema" in worker_branch
+    assert "SCHEMA_WAIT_ATTEMPTS" in worker_branch, "bounded, not an infinite wait"

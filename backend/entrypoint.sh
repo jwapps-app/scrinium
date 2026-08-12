@@ -2,7 +2,30 @@
 set -e
 
 if [ "$1" = "worker" ]; then
-    # Migrations are the api container's job; the worker just waits for schema.
+    # Migrations are the api container's job — but this genuinely has to wait
+    # for them, which it previously only claimed to do. The worker starts
+    # querying at once with code that expects the new schema, so a deploy whose
+    # migration is delayed (behind the nightly dump, say) leaves it crash-
+    # looping on UndefinedColumn until the schema catches up. Observed for
+    # eleven minutes. Nothing was lost only because the failure landed on the
+    # claim query itself, before any job's attempt counter moved; a few lines
+    # later and every restart would have burned an attempt on a real document.
+    attempt=1
+    max_attempts="${SCHEMA_WAIT_ATTEMPTS:-120}"
+    while :; do
+        current=$(alembic current 2>/dev/null | grep -oE '^[0-9a-f]+' | head -1)
+        head=$(alembic heads 2>/dev/null | grep -oE '^[0-9a-f]+' | head -1)
+        if [ -n "$current" ] && [ "$current" = "$head" ]; then
+            break
+        fi
+        if [ "$attempt" -ge "$max_attempts" ]; then
+            echo "worker: schema still at ${current:-unknown}, wanted $head" >&2
+            exit 1
+        fi
+        echo "worker: waiting for schema (${current:-none} -> ${head:-?})" >&2
+        attempt=$((attempt + 1))
+        sleep 5
+    done
     exec python -m app.worker
 fi
 
