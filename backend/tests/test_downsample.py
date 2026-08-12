@@ -639,3 +639,95 @@ def test_the_downsample_job_preserves_the_documents_format(monkeypatch):
     assert "document.archive_pdfa_wanted" in source, (
         "the DPI rebuild must carry the document's own format intent"
     )
+
+
+def test_a_declined_downsample_is_recorded_not_discarded(monkeypatch, tmp_path):
+    """The panel could only say "a reduction has not succeeded", which reads
+    as a fault. It is usually the opposite: ocrmypdf's JBIG2 output at 600 DPI
+    is smaller than a Ghostscript re-render at 300, so the rebuild is refused
+    on purpose and the sharper file kept. Confirmed live — every over-cap book
+    in the re-OCR trial came back not_smaller.
+    """
+    from app.services import compress, ingest, storage, thumbnails
+
+    class _Result:
+        text = "t"
+        engine = "stub"
+
+        def __init__(self, archive):
+            self.archive_path = archive
+
+    class _Provider:
+        def process(self, source, workdir, mode, pdfa):
+            archive = workdir / "archive.pdf"
+            archive.write_bytes(b"%PDF-1.7\n")
+            return _Result(archive)
+
+    monkeypatch.setattr(ingest, "get_provider", lambda engine: _Provider())
+    monkeypatch.setattr(compress, "max_image_dpi", lambda path: 600)
+    monkeypatch.setattr(compress, "over_cap", lambda dpi, cap: True)
+    monkeypatch.setattr(
+        compress, "downsample_archive",
+        lambda src, dst, target, keep_pdfa=True: (None, "not_smaller"),
+    )
+    monkeypatch.setattr(compress, "is_pdfa", lambda path: False)
+    monkeypatch.setattr(thumbnails, "make_thumbnail", lambda src, out: None)
+    monkeypatch.setattr(ingest, "_page_count", lambda path: 1)
+    monkeypatch.setattr(
+        storage, "store_file", lambda path: (uuid.uuid4(), "sha", 10)
+    )
+
+    original = tmp_path / "orig"
+    original.write_bytes(b"%PDF-1.7\n")
+    workdir = tmp_path / "w"
+    workdir.mkdir()
+
+    outcome = ingest._run_ocr(original, ".pdf", "redo", workdir, None, 300, "auto")
+
+    assert outcome.downsample_note == "not_smaller"
+    # The full-resolution archive is what was kept, so the DPI reported is the
+    # one actually stored — not the cap that was asked for and refused.
+    assert outcome.archive_dpi == 600
+
+
+def test_a_successful_downsample_leaves_no_note(monkeypatch, tmp_path):
+    """The marker must not outlive its reason, or a document that was
+    successfully reduced would still claim it could not be."""
+    from app.services import compress, ingest, storage, thumbnails
+
+    class _Result:
+        text = "t"
+        engine = "stub"
+
+        def __init__(self, archive):
+            self.archive_path = archive
+
+    class _Provider:
+        def process(self, source, workdir, mode, pdfa):
+            archive = workdir / "archive.pdf"
+            archive.write_bytes(b"%PDF-1.7\n")
+            return _Result(archive)
+
+    def _worked(src, dst, target, keep_pdfa=True):
+        dst.write_bytes(b"%PDF-1.7\n")
+        return "pdf", None
+
+    monkeypatch.setattr(ingest, "get_provider", lambda engine: _Provider())
+    monkeypatch.setattr(compress, "over_cap", lambda dpi, cap: True)
+    monkeypatch.setattr(compress, "downsample_archive", _worked)
+    monkeypatch.setattr(compress, "is_pdfa", lambda path: False)
+    monkeypatch.setattr(thumbnails, "make_thumbnail", lambda src, out: None)
+    monkeypatch.setattr(ingest, "_page_count", lambda path: 1)
+    monkeypatch.setattr(
+        storage, "store_file", lambda path: (uuid.uuid4(), "sha", 10)
+    )
+    monkeypatch.setattr(compress, "max_image_dpi", lambda path: 300)
+
+    original = tmp_path / "orig"
+    original.write_bytes(b"%PDF-1.7\n")
+    workdir = tmp_path / "w"
+    workdir.mkdir()
+
+    outcome = ingest._run_ocr(original, ".pdf", "redo", workdir, None, 300, "auto")
+
+    assert outcome.downsample_note is None

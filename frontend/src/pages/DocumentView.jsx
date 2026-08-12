@@ -33,11 +33,27 @@ function verdictResolution(d) {
       `The original holds ${d.max_useful_dpi} DPI, so a rebuild would recover real detail.`
   }
   if (d.archive.dpi > d.dpi_cap && d.downsample_note === 'not_smaller') {
-    return `Above the ${d.dpi_cap} DPI setting, and left that way: a reduced ` +
-      'rebuild came out larger than what is already stored, so it was discarded.'
+    // Not a failure, and worth saying so plainly: this is the common outcome
+    // for a scanned book, and the panel previously made it sound like a fault.
+    return `Above the ${d.dpi_cap} DPI setting, and deliberately left that way. ` +
+      `Rebuilding it at ${d.dpi_cap} DPI produced a larger file, not a smaller ` +
+      'one — scanned text is stored in a compression format that a re-render ' +
+      'cannot match, so the reduction would have cost resolution and saved ' +
+      'nothing. The full-resolution copy was kept.'
+  }
+  if (d.archive.dpi > d.dpi_cap && d.downsample_note) {
+    const why = {
+      lost_text: 'the rebuild dropped part of the text layer',
+      page_mismatch: 'the rebuild came back with a different page count',
+      gs_failed: 'the rebuild could not be produced',
+      unreadable: 'the archive could not be re-read',
+    }[d.downsample_note] || `the rebuild was rejected (${d.downsample_note})`
+    return `Above the ${d.dpi_cap} DPI setting, and left that way because ` +
+      `${why}. The stored copy is untouched.`
   }
   if (d.archive.dpi > d.dpi_cap) {
-    return `Above the ${d.dpi_cap} DPI setting; a reduction has not succeeded on this one.`
+    return `Above the ${d.dpi_cap} DPI setting. It has not been through a ` +
+      'reduction pass yet.'
   }
   return 'Matches the original\u2019s resolution — no setting can add detail the scan does not have.'
 }

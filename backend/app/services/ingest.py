@@ -65,6 +65,10 @@ class IngestOutcome:
     # which is exactly what happened: archive_dpi landed here, and the keyword
     # that followed collided with it. New fields go on the end.
     archive_pdfa_wanted: bool = True
+    # Why a DPI rebuild was declined, when one was attempted and refused.
+    # Without it the panel can only say "a reduction has not succeeded",
+    # which reads like a fault rather than the deliberate choice it is.
+    downsample_note: str | None = None
 
 
 def _run_ocr(
@@ -97,6 +101,7 @@ def _run_ocr(
     # later backfill. Only shrinks images above the cap; fail-soft keeps the
     # full-res archive if the rebuild isn't a clean, smaller win.
     dpi: int | None = None
+    downsample_note: str | None = None
     if archive_path is not None:
         dpi = compress.max_image_dpi(archive_path)
         if compress.over_cap(dpi, max_dpi):
@@ -106,12 +111,21 @@ def _run_ocr(
             # pass, and then the downsample handed it back as PDF/A. Verified
             # live — wanted=false, got=true, on the one document of five that
             # was over the cap.
-            fmt, _why = compress.downsample_archive(
+            fmt, why = compress.downsample_archive(
                 archive_path, reduced, max_dpi, keep_pdfa=pdfa_wanted
             )
             if fmt:
                 archive_path = reduced
                 dpi = compress.max_image_dpi(archive_path)
+            else:
+                # Expected, not exceptional: ocrmypdf's own output is often
+                # already smaller than anything a Ghostscript re-render at the
+                # cap can produce — JBIG2 on printed text beats 300 DPI
+                # re-encoding even at 600. Recorded so the document can say so.
+                downsample_note = why
+                logger.info(
+                    "archive left at %s DPI (cap %s): %s", dpi, max_dpi, why
+                )
 
     thumb_dir = workdir / "thumbwork"
     thumb_dir.mkdir()
@@ -152,6 +166,7 @@ def _run_ocr(
         archive_dpi=dpi,
         original_dpi=original_dpi,
         archive_pdfa_wanted=pdfa_wanted,
+        downsample_note=downsample_note,
     )
 
 
@@ -293,6 +308,17 @@ async def process_job(session: AsyncSession, job: Job) -> None:
         document.archive_blob_id = outcome.blob_id
         document.archive_pdfa = outcome.archive_pdfa
         document.archive_pdfa_wanted = outcome.archive_pdfa_wanted
+        # Keyed on the new blob, so this says "this archive could not be
+        # reduced" rather than "this document cannot be" — a later re-OCR
+        # produces a different blob and qualifies again. Cleared when the
+        # rebuild did work, or the marker would outlive its reason.
+        document.downsample_note = outcome.downsample_note
+        document.downsample_tried_blob = (
+            outcome.blob_id if outcome.downsample_note else None
+        )
+        document.downsample_tried_dpi = (
+            max_dpi if outcome.downsample_note else None
+        )
         # 0 (not None) when the archive has no raster images, so it reads as
         # "measured, nothing to downsample" rather than an unmeasured candidate.
         document.archive_dpi = outcome.archive_dpi or 0

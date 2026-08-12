@@ -220,6 +220,18 @@ export default function Settings() {
             the archives you already have, use <strong>Reclaim space</strong> on
             the Insights page.
           </p>
+          <p className="settings-help">
+            {/* Measured, not hypothetical: on a re-OCR sample every book above
+                the cap refused the reduction, because ocrmypdf's JBIG2 output
+                at 600 DPI is smaller than a Ghostscript re-render at 300. */}
+            Expect some archives to stay above the cap. A reduction is only
+            kept when it actually produces a smaller file, and for scanned text
+            it often doesn’t — the page images are stored in a compression
+            format that re-rendering can’t match, so a lower-resolution copy
+            can come out <em>larger</em>. Those documents keep their full
+            resolution, which costs nothing and reads better. Each one says
+            which case it is under <strong>File details…</strong>.
+          </p>
         </section>
 
         <section className="settings-section">
