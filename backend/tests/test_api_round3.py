@@ -307,3 +307,35 @@ async def test_folder_export_hardlinks(client, auth, pdf_factory, tmp_path):
     assert originals
     # hardlinked (same volume in tests): link count > 1 on at least one file
     assert any(os.stat(f).st_nlink > 1 for f in originals)
+
+
+def test_export_never_loads_the_ocr_text_it_does_not_use():
+    """The export read every Document in full, into a list, before writing a
+    byte — and Document carries text_content, the whole OCR text.
+
+    On the live library that is 8.9 GB of text against a container capped at
+    1 GB. The export created its directory, tried to read the library, and
+    never reached the point of linking a single file: the folder just sat
+    there empty. Nothing in the manifest or the tree uses text_content.
+
+    The list endpoints already defer this column and say why in a comment.
+    Tested against the source because the failure is memory, which a
+    two-document test database cannot reproduce.
+    """
+    import inspect
+
+    from app.services import export
+
+    source = inspect.getsource(export._run_export)
+    assert "defer(Document.text_content)" in source, (
+        "the export must not load the OCR text it never reads"
+    )
+    assert "stream_scalars" in source, (
+        "and must stream, so peak memory does not scale with the library"
+    )
+    assert "yield_per" in source
+    # The custom-value lookup used to need the whole id list up front, which
+    # defeats streaming on its own.
+    assert ".in_(" not in source, (
+        "an IN list of every document id has to materialise them all first"
+    )

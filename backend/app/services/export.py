@@ -11,8 +11,8 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy import func, select
+from sqlalchemy.orm import defer, selectinload
 
 from app.config import settings
 from app.database import SessionLocal
@@ -23,6 +23,9 @@ from app.services.app_state import set_value
 logger = logging.getLogger(__name__)
 
 EXPORT_STATUS = "library_export_status"
+
+# Rows per round trip while streaming, and how often progress is published.
+EXPORT_BATCH = 500
 
 _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
@@ -123,34 +126,34 @@ async def _run_export(tenant_id, fmt: str = "folder", part_gb: int = 10) -> None
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
 
     async with SessionLocal() as session:
-        docs = (
-            (
-                await session.execute(
-                    select(Document)
-                    .where(
-                        Document.tenant_id == tenant_id,
-                        Document.deleted_at.is_(None),
-                    )
-                    .options(
-                        selectinload(Document.tags),
-                        selectinload(Document.correspondent),
-                        selectinload(Document.doc_type),
-                    )
-                    .order_by(Document.created_at)
-                )
+        live = (Document.tenant_id == tenant_id, Document.deleted_at.is_(None))
+        # Streamed, and without text_content.
+        #
+        # This loaded every Document in full, into a list, before writing a
+        # byte — and Document carries the whole OCR text, megabytes per book.
+        # Across a real library that is gigabytes into a container capped at
+        # 1 GB, so the export created its directory, tried to read everything,
+        # and never got as far as linking a single file. The list endpoints
+        # already defer this column for exactly the same reason.
+        docs_stream = await session.stream_scalars(
+            select(Document)
+            .where(*live)
+            .options(
+                defer(Document.text_content),
+                selectinload(Document.tags),
+                selectinload(Document.correspondent),
+                selectinload(Document.doc_type),
             )
-            .scalars()
-            .all()
+            .order_by(Document.created_at)
+            .execution_options(yield_per=EXPORT_BATCH)
         )
+        # Joined rather than an IN list of every document id, which had to
+        # materialise the full set first — the thing this is avoiding.
         custom_rows = (
             await session.execute(
-                select(document_custom_values).where(
-                    document_custom_values.c.document_id.in_(
-                        [d.id for d in docs]
-                    )
-                    if docs
-                    else False
-                )
+                select(document_custom_values)
+                .join(Document, Document.id == document_custom_values.c.document_id)
+                .where(*live)
             )
         ).all()
         custom_by_doc: dict = {}
@@ -170,13 +173,16 @@ async def _run_export(tenant_id, fmt: str = "folder", part_gb: int = 10) -> None
         }
         used_names: dict[str, int] = {}
 
-        total = len(docs)
+        total = (
+            await session.execute(select(func.count(Document.id)).where(*live))
+        ).scalar_one()
         await _status("running", done=0, total=total)
 
         manifest = []
         # (folder, arcname, disk path, size) collected while the session is open
         files: list[tuple] = []
-        for doc in docs:
+        done = 0
+        async for doc in docs_stream:
             suffix = Path(doc.original_filename).suffix.lower() or ".bin"
             folder = folder_for(doc, parents)
             base = sanitize(doc.title)
@@ -223,6 +229,9 @@ async def _run_export(tenant_id, fmt: str = "folder", part_gb: int = 10) -> None
                     "custom_values": custom_by_doc.get(doc.id, {}),
                 }
             )
+            done += 1
+            if done % EXPORT_BATCH == 0:
+                await _status("running", done=done, total=total)
 
     manifest_bytes = json.dumps(
         {
