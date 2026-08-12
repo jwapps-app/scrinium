@@ -52,14 +52,19 @@ class IngestOutcome:
     page_count: int | None
     thumb: tuple[uuid.UUID, str, int] | None = None  # (blob_id, sha256, size)
     archive_pdfa: bool | None = None  # PDF/A conformance of the stored archive
-    # Whether PDF/A was asked for. Kept alongside the result so "not PDF/A"
-    # can distinguish a fallback from a deliberate plain-PDF archive.
-    archive_pdfa_wanted: bool = True
     archive_dpi: int | None = None  # highest embedded-image DPI of the archive
     # The source's own resolution. Measured because it is the ceiling on any
     # later rebuild — an archive at the cap tells you nothing about whether a
     # higher-resolution version is even possible.
     original_dpi: int | None = None
+    # Whether PDF/A was asked for. Kept alongside the result so "not PDF/A"
+    # can distinguish a fallback from a deliberate plain-PDF archive.
+    #
+    # Appended, not inserted. Callers pass the leading fields positionally, so
+    # adding one in the middle silently reassigns every argument after it —
+    # which is exactly what happened: archive_dpi landed here, and the keyword
+    # that followed collided with it. New fields go on the end.
+    archive_pdfa_wanted: bool = True
 
 
 def _run_ocr(
@@ -111,8 +116,15 @@ def _run_ocr(
     if archive_path is None:
         pages = _page_count(source) if suffix.lower() == ".pdf" else 1
         return IngestOutcome(
-            None, None, None, result.text, result.engine, pages, thumb,
-            original_dpi=original_dpi, archive_pdfa_wanted=pdfa_wanted,
+            blob_id=None,
+            sha256=None,
+            size_bytes=None,
+            text=result.text,
+            engine=result.engine,
+            page_count=pages,
+            thumb=thumb,
+            original_dpi=original_dpi,
+            archive_pdfa_wanted=pdfa_wanted,
         )
     pages = _page_count(archive_path)
     # Measure the final archive's PDF/A status (ocrmypdf usually emits PDF/A,
@@ -121,9 +133,20 @@ def _run_ocr(
     pdfa = compress.is_pdfa(archive_path)
     # Copy the archive into the blob store before the tempdir vanishes.
     blob_id, sha256, size = storage.store_file(archive_path)
+    # Named, every one: this constructor is long enough that a positional
+    # list silently absorbs any new field added above the ones being passed.
     return IngestOutcome(
-        blob_id, sha256, size, result.text, result.engine, pages, thumb, pdfa, dpi,
-        original_dpi=original_dpi, archive_pdfa_wanted=pdfa_wanted,
+        blob_id=blob_id,
+        sha256=sha256,
+        size_bytes=size,
+        text=result.text,
+        engine=result.engine,
+        page_count=pages,
+        thumb=thumb,
+        archive_pdfa=pdfa,
+        archive_dpi=dpi,
+        original_dpi=original_dpi,
+        archive_pdfa_wanted=pdfa_wanted,
     )
 
 

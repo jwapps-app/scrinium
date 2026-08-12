@@ -463,3 +463,111 @@ def test_a_failed_dump_does_not_cost_us_a_good_one():
     # Written aside and renamed, so a partial file is never mistaken for a dump.
     assert ".in-progress" in script
     assert 'mv "$$TMP"' in script
+
+
+def test_run_ocr_actually_constructs_its_result(monkeypatch, tmp_path):
+    """197 tests passed while _run_ocr raised TypeError on every document.
+
+    Nothing in the suite called it: it needs a provider, so it only ever ran
+    against the real OCR stack in production. A new field added to the middle
+    of IngestOutcome silently shifted every positional argument after it —
+    archive_dpi landed on archive_pdfa_wanted, whose keyword then collided —
+    and the first thing to notice was a live re-OCR failing 14 documents in a
+    row. This calls it with the provider stubbed, so the construction is
+    exercised whatever the field order happens to be.
+    """
+    from app.services import compress, ingest, storage, thumbnails
+
+    class _Result:
+        text = "recovered text"
+        engine = "stub"
+
+        def __init__(self, archive):
+            self.archive_path = archive
+
+    seen = {}
+
+    class _Provider:
+        def process(self, source, workdir, mode, pdfa):
+            seen["pdfa"] = pdfa
+            archive = workdir / "archive.pdf"
+            archive.write_bytes(b"%PDF-1.7\n")
+            return _Result(archive)
+
+    monkeypatch.setattr(ingest, "get_provider", lambda engine: _Provider())
+    # A scan: 400 DPI original, so `auto` must not ask for PDF/A.
+    monkeypatch.setattr(
+        compress, "max_image_dpi", lambda path: 400 if "input" in str(path) else 300
+    )
+    monkeypatch.setattr(compress, "over_cap", lambda dpi, cap: False)
+    monkeypatch.setattr(compress, "is_pdfa", lambda path: False)
+    monkeypatch.setattr(thumbnails, "make_thumbnail", lambda src, out: None)
+    monkeypatch.setattr(ingest, "_page_count", lambda path: 7)
+
+    blob = uuid.uuid4()
+    monkeypatch.setattr(storage, "store_file", lambda path: (blob, "sha", 4242))
+
+    original = tmp_path / "original-blob"
+    original.write_bytes(b"%PDF-1.7\n")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    outcome = ingest._run_ocr(
+        original, ".pdf", "redo", workdir, None, 300, "auto"
+    )
+
+    # Every field on the right attribute, which is what the shift broke.
+    assert outcome.blob_id == blob
+    assert outcome.size_bytes == 4242
+    assert outcome.text == "recovered text"
+    assert outcome.engine == "stub"
+    assert outcome.page_count == 7
+    assert outcome.original_dpi == 400
+    assert outcome.archive_dpi == 300
+    assert outcome.archive_pdfa is False
+    # A 400 DPI scan under `auto`: PDF/A was never asked for, so a plain-PDF
+    # archive is the intent and not a shortfall.
+    assert outcome.archive_pdfa_wanted is False
+    assert seen["pdfa"] is False
+
+
+def test_run_ocr_records_the_intent_for_a_born_digital_original(
+    monkeypatch, tmp_path
+):
+    """The other branch of `auto`, through the same constructor."""
+    from app.services import compress, ingest, storage, thumbnails
+
+    class _Result:
+        text = "digital text"
+        engine = "stub"
+
+        def __init__(self, archive):
+            self.archive_path = archive
+
+    class _Provider:
+        def process(self, source, workdir, mode, pdfa):
+            assert pdfa is True, "a born-digital original must ask for PDF/A"
+            archive = workdir / "archive.pdf"
+            archive.write_bytes(b"%PDF-1.7\n")
+            return _Result(archive)
+
+    monkeypatch.setattr(ingest, "get_provider", lambda engine: _Provider())
+    monkeypatch.setattr(compress, "max_image_dpi", lambda path: 0)
+    monkeypatch.setattr(compress, "over_cap", lambda dpi, cap: False)
+    monkeypatch.setattr(compress, "is_pdfa", lambda path: True)
+    monkeypatch.setattr(thumbnails, "make_thumbnail", lambda src, out: None)
+    monkeypatch.setattr(ingest, "_page_count", lambda path: 1)
+    monkeypatch.setattr(
+        storage, "store_file", lambda path: (uuid.uuid4(), "sha", 100)
+    )
+
+    original = tmp_path / "original-blob"
+    original.write_bytes(b"%PDF-1.7\n")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    outcome = ingest._run_ocr(original, ".pdf", "redo", workdir, None, 300, "auto")
+
+    assert outcome.original_dpi == 0
+    assert outcome.archive_pdfa_wanted is True
+    assert outcome.archive_pdfa is True
