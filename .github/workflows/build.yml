@@ -36,7 +36,16 @@ jobs:
           cache-dependency-path: backend/requirements*.txt
 
       - name: Install system dependencies
-        run: sudo apt-get update -q && sudo apt-get install -y -q ghostscript
+        # The hosted runner image ships Microsoft's apt repos, which we do not
+        # use and which intermittently answer 403 — enough to fail the whole
+        # update and take the test job with it, as they did on 457b031. Drop
+        # them first so a green or red run reflects this repository.
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/azure-cli.list \
+                     /etc/apt/sources.list.d/microsoft.list
+          sudo apt-get update -q
+          sudo apt-get install -y -q ghostscript
 
       - name: Install backend dependencies
         working-directory: backend
