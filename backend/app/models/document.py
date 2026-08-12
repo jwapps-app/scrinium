@@ -68,6 +68,13 @@ class Document(Base):
     # Whether the archive is PDF/A-conformant. None = unknown/no archive;
     # False marks the plain PDFs that couldn't be made PDF/A.
     archive_pdfa: Mapped[bool | None] = mapped_column(nullable=True)
+    # Whether PDF/A was the intent for this document (see ARCHIVE_FORMAT).
+    # Without it, "not PDF/A" cannot distinguish a conversion that failed from
+    # a scan deliberately kept as plain PDF — and under `auto` the second case
+    # is most of the library, which would swamp the first.
+    archive_pdfa_wanted: Mapped[bool] = mapped_column(
+        default=True, server_default="true"
+    )
     # Highest embedded-image DPI in the archive (None = not yet measured).
     # The source's own resolution — the ceiling on any rebuild, since no
     # setting creates detail the scanner never captured. NULL = unmeasured,

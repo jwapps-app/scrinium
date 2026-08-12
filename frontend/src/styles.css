@@ -2570,3 +2570,52 @@ button.linklike {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* Review reasons — why a document is in the pile, and how much it matters.
+   `info` must not look like an alert: most of this pile is simply unfiled. */
+.review-reasons {
+  margin: 0 0 1rem;
+}
+
+.reason-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.reason-chip {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--bg);
+  white-space: nowrap;
+}
+
+.reason-chip.problem {
+  border-color: color-mix(in srgb, var(--danger, #b91c1c) 45%, var(--border));
+  color: var(--danger, #b91c1c);
+  background: color-mix(in srgb, var(--danger, #b91c1c) 8%, var(--surface));
+}
+
+.reason-details {
+  margin: 0.6rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.reason-details strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.reason-allclear {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-style: italic;
+}

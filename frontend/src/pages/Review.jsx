@@ -93,6 +93,7 @@ export default function Review() {
               </button>
             </div>
             <h2 className="review-title">{doc.title}</h2>
+            <ReviewReasons reasons={doc.review_reasons} />
             <DocumentDetails doc={doc} onChange={load} />
             <div className="review-preview">
               <Thumb id={doc.id} className="review-thumb" />
@@ -107,3 +108,42 @@ export default function Review() {
     </Shell>
   )
 }
+
+/**
+ * Why this document is here, and how much it matters.
+ *
+ * Most documents in this pile are simply unfiled, which is the normal state
+ * of anything just uploaded — not a fault. Saying so explicitly is the point:
+ * without it, "To review 3" sits next to "Needs attention" and reads like
+ * three things broke.
+ */
+function ReviewReasons({ reasons }) {
+  if (!reasons?.length) return null
+  const routine = reasons.every((r) => r.severity === 'info')
+
+  return (
+    <div className="review-reasons">
+      <div className="reason-chips">
+        {reasons.map((r) => (
+          <span key={r.key} className={`reason-chip ${r.severity}`}>
+            {r.severity === 'problem' ? '! ' : ''}
+            {r.label}
+          </span>
+        ))}
+      </div>
+      <ul className="reason-details">
+        {reasons.map((r) => (
+          <li key={r.key}>
+            <strong>{r.label}:</strong> {r.detail}
+          </li>
+        ))}
+      </ul>
+      {routine && (
+        <p className="reason-allclear">
+          Nothing is wrong with this document — it just hasn’t been filed.
+        </p>
+      )}
+    </div>
+  )
+}
+

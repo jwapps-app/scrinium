@@ -201,12 +201,15 @@ export default function Settings() {
             <div className="settings-row">
               <span>Archive format</span>
               <span>
+                {/* Only counts archives that were meant to be PDF/A and
+                    aren't. Under `auto` a scan is plain PDF on purpose, and
+                    counting those would make this number meaningless. */}
                 {downsample?.non_pdfa > 0 ? (
                   <a href="/?non_pdfa=1">
-                    {downsample.non_pdfa.toLocaleString()} not PDF/A
+                    {downsample.non_pdfa.toLocaleString()} fell short of PDF/A
                   </a>
                 ) : (
-                  <strong>All PDF/A</strong>
+                  <strong>No PDF/A shortfalls</strong>
                 )}
               </span>
             </div>

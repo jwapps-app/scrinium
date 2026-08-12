@@ -48,13 +48,14 @@ async def create_tag(body: TagCreate, user: CurrentUser, db: DB) -> TagOut:
     ).scalar_one_or_none()
     if existing is not None:
         return _tag_out(existing)
+    parent = None
     if body.parent_id is not None:
-        await _get_owned(body.parent_id, user, db)
+        parent = await _get_owned(body.parent_id, user, db)
     tag = Tag(
         tenant_id=user.tenant_id,
         name=body.name,
         parent_id=body.parent_id,
-        color=body.color,
+        color=body.color or await _auto_color(user, db, parent),
     )
     db.add(tag)
     await db.flush()
@@ -102,11 +103,51 @@ async def update_tag(
     return _tag_out(tag)
 
 
-def _hsl_to_hex(h: float, s: float, l: float) -> str:
-    import colorsys
+async def _auto_color(user, db, parent) -> str:
+    """A colour for a tag created without one.
 
-    r, g, b = colorsys.hls_to_rgb((h % 360) / 360, l / 100, s / 100)
-    return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+    The UI never sends a colour, so tags were landing with none at all and
+    stayed grey until someone ran the whole-tree recolour by hand — which was
+    the only thing that assigned colours, and it overwrites every manual
+    choice on the way past. A new tag gets one immediately instead: a shade of
+    its parent's hue, or, for a root, the emptiest part of the wheel.
+    """
+    from app.services import palette
+
+    if parent is not None:
+        parent_hsl = palette.hex_to_hsl(parent.color or "")
+        if parent_hsl is not None:
+            siblings = (
+                await db.execute(
+                    select(func.count(Tag.id)).where(
+                        Tag.tenant_id == user.tenant_id, Tag.parent_id == parent.id
+                    )
+                )
+            ).scalar_one()
+            return palette.hsl_to_hex(*palette.child_hsl(parent_hsl, siblings))
+
+    # A root, or a parent that has no colour of its own to derive from.
+    used = (
+        (
+            await db.execute(
+                select(Tag.color).where(
+                    Tag.tenant_id == user.tenant_id, Tag.color.is_not(None)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    hues = [hsl[0] for hsl in (palette.hex_to_hsl(c) for c in used) if hsl]
+    return palette.hsl_to_hex(
+        palette.next_root_hue(hues), palette.ROOT_SAT, palette.ROOT_LIGHT
+    )
+
+
+def _hsl_to_hex(h: float, s: float, l: float) -> str:
+    from app.services.palette import hsl_to_hex
+
+    return hsl_to_hex(h, s, l)
 
 
 @router.post("/auto-color")

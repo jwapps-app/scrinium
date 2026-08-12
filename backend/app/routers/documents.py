@@ -26,11 +26,12 @@ from app.schemas import (
     DocumentUpdate,
     PageOpRequest,
     ReprocessRequest,
+    ReviewReasonOut,
 )
 from datetime import datetime, timezone
 from app.config import settings as app_settings
 from app.models import Correspondent, CustomField, DocType, document_custom_values
-from app.services import compress, deletion, intake, storage, thumbnails
+from app.services import compress, deletion, intake, review, storage, thumbnails
 from app.services import pages as pages_service
 from app.services.intake import DuplicateDocument
 from app.services.dates import extract_document_date
@@ -109,6 +110,9 @@ def doc_out(
     out = DocumentOut.model_validate(doc)
     if size_bytes is not None:
         out.size_bytes = size_bytes
+    out.review_reasons = [
+        ReviewReasonOut(**vars(r)) for r in review.reasons_for(doc)
+    ]
     out.has_archive = doc.archive_blob_id is not None
     out.has_thumbnail = doc.thumbnail_blob_id is not None
     out.correspondent_name = doc.correspondent.name if doc.correspondent else None
@@ -138,6 +142,21 @@ async def _progress_map(
         for doc_id, done, total, phase in rows
         if done is not None and total
     }
+
+
+def _pdfa_shortfall():
+    """Archives that fell short of PDF/A when PDF/A was the intent.
+
+    Not simply "is not PDF/A". Under ARCHIVE_FORMAT=auto a scan is archived as
+    plain PDF on purpose, so the bare test would count most of the library as
+    a defect and the number would only ever grow. What is worth showing is the
+    gap between intent and result — a conversion that fell back.
+    """
+    return (
+        Document.archive_blob_id.is_not(None),
+        Document.archive_pdfa.is_(False),
+        Document.archive_pdfa_wanted.is_(True),
+    )
 
 
 def _first_tag_name():
@@ -429,7 +448,7 @@ async def list_documents(
     if engine:
         conditions.append(Document.ocr_engine == engine)
     if non_pdfa:
-        conditions.append(Document.archive_pdfa.is_(False))
+        conditions.extend(_pdfa_shortfall())
     if title_q and title_q.strip():
         # Title-only match for pickers (e.g. choosing a document to copy tags
         # from), deliberately not full-text: matching body text would bury the
@@ -688,7 +707,7 @@ async def _compute_stats(user: CurrentUser, db: DB) -> dict:
             select(func.count(Document.id)).where(
                 Document.tenant_id == user.tenant_id,
                 Document.deleted_at.is_(None),
-                Document.archive_pdfa.is_(False),
+                *_pdfa_shortfall(),
             )
         )
     ).scalar_one()
@@ -903,7 +922,7 @@ async def downsample_candidates(user: CurrentUser, db: DB) -> dict:
             select(func.count(Document.id)).where(
                 Document.tenant_id == user.tenant_id,
                 Document.deleted_at.is_(None),
-                Document.archive_pdfa.is_(False),
+                *_pdfa_shortfall(),
             )
         )
     ).scalar_one()

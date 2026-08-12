@@ -363,9 +363,11 @@ export default function Insights() {
                     <>
                       {' '}
                       <a href="/?non_pdfa=1">
-                        {storage.non_pdfa.toLocaleString()} archives aren’t
-                        PDF/A.
-                      </a>
+                        {storage.non_pdfa.toLocaleString()} archives were meant
+                        to be PDF/A and fell back to plain PDF.
+                      </a>{' '}
+                      Scans archived as plain PDF on purpose (see Archive
+                      format) aren’t counted here.
                     </>
                   )}
                 </p>

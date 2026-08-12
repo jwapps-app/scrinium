@@ -55,6 +55,13 @@ class TagUpdate(BaseModel):
     clear_color: bool = False
 
 
+class ReviewReasonOut(BaseModel):
+    key: str
+    label: str
+    severity: str  # "info" (routine, just needs filing) | "problem"
+    detail: str
+
+
 class DocumentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -81,6 +88,9 @@ class DocumentOut(BaseModel):
     notes: str | None = None
     custom_values: dict[str, str] = {}
     tags: list[TagOut] = []
+    # Why this document wants attention, worst first. Empty for most of the
+    # library; "not filed yet" is severity info, not a fault.
+    review_reasons: list[ReviewReasonOut] = []
     created_at: datetime
     updated_at: datetime
 

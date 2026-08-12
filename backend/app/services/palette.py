@@ -8,6 +8,77 @@ subtree gets almost everything, and its children come out visibly distinct.
 """
 
 
+import colorsys
+
+# Depth-0 values, matching what assign_palette gives a root.
+ROOT_SAT = 58.0
+ROOT_LIGHT = 40.0
+# One step down the tree, from the same formulas assign_palette uses.
+DEPTH_LIGHT_STEP = 8.0
+DEPTH_SAT_STEP = 4.0
+MAX_LIGHT = 76.0
+MIN_SAT = 42.0
+# How far siblings are pushed either side of the parent's hue. Small, so a
+# child still reads as belonging to its parent's family.
+SIBLING_HUE_STEP = 12.0
+
+
+def hsl_to_hex(h: float, s: float, light: float) -> str:
+    # round, not truncate: int() loses up to a whole step per channel, and a
+    # child colour derived from a parent's hex would drift darker each
+    # generation rather than round-tripping.
+    r, g, b = colorsys.hls_to_rgb((h % 360) / 360, light / 100, s / 100)
+    return "#{:02x}{:02x}{:02x}".format(
+        *(min(255, max(0, round(c * 255))) for c in (r, g, b))
+    )
+
+
+def hex_to_hsl(value: str) -> tuple[float, float, float] | None:
+    raw = (value or "").lstrip("#")
+    if len(raw) != 6:
+        return None
+    try:
+        r, g, b = (int(raw[i : i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return None
+    h, light, s = colorsys.rgb_to_hls(r, g, b)
+    return h * 360, s * 100, light * 100
+
+
+def child_hsl(parent_hsl: tuple[float, float, float], sibling_index: int):
+    """A shade for a new child, derived from its parent alone.
+
+    assign_palette partitions the whole wheel, so recomputing it to colour one
+    new tag would shift every other tag — and silently overwrite any colour
+    picked by hand. This stays local: the same one-step-lighter, one-step-less
+    saturated relationship that palette gives a child, with siblings fanned
+    out either side of the parent's hue so they stay distinguishable.
+    """
+    parent_h, parent_s, parent_l = parent_hsl
+    step = (sibling_index + 1) // 2 * SIBLING_HUE_STEP
+    offset = step if sibling_index % 2 else -step
+    return (
+        (parent_h + offset) % 360,
+        max(parent_s - DEPTH_SAT_STEP, MIN_SAT),
+        min(parent_l + DEPTH_LIGHT_STEP, MAX_LIGHT),
+    )
+
+
+def next_root_hue(existing: list[float]) -> float:
+    """The hue furthest from every hue already in use — the midpoint of the
+    widest gap around the wheel."""
+    hues = sorted(h % 360 for h in existing)
+    if not hues:
+        return 0.0
+    widest, best = -1.0, hues[0]
+    for i, hue in enumerate(hues):
+        nxt = hues[(i + 1) % len(hues)]
+        gap = (nxt - hue) % 360 or 360.0
+        if gap > widest:
+            widest, best = gap, (hue + gap / 2) % 360
+    return best
+
+
 def assign_palette(nodes: list[tuple]) -> dict:
     """nodes: (id, parent_id, sort_key) → {id: (hue, sat, light)}."""
     by_parent: dict = {}

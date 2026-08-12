@@ -52,6 +52,9 @@ class IngestOutcome:
     page_count: int | None
     thumb: tuple[uuid.UUID, str, int] | None = None  # (blob_id, sha256, size)
     archive_pdfa: bool | None = None  # PDF/A conformance of the stored archive
+    # Whether PDF/A was asked for. Kept alongside the result so "not PDF/A"
+    # can distinguish a fallback from a deliberate plain-PDF archive.
+    archive_pdfa_wanted: bool = True
     archive_dpi: int | None = None  # highest embedded-image DPI of the archive
     # The source's own resolution. Measured because it is the ceiling on any
     # later rebuild — an archive at the cap tells you nothing about whether a
@@ -109,7 +112,7 @@ def _run_ocr(
         pages = _page_count(source) if suffix.lower() == ".pdf" else 1
         return IngestOutcome(
             None, None, None, result.text, result.engine, pages, thumb,
-            original_dpi=original_dpi,
+            original_dpi=original_dpi, archive_pdfa_wanted=pdfa_wanted,
         )
     pages = _page_count(archive_path)
     # Measure the final archive's PDF/A status (ocrmypdf usually emits PDF/A,
@@ -120,7 +123,7 @@ def _run_ocr(
     blob_id, sha256, size = storage.store_file(archive_path)
     return IngestOutcome(
         blob_id, sha256, size, result.text, result.engine, pages, thumb, pdfa, dpi,
-        original_dpi=original_dpi,
+        original_dpi=original_dpi, archive_pdfa_wanted=pdfa_wanted,
     )
 
 
@@ -261,6 +264,7 @@ async def process_job(session: AsyncSession, job: Job) -> None:
         )
         document.archive_blob_id = outcome.blob_id
         document.archive_pdfa = outcome.archive_pdfa
+        document.archive_pdfa_wanted = outcome.archive_pdfa_wanted
         # 0 (not None) when the archive has no raster images, so it reads as
         # "measured, nothing to downsample" rather than an unmeasured candidate.
         document.archive_dpi = outcome.archive_dpi or 0
