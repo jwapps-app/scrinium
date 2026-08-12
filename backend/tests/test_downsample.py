@@ -384,16 +384,11 @@ def test_downsample_marker_remembers_the_target_it_tried():
     assert "> target_dpi" in source, "a higher previous target must re-qualify"
 
 
-def test_the_backup_survives_being_read_by_a_shell():
-    """The entrypoint was a folded YAML scalar, and the fold turned its
-    indented continuation lines into real newlines. The shell reads those as
-    statement separators, so `pg_dump ... -Fc` ran alone — whole database, no
-    exclusion, output to the container log — and the next line started
-    `--exclude-table-data=...: not found`, feeding an empty pipe. gzip still
-    exited 0, so `&&` still ran the delete: empty dumps written, good ones
-    pruned. A list-form entrypoint with a literal block keeps a newline
-    meaning what it looks like.
-    """
+def _backup_script(code_only: bool = True) -> str:
+    """The backup entrypoint script. Comments are stripped by default: they
+    quote the very mistakes these tests forbid (`| gzip`, a bare pg_dump), and
+    matching prose instead of code is how the first version of these tests
+    managed to fail against a correct script."""
     from pathlib import Path
 
     import yaml
@@ -404,27 +399,38 @@ def test_the_backup_survives_being_read_by_a_shell():
     entrypoint = compose["services"]["backup"]["entrypoint"]
     assert isinstance(entrypoint, list), "a string entrypoint is what folded"
     script = entrypoint[-1]
-
-    # The exclusion and its table must survive on one logical line.
-    dump_line = next(
-        line for line in script.splitlines() if "pg_dump" in line
+    if not code_only:
+        return script
+    return "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
     )
-    assert dump_line.rstrip().endswith("\\"), "the pg_dump call must continue"
-    joined = script.replace("\\\n", " ")
-    assert "-Fc --exclude-table-data=document_pages" in " ".join(joined.split())
+
+
+def test_the_backup_survives_being_read_by_a_shell():
+    """The entrypoint was a folded YAML scalar, and the fold turned its
+    indented continuation lines into real newlines. The shell reads those as
+    statement separators, so `pg_dump ... -Fc` ran alone — whole database, no
+    exclusion, output to the container log — and the next line started
+    `--exclude-table-data=...: not found`, feeding an empty pipe. gzip still
+    exited 0, so `&&` still ran the delete: empty dumps written, good ones
+    pruned. A list-form entrypoint with a literal block keeps a newline
+    meaning what it looks like.
+    """
+    script = _backup_script()
+
+    dump_line = next(line for line in script.splitlines() if "pg_dump" in line)
+    assert dump_line.rstrip().endswith("\\"), (
+        "the pg_dump call must continue onto the next line explicitly"
+    )
+    joined = " ".join(script.replace("\\\n", " ").split())
+    assert "-Fc --exclude-table-data=document_pages" in joined
 
 
 def test_the_backup_does_not_fire_on_every_deploy():
     """This container is recreated by every stack update, and dumping before
     sleeping turned eight repulls in one day into eight 5 GB dumps — 71 GB in
     the directory against a 14 GB database."""
-    from pathlib import Path
-
-    import yaml
-
-    script = yaml.safe_load(
-        (Path(__file__).resolve().parents[2] / "docker-compose.portainer.yml").read_text()
-    )["services"]["backup"]["entrypoint"][-1]
+    script = _backup_script()
 
     # Age of the newest dump decides, not the fact of having started.
     assert "stat -c %Y" in script
@@ -436,13 +442,7 @@ def test_backup_retention_counts_dumps_rather_than_days():
     """14 days of age-based retention is unbounded in size: at one dump a day
     it is 14, at eight it is 112. Keeping a fixed number bounds the directory
     whatever the cadence turns out to be."""
-    from pathlib import Path
-
-    import yaml
-
-    script = yaml.safe_load(
-        (Path(__file__).resolve().parents[2] / "docker-compose.portainer.yml").read_text()
-    )["services"]["backup"]["entrypoint"][-1]
+    script = _backup_script()
 
     assert "BACKUP_KEEP" in script
     assert "tail -n +" in script, "keep the newest N, delete the rest"
@@ -456,16 +456,10 @@ def test_a_failed_dump_does_not_cost_us_a_good_one():
     """`pg_dump | gzip > file` reports gzip's exit status, so a dump that died
     halfway still looked like success: the truncated file was kept and the
     retention pass ran against it."""
-    from pathlib import Path
+    script = _backup_script()
 
-    import yaml
-
-    script = yaml.safe_load(
-        (Path(__file__).resolve().parents[2] / "docker-compose.portainer.yml").read_text()
-    )["services"]["backup"]["entrypoint"][-1]
-
-    assert "| gzip" not in script, "-Fc is already compressed; the pipe hid the status"
-    assert 'if pg_dump' in script, "branch on pg_dump's own exit status"
+    assert "gzip" not in script, "-Fc is already compressed; the pipe hid the status"
+    assert "if pg_dump" in script, "branch on pg_dump's own exit status"
     # Written aside and renamed, so a partial file is never mistaken for a dump.
-    assert '.in-progress' in script
+    assert ".in-progress" in script
     assert 'mv "$$TMP"' in script
