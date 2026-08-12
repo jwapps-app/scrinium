@@ -325,7 +325,11 @@ def test_worker_waits_for_the_schema_it_expects():
     from pathlib import Path
 
     script = (Path(__file__).resolve().parents[1] / "entrypoint.sh").read_text()
-    worker_branch = script.split('if [ "$1" = "worker" ]; then')[1].split("fi")[0]
+    # Everything before the API path is the worker branch. Splitting on "fi"
+    # would stop at the nested one inside the loop, mid-branch.
+    worker_branch = script.split("exec python -m app.worker")[0]
     assert "alembic current" in worker_branch
     assert "waiting for schema" in worker_branch
     assert "SCHEMA_WAIT_ATTEMPTS" in worker_branch, "bounded, not an infinite wait"
+    # And the wait must come before the worker starts, not after.
+    assert worker_branch.index("waiting for schema") < len(worker_branch)
