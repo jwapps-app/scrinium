@@ -91,6 +91,16 @@ def pdfa_fallback_commands(cmd: list[str]) -> list[tuple[str, list[str]]]:
         base[base.index("--output-type") + 1] = value
         return base
 
+    # Already plain PDF: the first two rungs exist to rescue a failing PDF/A
+    # conversion, and there is none to rescue.
+    if cmd[cmd.index("--output-type") + 1] != "pdfa":
+        force_only = set_output([a for a in cmd if a not in ALL_MODE_FLAGS], "pdf")
+        force_only = force_only[:3] + [
+            "--force-ocr",
+            "--continue-on-soft-render-error",
+        ] + force_only[3:]
+        return [("plain-pdf", cmd), ("force-raster", force_only)]
+
     rgb = cmd + ["--color-conversion-strategy", "RGB"]
 
     # Keep the original pages and the requested mode; only drop PDF/A.
@@ -397,12 +407,15 @@ class TesseractProvider:
 
     engine = "tesseract"
 
-    def process(self, original: Path, workdir: Path, mode: str = "skip") -> OCRResult:
+    def process(
+        self, original: Path, workdir: Path, mode: str = "skip",
+        pdfa: bool = True,
+    ) -> OCRResult:
         archive = workdir / "archive.pdf"
         cmd = [
             "python3", "-m", "ocrmypdf",
             *MODE_FLAGS.get(mode, MODE_FLAGS["skip"]),
-            "--output-type", "pdfa",
+            "--output-type", "pdfa" if pdfa else "pdf",
             "--plugin", PROGRESS_PLUGIN,
             "--jobs", str(settings.ocr_jobs),
             "--language", settings.ocr_languages,

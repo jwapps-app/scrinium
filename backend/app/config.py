@@ -51,6 +51,20 @@ class Settings(BaseSettings):
     # more than ~300 DPI. 0 disables downsampling entirely. Runtime-adjustable
     # via Settings (app_state ARCHIVE_MAX_DPI).
     archive_max_dpi: int = 300
+    # How the searchable archive is written:
+    #   pdfa — always PDF/A
+    #   pdf  — never
+    #   auto — PDF/A only where it earns its cost
+    #
+    # PDF/A exists to guarantee text renders in decades' time by embedding
+    # every font. On a scan there is no text to protect — just page images and
+    # the invisible glyphless OCR font, which is embedded regardless — and
+    # Ghostscript's conversion re-encodes the images at roughly 4x the size.
+    # Measured on a real volume: 104% of source as plain PDF, 406% as PDF/A,
+    # and no colour strategy avoids it. On a born-digital PDF the trade
+    # inverts: fonts are exactly what can rot, and there is little raster data
+    # for the conversion to inflate.
+    archive_format: str = Field(default="auto", pattern="^(pdfa|pdf|auto)$")
     # How OCR treats pages that already carry text, for documents arriving by
     # upload, watched folder or email:
     #   redo  — re-OCR pages whose text looks machine-generated, keeping

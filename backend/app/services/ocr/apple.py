@@ -44,26 +44,31 @@ class AppleVisionProvider:
         except httpx.HTTPError:
             return False
 
-    def process(self, original: Path, workdir: Path, mode: str = "skip") -> OCRResult:
+    def process(
+        self, original: Path, workdir: Path, mode: str = "skip",
+        pdfa: bool = True,
+    ) -> OCRResult:
         if not self.sidecar_healthy():
             logger.info("Apple sidecar not reachable; falling back to Tesseract")
-            return self.fallback.process(original, workdir, mode)
+            return self.fallback.process(original, workdir, mode, pdfa)
         try:
-            return self._ocr_via_sidecar(original, workdir, mode)
+            return self._ocr_via_sidecar(original, workdir, mode, pdfa)
         except Exception as exc:
             logger.warning(
                 "Apple sidecar OCR failed (%s); falling back to Tesseract", exc
             )
             return self.fallback.process(original, workdir, mode)
 
-    def _ocr_via_sidecar(self, original: Path, workdir: Path, mode: str) -> OCRResult:
+    def _ocr_via_sidecar(
+        self, original: Path, workdir: Path, mode: str, pdfa: bool = True
+    ) -> OCRResult:
         archive = workdir / "archive.pdf"
         # `python3 -m ocrmypdf` (not the console script) so the plugin module
         # resolves against the app package in the working directory.
         cmd = [
             "python3", "-m", "ocrmypdf",
             *MODE_FLAGS.get(mode, MODE_FLAGS["skip"]),
-            "--output-type", "pdfa",
+            "--output-type", "pdfa" if pdfa else "pdf",
             "--pdf-renderer", "hocr",
             "--plugin", PLUGIN_MODULE,
             "--plugin", PROGRESS_PLUGIN,

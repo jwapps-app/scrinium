@@ -9,6 +9,8 @@ from sqlalchemy import update as sqla_update
 from app.deps import DB, AdminUser, CurrentUser
 from app.models import AppSetting
 from app.services.app_state import (
+    ARCHIVE_FORMAT,
+    resolve_archive_format,
     ARCHIVE_MAX_DPI,
     OCR_ENGINE_OVERRIDE,
     get_value,
@@ -109,6 +111,40 @@ async def archive_dpi_settings(user: CurrentUser, db: DB) -> dict:
         "dpi_env": settings.archive_max_dpi,
         "dpi_override": override,
     }
+
+
+@router.get("/archive-format")
+async def archive_format_settings(user: CurrentUser, db: DB) -> dict:
+    return {
+        "format": await resolve_archive_format(db),
+        "format_env": settings.archive_format,
+        "format_override": await get_value(db, ARCHIVE_FORMAT),
+    }
+
+
+@router.post("/archive-format")
+async def set_archive_format(body: dict, user: AdminUser, db: DB) -> dict:
+    """How the searchable archive is written.
+
+    pdfa always, pdf never, or auto — PDF/A only where it earns its keep. PDF/A
+    guarantees text renders decades hence by embedding every font; on a scan
+    there is no text to protect and Ghostscript's conversion costs about four
+    times the size (measured: 104% of source as plain PDF, 406% as PDF/A). On a
+    born-digital document the trade inverts. `auto` decides per document from
+    whether the original holds raster images.
+
+    Applies to OCR from now on; existing archives are unchanged until re-OCR'd.
+    """
+    raw = (body.get("format") or "").strip()
+    if raw == "":
+        await set_value(db, ARCHIVE_FORMAT, "")
+        return {"format": await resolve_archive_format(db), "format_override": ""}
+    if raw not in ("pdfa", "pdf", "auto"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "format must be pdfa, pdf, or auto"
+        )
+    await set_value(db, ARCHIVE_FORMAT, raw)
+    return {"format": raw, "format_override": raw}
 
 
 @router.post("/archive-dpi")

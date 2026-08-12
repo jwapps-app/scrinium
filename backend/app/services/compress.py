@@ -332,6 +332,7 @@ async def process_downsample_job(
                     "downsample: %s cannot be reduced (%s)", document.id, why
                 )
                 document.downsample_tried_blob = document.archive_blob_id
+                document.downsample_tried_dpi = target_dpi
                 document.downsample_note = why
                 document.archive_pdfa = await asyncio.to_thread(is_pdfa, archive_path)
                 job.status = JobStatus.DONE

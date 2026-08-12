@@ -333,3 +333,55 @@ def test_worker_waits_for_the_schema_it_expects():
     assert "SCHEMA_WAIT_ATTEMPTS" in worker_branch, "bounded, not an infinite wait"
     # And the wait must come before the worker starts, not after.
     assert worker_branch.index("waiting for schema") < len(worker_branch)
+
+
+def test_auto_picks_pdfa_only_where_it_earns_its_cost():
+    """PDF/A guarantees text renders decades hence by embedding every font.
+
+    A scan has no text to protect — just page images and the invisible
+    glyphless OCR font, embedded regardless — and Ghostscript's conversion
+    costs ~4x (measured: 104% of source as plain PDF, 406% as PDF/A, with no
+    colour strategy avoiding it). A born-digital document inverts both halves.
+    """
+    from app.services.app_state import wants_pdfa
+
+    # auto: original_dpi is the discriminator. 0 = no raster images.
+    assert wants_pdfa("auto", 0) is True, "born-digital: fonts are worth protecting"
+    assert wants_pdfa("auto", 300) is False, "a scan: nothing to protect, 4x cost"
+    assert wants_pdfa("auto", 600) is False
+    # Unmeasured must not be quietly downgraded.
+    assert wants_pdfa("auto", None) is True
+
+    # Explicit settings override the judgement entirely.
+    assert wants_pdfa("pdfa", 300) is True
+    assert wants_pdfa("pdf", 0) is False
+
+
+def test_remedy_chain_skips_pdfa_rungs_when_not_asking_for_pdfa():
+    """The first two rungs rescue a failing PDF/A conversion. With plain PDF
+    requested there is none to rescue, and running them wastes two full
+    Ghostscript passes per document."""
+    from app.services.ocr import tesseract as T
+
+    plain_cmd = [
+        "python3", "-m", "ocrmypdf", "--skip-text",
+        "--output-type", "pdf", "--quiet", "in.pdf", "out.pdf",
+    ]
+    labels = [label for label, _ in T.pdfa_fallback_commands(plain_cmd)]
+    assert labels == ["plain-pdf", "force-raster"]
+
+
+def test_downsample_marker_remembers_the_target_it_tried():
+    """Lowering the cap must re-qualify documents.
+
+    The marker recorded only the archive blob, so everything marked
+    `not_smaller` at 300 would stay excluded after a drop to 200 — the new
+    setting silently doing nothing for 1,135 documents.
+    """
+    import inspect
+
+    from app.routers import documents
+
+    source = inspect.getsource(documents._downsample_eligible)
+    assert "downsample_tried_dpi" in source
+    assert "> target_dpi" in source, "a higher previous target must re-qualify"

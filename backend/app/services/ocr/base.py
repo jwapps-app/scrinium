@@ -21,9 +21,13 @@ class OCRResult:
 
 class OCRProvider(Protocol):
     def process(
-        self, original: Path, workdir: Path, mode: str = "skip"
+        self, original: Path, workdir: Path, mode: str = "skip", pdfa: bool = True
     ) -> OCRResult:
         """Produce a searchable archive PDF + text from the original.
+
+        pdfa: write the archive as PDF/A. Worth it for a born-digital
+        document, where embedded fonts are what decays; on a scan there is no
+        text to protect and Ghostscript's conversion costs ~4x the size.
 
         mode: "skip" (don't re-OCR pages with a text layer), "redo"
         (re-OCR replacing existing layers), "force" (rasterize + OCR all).

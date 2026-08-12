@@ -24,6 +24,8 @@ from app.services.classify import classify_document
 from app.services.dates import extract_document_date
 from app.services.app_state import (
     OCR_ENGINE_OVERRIDE,
+    resolve_archive_format,
+    wants_pdfa,
     get_value,
     resolve_archive_dpi,
 )
@@ -64,6 +66,7 @@ def _run_ocr(
     workdir: Path,
     engine: str | None = None,
     max_dpi: int = 0,
+    archive_format: str = "auto",
 ) -> IngestOutcome:
     provider = get_provider(engine)
     # Blob paths are opaque (no extension); providers dispatch on suffix,
@@ -75,7 +78,11 @@ def _run_ocr(
     original_dpi = (
         compress.max_image_dpi(source) if suffix.lower() == ".pdf" else None
     )
-    result = provider.process(source, workdir, mode)
+    # Decided here because it depends on the measurement just taken: PDF/A is
+    # worth its ~4x cost on a born-digital document, whose embedded fonts are
+    # the thing that decays, and worth nothing on a scan.
+    pdfa_wanted = wants_pdfa(archive_format, original_dpi)
+    result = provider.process(source, workdir, mode, pdfa_wanted)
 
     archive_path = result.archive_path
     # Born-compressed: cap archive image DPI at ingest so new docs don't need a
@@ -125,13 +132,15 @@ async def _run_with_progress(
     workdir: Path,
     engine: str | None = None,
     max_dpi: int = 0,
+    archive_format: str = "auto",
 ) -> IngestOutcome:
     """Run OCR in a thread while mirroring the plugin's page counter (see
     ocr/progress_plugin.py) onto the job row so the UI can show a real bar."""
     progress_file = workdir / "progress"
     task = asyncio.create_task(
         asyncio.to_thread(
-            _run_ocr, original, suffix, job.mode, workdir, engine, max_dpi
+            _run_ocr, original, suffix, job.mode, workdir, engine, max_dpi,
+            archive_format,
         )
     )
     last: tuple[str, int, int] | None = None
@@ -186,12 +195,13 @@ async def process_job(session: AsyncSession, job: Job) -> None:
     # Runtime Settings toggle wins over the OCR_ENGINE env default.
     engine_override = await get_value(session, OCR_ENGINE_OVERRIDE)
     max_dpi = await resolve_archive_dpi(session)
+    archive_format = await resolve_archive_format(session)
     try:
         with tempfile.TemporaryDirectory(prefix="ingest-") as tmp:
             workdir = Path(tmp)
             outcome = await _run_with_progress(
                 session, job, original, suffix, workdir,
-                engine_override or None, max_dpi,
+                engine_override or None, max_dpi, archive_format,
             )
     except Exception as exc:
         logger.warning("OCR failed for document %s: %s", document.id, exc)

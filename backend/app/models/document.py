@@ -120,6 +120,10 @@ class Document(Base):
         UUID(as_uuid=True), nullable=True
     )
     downsample_note: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # The target the attempt was made at. Without it, lowering the cap leaves
+    # everything marked at the old target excluded for ever, and the new
+    # setting silently does nothing.
+    downsample_tried_dpi: Mapped[int | None] = mapped_column(nullable=True)
     # Titles are indexed separately from page text: a title is a handful of
     # words, so unlike the old combined vector it can never approach the 1 MB
     # tsvector ceiling, and "find the document called X" keeps working.
