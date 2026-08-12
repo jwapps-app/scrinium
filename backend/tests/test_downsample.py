@@ -280,3 +280,34 @@ async def test_file_details_distinguishes_cap_limited_from_source_limited(
     got = (await client.get(f"/api/documents/{doc['id']}/files", headers=auth)).json()
     assert got["archive"]["exists"] is False
     assert got["can_improve"] is False
+
+
+def test_startup_only_waits_when_there_is_a_migration_to_run():
+    """The API cannot serve before the schema matches the code, so a real
+    migration is worth waiting for. Most deploys carry none, and those were
+    waiting anyway — the app stayed down for the whole nightly dump for no
+    reason at all.
+    """
+    from pathlib import Path
+
+    script = (Path(__file__).resolve().parents[1] / "entrypoint.sh").read_text()
+    assert "alembic current" in script and "alembic heads" in script
+    assert "nothing to apply" in script, "skip the wait when already current"
+    # And when there is one, still retry rather than block the queue.
+    assert "until alembic upgrade head" in script
+
+
+def test_backup_skips_the_derivable_page_index():
+    """document_pages is 9 GB of a 13 GB database and is rebuilt from
+    text_content by a trigger, so dumping it triples the backup — and every
+    minute of dump is a minute a deploy's migration waits for its lock. The
+    table definition still ships; only the rows are skipped, and the worker
+    sweep repopulates them after a restore."""
+    from pathlib import Path
+
+    compose = (
+        Path(__file__).resolve().parents[2] / "docker-compose.portainer.yml"
+    ).read_text()
+    assert "--exclude-table-data=document_pages" in compose
+    # Data only — the schema and its trigger must survive a restore.
+    assert "--exclude-table=document_pages" not in compose

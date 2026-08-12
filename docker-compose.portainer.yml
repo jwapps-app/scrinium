@@ -105,9 +105,17 @@ services:
 
   backup:
     image: postgres:16
+    # --exclude-table-data=document_pages: the page search index is 9 GB of a
+    # 13 GB database and is derived entirely from documents.text_content — a
+    # trigger rebuilds it on write, and the worker sweep repopulates anything
+    # missing, so a restore heals itself. Keeping it made the nightly dump
+    # three times longer than it needs to be, and every minute of dump is a
+    # minute a deploy's migration has to wait for its lock. The table
+    # definition and trigger are still dumped; only the rows are skipped.
     entrypoint: >
       /bin/sh -c 'while true; do
-        pg_dump -h postgres -U ${POSTGRES_USER:-app} -Fc ${POSTGRES_DB:-app} |
+        pg_dump -h postgres -U ${POSTGRES_USER:-app} -Fc
+          --exclude-table-data=document_pages ${POSTGRES_DB:-app} |
           gzip > /backups/$$(date +%Y%m%d-%H%M%S).dump.gz &&
           find /backups -name "*.dump.gz" -mtime +${BACKUP_RETENTION_DAYS:-14} -delete;
         sleep 86400;
