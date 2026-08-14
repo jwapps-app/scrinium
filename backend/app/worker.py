@@ -8,6 +8,7 @@ import asyncio
 import io
 import logging
 import signal
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -571,15 +572,76 @@ async def pulse_loop() -> None:
         await asyncio.sleep(15)
 
 
+# Every temp directory the pipeline creates. TemporaryDirectory cleans up on a
+# normal exit and not otherwise, so each of these leaks its contents whenever a
+# job is killed — OOM, redeploy, reclaim, or the container simply being
+# recreated. An ingest working directory holds every page of a document as a
+# full-resolution image, so a 400-page book at 400 DPI is gigabytes.
+TEMP_PREFIXES = (
+    "ingest-", "downsample-", "thumb-", "gsdef-", "pdfa-", "sepscan-", "binder-",
+)
+
+
+def _sweep_stale_tempdirs(max_age_seconds: float | None = None) -> int:
+    """Delete abandoned working directories under /tmp.
+
+    Called with no age at startup: this worker owns nothing yet, so anything
+    present is by definition from a previous life — the same reasoning
+    reclaim_interrupted_jobs uses for RUNNING jobs. Called periodically with an
+    age, so a directory belonging to a live job is never pulled out from under
+    it.
+
+    This filled a 63 GB root disk with 42 GB of orphans over two days of
+    restarts. Every OCR job then failed on FileNotFoundError writing its own
+    stdout, requeued, and failed again, while Postgres — on the same volume —
+    dropped into recovery mode. Nothing was lost, but the sweep accomplished
+    nothing for hours and the cause was invisible from container metrics.
+    """
+    import shutil
+    from pathlib import Path as _Path
+
+    root = _Path(tempfile.gettempdir())
+    cutoff = time.time() - max_age_seconds if max_age_seconds else None
+    freed = 0
+    for prefix in TEMP_PREFIXES:
+        for path in root.glob(f"{prefix}*"):
+            try:
+                if not path.is_dir():
+                    continue
+                if cutoff is not None and path.stat().st_mtime > cutoff:
+                    continue
+                shutil.rmtree(path, ignore_errors=True)
+                freed += 1
+            except OSError:
+                continue
+    if freed:
+        logger.info("cleared %s abandoned temp directories", freed)
+    return freed
+
+
 async def maintenance_loop() -> None:
     """Single lane for the periodic sweeps (watch/mail/purge). Advisory
     locks keep these singular even across multiple worker replicas."""
     last_watch = last_mail = last_purge = last_backfill = 0.0
     last_page_index = 0.0
     last_original_dpi = 0.0
+    last_tempsweep = 0.0
     while True:
         now = time.monotonic()
         paused = await _is_paused()
+
+        # Not gated on pause: a leaked working directory is dead weight
+        # whether or not new work is being claimed, and the disk it fills is
+        # shared with Postgres. Older than the OCR ceiling, so a directory
+        # belonging to a job still legitimately running is never touched.
+        if now - last_tempsweep >= 3600:
+            last_tempsweep = now
+            try:
+                await asyncio.to_thread(
+                    _sweep_stale_tempdirs, settings.ocr_max_hours * 3600
+                )
+            except Exception:
+                logger.exception("temp sweep crashed; continuing")
 
         # Watch + mail add NEW work, so they honor pause too.
         if not paused and now - last_watch >= settings.watch_poll_seconds:
@@ -958,6 +1020,8 @@ async def main() -> None:
     try:
         # Single container → reclaim every RUNNING job at startup (all are
         # orphans; this worker owns none yet). Replicas → heartbeat-only.
+        # Before anything claims a job: a full disk fails every one of them.
+        _sweep_stale_tempdirs()
         await reclaim_interrupted_jobs(0 if settings.worker_single else None)
         await asyncio.gather(
             pulse_loop(),

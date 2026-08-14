@@ -181,3 +181,66 @@ def _fake_pending(current, head, total):
 async def _no_wait(seconds):
     """Patched over asyncio.sleep, so it must not call asyncio.sleep."""
     return None
+
+
+def test_abandoned_temp_directories_are_cleared_at_startup(tmp_path, monkeypatch):
+    """42 GB of them filled a 63 GB root disk over two days of restarts.
+
+    TemporaryDirectory cleans up on a normal exit and not otherwise, so every
+    OOM, redeploy and reclaim left a full document's worth of page images
+    behind. Once the disk filled, every OCR job died on FileNotFoundError
+    writing its own stdout, requeued, and died again — while Postgres, on the
+    same volume, dropped into recovery. Container metrics showed nothing:
+    CPU healthy, memory healthy, zero restarts.
+    """
+    import os
+
+    from app import worker
+
+    monkeypatch.setattr(worker.tempfile, "gettempdir", lambda: str(tmp_path))
+    for prefix in worker.TEMP_PREFIXES:
+        (tmp_path / f"{prefix}live").mkdir()
+    (tmp_path / "not-ours").mkdir()
+    (tmp_path / "a-file").write_text("x")
+
+    # Startup: this worker owns nothing yet, so everything of ours is orphaned.
+    freed = worker._sweep_stale_tempdirs()
+
+    assert freed == len(worker.TEMP_PREFIXES)
+    assert (tmp_path / "not-ours").exists(), "only our own prefixes"
+    assert (tmp_path / "a-file").exists(), "files are not directories"
+
+
+def test_the_periodic_sweep_leaves_a_running_job_alone(tmp_path, monkeypatch):
+    """Called with an age from the maintenance loop, so a working directory
+    belonging to a job still legitimately running is never pulled out from
+    under it — a 2,000-page book can grind for hours."""
+    import os
+
+    from app import worker
+
+    monkeypatch.setattr(worker.tempfile, "gettempdir", lambda: str(tmp_path))
+    fresh = tmp_path / "ingest-running"
+    fresh.mkdir()
+    stale = tmp_path / "ingest-abandoned"
+    stale.mkdir()
+    os.utime(stale, (0, 0))
+
+    freed = worker._sweep_stale_tempdirs(max_age_seconds=3600)
+
+    assert freed == 1
+    assert fresh.exists(), "a live job's workdir must survive"
+    assert not stale.exists()
+
+
+def test_the_sweep_runs_before_any_job_is_claimed():
+    """Ordering is the point: claiming a job onto a full disk fails it, and
+    the failure looks like a bug in OCR rather than a full filesystem."""
+    import inspect
+
+    from app import worker
+
+    source = inspect.getsource(worker.main)
+    sweep = source.index("_sweep_stale_tempdirs")
+    reclaim = source.index("reclaim_interrupted_jobs")
+    assert sweep < reclaim, "clear the disk before taking work back"
