@@ -221,6 +221,19 @@ export default function Settings() {
             the Insights page.
           </p>
           <p className="settings-help">
+            {/* The rule is measure-don't-predict, because prediction was
+                tested and failed: across 358 same-resolution documents the
+                original's density barely correlated with which format won,
+                and in the middle band it was 54/46. */}
+            <strong>Format</strong> is decided per document, the same way every
+            time. A born-digital PDF is archived as PDF/A — its fonts are what
+            decay, and that is worth guaranteeing. A scan has no real fonts to
+            protect, so both formats are built and the smaller one is kept.
+            Neither can be predicted from the incoming file, so nothing is
+            guessed; it costs an extra conversion pass per scan and is right
+            every time instead of most of the time.
+          </p>
+          <p className="settings-help">
             {/* Measured, not hypothetical: on a re-OCR sample every book above
                 the cap refused the reduction, because ocrmypdf's JBIG2 output
                 at 600 DPI is smaller than a Ghostscript re-render at 300. */}

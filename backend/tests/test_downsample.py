@@ -731,3 +731,181 @@ def test_a_successful_downsample_leaves_no_note(monkeypatch, tmp_path):
     outcome = ingest._run_ocr(original, ".pdf", "redo", workdir, None, 300, "auto")
 
     assert outcome.downsample_note is None
+
+
+def test_measured_weighs_both_formats_for_a_scan(monkeypatch, tmp_path):
+    """The rule that stopped guessing.
+
+    Which format is smaller cannot be predicted from anything knowable at
+    ingest: across 358 same-resolution documents the original's density barely
+    correlated with the winner, and in the 400-800 KB/page band it was 54/46.
+    Ghostscript's PDF/A pass either bloats a document badly or compresses it,
+    and nothing about the input says which. So build both and keep the smaller.
+    """
+    from app.services import compress, ingest, storage, thumbnails
+
+    seen = {}
+
+    class _Result:
+        text = "t"
+        engine = "stub"
+
+        def __init__(self, archive):
+            self.archive_path = archive
+
+    class _Provider:
+        def process(self, source, workdir, mode, pdfa):
+            seen["asked_pdfa"] = pdfa
+            archive = workdir / "archive.pdf"
+            archive.write_bytes(b"%PDF-1.7\n" + b"x" * 900)  # the plain PDF
+            return _Result(archive)
+
+    def _to_pdfa(src, dst):
+        dst.write_bytes(b"%PDF-1.7\n" + b"y" * 300)  # smaller: should be kept
+        seen["converted"] = True
+        return True
+
+    monkeypatch.setattr(ingest, "get_provider", lambda e: _Provider())
+    monkeypatch.setattr(compress, "convert_to_pdfa", _to_pdfa)
+    monkeypatch.setattr(compress, "pdfa_is_better", lambda a, b: None)
+    monkeypatch.setattr(compress, "max_image_dpi", lambda p: 400)
+    monkeypatch.setattr(compress, "over_cap", lambda d, c: False)
+    monkeypatch.setattr(compress, "is_pdfa", lambda p: True)
+    monkeypatch.setattr(thumbnails, "make_thumbnail", lambda s, o: None)
+    monkeypatch.setattr(ingest, "_page_count", lambda p: 3)
+    monkeypatch.setattr(storage, "store_file", lambda p: (uuid.uuid4(), "sha", p.stat().st_size))
+
+    original = tmp_path / "orig"
+    original.write_bytes(b"%PDF-1.7\n")
+    workdir = tmp_path / "w"
+    workdir.mkdir()
+
+    outcome = ingest._run_ocr(original, ".pdf", "redo", workdir, None, 300, "measured")
+
+    assert seen["asked_pdfa"] is False, "OCR runs once, to plain PDF"
+    assert seen.get("converted"), "the PDF/A copy must actually be built"
+    assert outcome.size_bytes == 309, "the smaller of the two is what gets stored"
+    # Chosen on measurement, so it was intended — otherwise the shortfall
+    # counter reads a deliberate PDF/A archive as a failed conversion.
+    assert outcome.archive_pdfa_wanted is True
+
+
+def test_measured_keeps_plain_when_pdfa_is_not_an_improvement(monkeypatch, tmp_path):
+    """Roughly half the time the conversion is worse. The guards are the same
+    three the DPI rebuild uses — smaller, same pages, text intact — because a
+    smaller archive that dropped part of its text layer is a worse archive."""
+    from app.services import compress, ingest, storage, thumbnails
+
+    class _Result:
+        text = "t"
+        engine = "stub"
+
+        def __init__(self, archive):
+            self.archive_path = archive
+
+    class _Provider:
+        def process(self, source, workdir, mode, pdfa):
+            archive = workdir / "archive.pdf"
+            archive.write_bytes(b"%PDF-1.7\n" + b"x" * 100)
+            return _Result(archive)
+
+    monkeypatch.setattr(ingest, "get_provider", lambda e: _Provider())
+    monkeypatch.setattr(
+        compress, "convert_to_pdfa",
+        lambda s, d: (d.write_bytes(b"%PDF-1.7\n" + b"y" * 5000), True)[1],
+    )
+    monkeypatch.setattr(compress, "pdfa_is_better", lambda a, b: "not_smaller")
+    monkeypatch.setattr(compress, "max_image_dpi", lambda p: 400)
+    monkeypatch.setattr(compress, "over_cap", lambda d, c: False)
+    monkeypatch.setattr(compress, "is_pdfa", lambda p: False)
+    monkeypatch.setattr(thumbnails, "make_thumbnail", lambda s, o: None)
+    monkeypatch.setattr(ingest, "_page_count", lambda p: 3)
+    monkeypatch.setattr(storage, "store_file", lambda p: (uuid.uuid4(), "sha", p.stat().st_size))
+
+    original = tmp_path / "orig"
+    original.write_bytes(b"%PDF-1.7\n")
+    workdir = tmp_path / "w"
+    workdir.mkdir()
+
+    outcome = ingest._run_ocr(original, ".pdf", "redo", workdir, None, 300, "measured")
+
+    assert outcome.size_bytes == 109, "the plain PDF is kept"
+    assert outcome.archive_pdfa_wanted is False
+
+
+def test_a_born_digital_document_is_never_measured(monkeypatch, tmp_path):
+    """There PDF/A is about embedding fonts against the decades, which is not
+    a question about bytes — so it must not be talked out of it by a size
+    comparison."""
+    from app.services import compress, ingest, storage, thumbnails
+
+    seen = {}
+
+    class _Result:
+        text = "t"
+        engine = "stub"
+
+        def __init__(self, archive):
+            self.archive_path = archive
+
+    class _Provider:
+        def process(self, source, workdir, mode, pdfa):
+            seen["asked_pdfa"] = pdfa
+            archive = workdir / "archive.pdf"
+            archive.write_bytes(b"%PDF-1.7\n")
+            return _Result(archive)
+
+    def _must_not_run(src, dst):
+        raise AssertionError("a born-digital document must not be measured")
+
+    monkeypatch.setattr(ingest, "get_provider", lambda e: _Provider())
+    monkeypatch.setattr(compress, "convert_to_pdfa", _must_not_run)
+    monkeypatch.setattr(compress, "max_image_dpi", lambda p: 0)  # no raster
+    monkeypatch.setattr(compress, "over_cap", lambda d, c: False)
+    monkeypatch.setattr(compress, "is_pdfa", lambda p: True)
+    monkeypatch.setattr(thumbnails, "make_thumbnail", lambda s, o: None)
+    monkeypatch.setattr(ingest, "_page_count", lambda p: 1)
+    monkeypatch.setattr(storage, "store_file", lambda p: (uuid.uuid4(), "sha", 10))
+
+    original = tmp_path / "orig"
+    original.write_bytes(b"%PDF-1.7\n")
+    workdir = tmp_path / "w"
+    workdir.mkdir()
+
+    outcome = ingest._run_ocr(original, ".pdf", "redo", workdir, None, 300, "measured")
+
+    assert seen["asked_pdfa"] is True
+    assert outcome.archive_pdfa_wanted is True
+
+
+def test_pdfa_conversion_does_not_resample():
+    """convert_to_pdfa answers a format question. If it also downsampled, the
+    comparison would be a full-resolution plain PDF against a reduced PDF/A —
+    measuring resolution, not format, and picking the wrong winner."""
+    import inspect
+
+    from app.services import compress
+
+    source = inspect.getsource(compress.convert_to_pdfa)
+    for flag in ("DownsampleColorImages=false", "DownsampleGrayImages=false",
+                 "DownsampleMonoImages=false"):
+        assert flag in source, flag
+    assert "-dPDFA=2" in source
+
+
+async def test_measured_is_accepted_by_the_settings_endpoint(client, auth):
+    resp = await client.post(
+        "/api/settings/archive-format", headers=auth, json={"format": "measured"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["format"] == "measured"
+
+    got = (await client.get("/api/settings/archive-format", headers=auth)).json()
+    assert got["format"] == "measured"
+
+    bad = await client.post(
+        "/api/settings/archive-format", headers=auth, json={"format": "nonsense"}
+    )
+    assert bad.status_code == 400
+
+    await client.post("/api/settings/archive-format", headers=auth, json={"format": ""})

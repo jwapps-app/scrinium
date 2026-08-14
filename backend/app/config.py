@@ -64,9 +64,10 @@ class Settings(BaseSettings):
     # via Settings (app_state ARCHIVE_MAX_DPI).
     archive_max_dpi: int = 300
     # How the searchable archive is written:
-    #   pdfa — always PDF/A
-    #   pdf  — never
-    #   auto — PDF/A only where it earns its cost
+    #   pdfa     — always PDF/A
+    #   pdf      — never
+    #   auto     — PDF/A only where it earns its cost, decided from the original
+    #   measured — same, but for a scan build both and keep the smaller
     #
     # PDF/A exists to guarantee text renders in decades' time by embedding
     # every font. On a scan there is no text to protect — just page images and
@@ -76,7 +77,17 @@ class Settings(BaseSettings):
     # and no colour strategy avoids it. On a born-digital PDF the trade
     # inverts: fonts are exactly what can rot, and there is little raster data
     # for the conversion to inflate.
-    archive_format: str = Field(default="auto", pattern="^(pdfa|pdf|auto)$")
+    # Default `measured`: the honest rule, and the same one every time. Which
+    # format wins for a given scan cannot be predicted from anything knowable
+    # at ingest — across 358 same-resolution documents the original's density
+    # barely correlated with the outcome, and in the middle band it was a coin
+    # flip. Guessing well needs knowledge a fresh install does not have, so
+    # the pipeline weighs both and keeps the smaller. Costs one extra
+    # Ghostscript pass per scan; buys a decision that is always correct rather
+    # than usually correct.
+    archive_format: str = Field(
+        default="measured", pattern="^(pdfa|pdf|auto|measured)$"
+    )
     # How OCR treats pages that already carry text, for documents arriving by
     # upload, watched folder or email:
     #   redo  — re-OCR pages whose text looks machine-generated, keeping

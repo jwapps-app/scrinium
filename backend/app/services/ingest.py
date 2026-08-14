@@ -24,6 +24,7 @@ from app.services.classify import classify_document
 from app.services.dates import extract_document_date
 from app.services.app_state import (
     OCR_ENGINE_OVERRIDE,
+    needs_measuring,
     resolve_archive_format,
     wants_pdfa,
     get_value,
@@ -126,6 +127,37 @@ def _run_ocr(
                 logger.info(
                     "archive left at %s DPI (cap %s): %s", dpi, max_dpi, why
                 )
+
+    # `measured`: for a scan, weigh the two formats instead of predicting.
+    #
+    # Which one wins is genuinely unpredictable from anything knowable at
+    # ingest — across 358 same-resolution documents the original's density
+    # barely correlated with the answer, and in the 400-800 KB/page band it
+    # was 54/46. Ghostscript's PDF/A pass either bloats a document badly
+    # (well-compressed page images re-encoded worse) or compresses it (badly
+    # encoded images re-encoded better), and nothing about the input says
+    # which. So build both and keep the smaller, at the cost of one extra
+    # Ghostscript pass per scan.
+    #
+    # Born-digital documents are not measured: there PDF/A is chosen to embed
+    # fonts against the decades, and that is not a question about bytes.
+    if archive_path is not None and needs_measuring(archive_format, original_dpi):
+        candidate = workdir / "archive_pdfa.pdf"
+        if compress.convert_to_pdfa(archive_path, candidate):
+            why = compress.pdfa_is_better(archive_path, candidate)
+            if why is None:
+                logger.info(
+                    "archive kept as PDF/A: %s -> %s bytes",
+                    archive_path.stat().st_size, candidate.stat().st_size,
+                )
+                archive_path = candidate
+                dpi = compress.max_image_dpi(archive_path)
+                # It was measured and chosen, so it was intended — otherwise
+                # the shortfall counter would read a deliberate PDF/A archive
+                # as a plain one that failed to convert.
+                pdfa_wanted = True
+            else:
+                logger.info("archive kept as plain PDF (%s)", why)
 
     thumb_dir = workdir / "thumbwork"
     thumb_dir.mkdir()

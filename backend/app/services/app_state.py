@@ -10,6 +10,10 @@ OCR_ENGINE_OVERRIDE = "ocr_engine_override"
 ARCHIVE_MAX_DPI = "archive_max_dpi"
 ARCHIVE_FORMAT = "archive_format"
 
+# pdfa/pdf force the format. auto decides from the original alone. measured
+# builds both for a scan and keeps whichever is genuinely smaller.
+ARCHIVE_FORMATS = ("pdfa", "pdf", "auto", "measured")
+
 
 async def get_flag(session: AsyncSession, key: str, default: bool = False) -> bool:
     row = await session.get(AppSetting, key)
@@ -44,7 +48,7 @@ async def set_value(session: AsyncSession, key: str, value: str) -> None:
 async def resolve_archive_format(session: AsyncSession) -> str:
     """Active archive format: runtime override wins over the env default."""
     override = (await get_value(session, ARCHIVE_FORMAT)).strip()
-    if override in ("pdfa", "pdf", "auto"):
+    if override in ARCHIVE_FORMATS:
         return override
     return settings.archive_format
 
@@ -52,17 +56,32 @@ async def resolve_archive_format(session: AsyncSession) -> str:
 def wants_pdfa(archive_format: str, original_dpi: int | None) -> bool:
     """Should this document's archive be PDF/A?
 
-    Under `auto`, on whether the original carries real text. original_dpi of 0
-    means it holds no raster images at all — born-digital, where embedded
-    fonts are the thing worth preserving and the conversion has little to
-    inflate. Anything above 0 is a scan: no text to protect, and a 4x bill.
-    Unmeasured (None) keeps PDF/A, so an unknown is never quietly downgraded.
+    Under `auto` and `measured`, on whether the original carries real text.
+    original_dpi of 0 means it holds no raster images at all — born-digital,
+    where embedded fonts are the thing worth preserving and the conversion has
+    little to inflate. Anything above 0 is a scan: no text to protect.
+
+    For `measured` this is only the starting point. A scan is built as plain
+    PDF and then measured against a PDF/A copy — see needs_measuring. A
+    born-digital document is not measured at all, because there the choice is
+    about preserving fonts, not about size.
     """
     if archive_format == "pdfa":
         return True
     if archive_format == "pdf":
         return False
     return original_dpi is None or original_dpi == 0
+
+
+def needs_measuring(archive_format: str, original_dpi: int | None) -> bool:
+    """True when both formats should be built and the smaller one kept.
+
+    Only for scans, and only under `measured`. Guessing from the original's
+    size does not work — measured across 358 documents, an original's density
+    barely predicts which format wins, and at 400-800 KB/page it is a coin
+    flip. So the rule is to stop guessing and weigh both.
+    """
+    return archive_format == "measured" and not wants_pdfa(archive_format, original_dpi)
 
 
 async def resolve_archive_dpi(session: AsyncSession) -> int:

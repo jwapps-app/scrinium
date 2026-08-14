@@ -199,6 +199,61 @@ def _gs_downsample(src: Path, dst: Path, target_dpi: int, pdfa: bool) -> bool:
     return True
 
 
+def convert_to_pdfa(src: Path, dst: Path) -> bool:
+    """Convert a PDF to PDF/A without touching its images.
+
+    Deliberately not _gs_downsample(pdfa=True): that one resamples, and this is
+    a format question, not a resolution one. The two must not be conflated —
+    comparing a downsampled PDF/A against a full-resolution plain PDF would
+    measure the wrong thing entirely.
+    """
+    with tempfile.TemporaryDirectory(prefix="pdfa-") as tmp:
+        # SAFER blocks reads outside the workdir; the OutputIntent needs the ICC.
+        defps = Path(tmp) / "pdfa_def.ps"
+        defps.write_text(_PDFA_DEF.format(icc=ICC_PATH))
+        cmd = [
+            "gs", "-dBATCH", "-dNOPAUSE", "-dQUIET", "-dSAFER",
+            "-sDEVICE=pdfwrite",
+            "-dDetectDuplicateImages=true",
+            f"--permit-file-read={ICC_PATH}",
+            "-dPDFA=2", "-dPDFACompatibilityPolicy=1",
+            "-sColorConversionStrategy=RGB",
+            "-dDownsampleColorImages=false",
+            "-dDownsampleGrayImages=false",
+            "-dDownsampleMonoImages=false",
+            f"-sOutputFile={dst}",
+            str(defps), str(src),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, encoding="utf-8", errors="replace",
+                timeout=1800, stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.warning("pdfa conversion failed to launch: %s", exc)
+            return False
+    if proc.returncode != 0 or not dst.exists():
+        logger.warning(
+            "pdfa conversion exited %s: %s", proc.returncode, (proc.stderr or "")[:200]
+        )
+        return False
+    return True
+
+
+def pdfa_is_better(plain: Path, pdfa: Path) -> str | None:
+    """None when the PDF/A copy should be kept instead of the plain one.
+
+    Same three guards the DPI rebuild uses: it has to be smaller, keep every
+    page, and keep the text. Ghostscript's conversion drops about 1% of the
+    recognised text, so "smaller" alone is not enough to justify the swap —
+    a smaller archive that lost part of its text layer is a worse archive.
+    """
+    pages = _page_count(plain)
+    if pages is None:
+        return "unreadable"
+    return _acceptable(plain, pdfa, pages, _has_text(plain))
+
+
 def _acceptable(src: Path, dst: Path, src_pages: int, src_had_text: bool) -> str | None:
     """None when the rebuild is usable, otherwise why it is not.
 

@@ -10,6 +10,7 @@ from app.deps import DB, AdminUser, CurrentUser
 from app.models import AppSetting
 from app.services.app_state import (
     ARCHIVE_FORMAT,
+    ARCHIVE_FORMATS,
     resolve_archive_format,
     ARCHIVE_MAX_DPI,
     OCR_ENGINE_OVERRIDE,
@@ -126,12 +127,17 @@ async def archive_format_settings(user: CurrentUser, db: DB) -> dict:
 async def set_archive_format(body: dict, user: AdminUser, db: DB) -> dict:
     """How the searchable archive is written.
 
-    pdfa always, pdf never, or auto — PDF/A only where it earns its keep. PDF/A
-    guarantees text renders decades hence by embedding every font; on a scan
-    there is no text to protect and Ghostscript's conversion costs about four
-    times the size (measured: 104% of source as plain PDF, 406% as PDF/A). On a
-    born-digital document the trade inverts. `auto` decides per document from
-    whether the original holds raster images.
+    pdfa always, pdf never, auto to decide from the original, or measured to
+    build both for a scan and keep the smaller.
+
+    PDF/A guarantees text renders decades hence by embedding every font. On a
+    scan there is no text to protect, and Ghostscript's conversion re-encodes
+    every page image — sometimes to four times the size, sometimes smaller
+    than what it replaced. Which way it goes is not predictable from the
+    original: across 358 same-resolution documents, density barely correlated
+    with the winner, and in the middle band it was a coin flip. `measured`
+    therefore stops predicting and weighs both, at the cost of one extra
+    Ghostscript pass per scan. `auto` keeps the cheaper guess.
 
     Applies to OCR from now on; existing archives are unchanged until re-OCR'd.
     """
@@ -139,9 +145,10 @@ async def set_archive_format(body: dict, user: AdminUser, db: DB) -> dict:
     if raw == "":
         await set_value(db, ARCHIVE_FORMAT, "")
         return {"format": await resolve_archive_format(db), "format_override": ""}
-    if raw not in ("pdfa", "pdf", "auto"):
+    if raw not in ARCHIVE_FORMATS:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "format must be pdfa, pdf, or auto"
+            status.HTTP_400_BAD_REQUEST,
+            "format must be one of: " + ", ".join(ARCHIVE_FORMATS),
         )
     await set_value(db, ARCHIVE_FORMAT, raw)
     return {"format": raw, "format_override": raw}
