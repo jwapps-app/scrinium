@@ -339,3 +339,39 @@ def test_export_never_loads_the_ocr_text_it_does_not_use():
     assert ".in_(" not in source, (
         "an IN list of every document id has to materialise them all first"
     )
+
+
+def test_the_pdf_viewer_ships_its_jpeg2000_decoder():
+    """Every JPEG 2000 document rendered as a blank white page.
+
+    pdf.js decodes JPX and JBIG2 with OpenJPEG compiled to WebAssembly, loaded
+    at runtime from `wasmUrl` rather than bundled. The app never set it, and
+    the installed pdfjs-dist shipped no decoder to point at, so pdf.js logged
+    "OpenJPEG failed to initialize", painted nothing, and left a transparent
+    canvas — which reads on screen as a blank file rather than a missing
+    decoder. About a third of this library is JPEG 2000.
+
+    Guards the three things that have to stay true together: a version that
+    ships the wasm, a build step that emits it, and a single loader that
+    passes wasmUrl.
+    """
+    import json
+    from pathlib import Path
+
+    web = Path(__file__).resolve().parents[2] / "frontend"
+
+    pkg = json.loads((web / "package.json").read_text())
+    major = int(pkg["dependencies"]["pdfjs-dist"].lstrip("^~").split(".")[0])
+    assert major >= 6, "pdfjs-dist before 6 ships no openjpeg wasm to point at"
+
+    vite = (web / "vite.config.js").read_text()
+    assert "pdfjs-dist/wasm" in vite, "the wasm must be copied into the build"
+
+    loader = (web / "src" / "pdfjs.js").read_text()
+    assert "wasmUrl" in loader, "getDocument must be given wasmUrl"
+
+    # One loader, so a new call site cannot forget the decoder.
+    for name in ("PdfViewer.jsx", "ComparePane.jsx", "PageOrganizer.jsx"):
+        src = (web / "src" / "components" / name).read_text()
+        assert "getDocument(" not in src, f"{name} must go through loadPdf()"
+        assert "loadPdf(" in src, f"{name} should use the shared loader"

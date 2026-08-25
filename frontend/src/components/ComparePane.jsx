@@ -1,11 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import * as pdfjsLib from 'pdfjs-dist'
+import { loadPdf } from '../pdfjs'
 import { apiFetch } from '../api'
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).toString()
 
 const RENDER_MARGIN = 700
 
@@ -70,7 +65,7 @@ const ComparePane = forwardRef(function ComparePane({ docId, onScroll }, ref) {
         const blob = await resp.blob()
         if (cancelled) return
         urlRef.current = URL.createObjectURL(blob)
-        const pdf = await pdfjsLib.getDocument(urlRef.current).promise
+        const pdf = await loadPdf(urlRef.current)
         if (cancelled) return
         st.pdf = pdf
 

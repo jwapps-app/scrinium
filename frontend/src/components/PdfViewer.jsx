@@ -1,11 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import * as pdfjsLib from 'pdfjs-dist'
+import { pdfjsLib, loadPdf } from '../pdfjs'
 import { TextLayer } from 'pdfjs-dist'
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).toString()
 
 const RENDER_MARGIN = 900 // px beyond the viewport to render ahead
 
@@ -222,7 +217,7 @@ export default function PdfViewer({
       try {
         let pdf = pdfRef.current.url === url ? pdfRef.current.pdf : null
         if (!pdf) {
-          pdf = await pdfjsLib.getDocument(url).promise
+          pdf = await loadPdf(url)
           if (cancelled) {
             pdf.destroy()
             return

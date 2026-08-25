@@ -1,10 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import * as pdfjsLib from 'pdfjs-dist'
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).toString()
+import { loadPdf } from '../pdfjs'
 
 const THUMB_WIDTH = 132
 const RENDER_MARGIN = 600
@@ -64,7 +59,7 @@ export default function PageOrganizer({ url, busy, onAction, onClose }) {
 
     ;(async () => {
       try {
-        const pdf = await pdfjsLib.getDocument(url).promise
+        const pdf = await loadPdf(url)
         if (cancelled) return
         st.pdf = pdf
         setCount(pdf.numPages)
