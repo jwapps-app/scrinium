@@ -19,6 +19,7 @@ from app.schemas import (
     FileDetails,
     FileFacet,
     BulkActionRequest,
+    DocumentFilter,
     BulkActionResult,
     CopyTagsRequest,
     DocumentList,
@@ -397,10 +398,11 @@ async def upload(
     return doc_out(doc)
 
 
-@router.get("", response_model=DocumentList)
-async def list_documents(
-    user: CurrentUser,
-    db: DB,
+
+
+def _filter_conditions(
+    tenant_id: uuid.UUID,
+    *,
     status_filter: str | None = None,
     tag_id: uuid.UUID | None = None,
     correspondent_id: uuid.UUID | None = None,
@@ -408,15 +410,18 @@ async def list_documents(
     engine: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
-    sort: str = "newest",
     needs_review: bool = False,
     expiring: bool = False,
     non_pdfa: bool = False,
     title_q: str | None = None,
-    offset: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(ge=1)] = 50,
-) -> DocumentList:
-    conditions = [Document.tenant_id == user.tenant_id]
+) -> list:
+    """The library list's filter set, shared with the bulk endpoint.
+
+    Both have to read a filter the same way. When they did not, the toolbar
+    offered "all 231 in filter" while the bulk call only understood tags, so
+    the promise and the action were about different sets of documents.
+    """
+    conditions = [Document.tenant_id == tenant_id]
     if expiring:
         conditions.append(Document.expires_on.is_not(None))
         conditions.append(
@@ -461,7 +466,42 @@ async def list_documents(
         conditions.append(effective_date >= date_from)
     if date_to:
         conditions.append(effective_date <= date_to)
+    return conditions
 
+
+@router.get("", response_model=DocumentList)
+async def list_documents(
+    user: CurrentUser,
+    db: DB,
+    status_filter: str | None = None,
+    tag_id: uuid.UUID | None = None,
+    correspondent_id: uuid.UUID | None = None,
+    doc_type_id: uuid.UUID | None = None,
+    engine: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sort: str = "newest",
+    needs_review: bool = False,
+    expiring: bool = False,
+    non_pdfa: bool = False,
+    title_q: str | None = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1)] = 50,
+) -> DocumentList:
+    conditions = _filter_conditions(
+        user.tenant_id,
+        status_filter=status_filter,
+        tag_id=tag_id,
+        correspondent_id=correspondent_id,
+        doc_type_id=doc_type_id,
+        engine=engine,
+        date_from=date_from,
+        date_to=date_to,
+        needs_review=needs_review,
+        expiring=expiring,
+        non_pdfa=non_pdfa,
+        title_q=title_q,
+    )
     total = (
         await db.execute(select(func.count(Document.id)).where(*conditions))
     ).scalar_one()
@@ -1562,9 +1602,9 @@ async def bulk_action(
 ) -> BulkActionResult:
     """Apply one action to many documents. Unknown/foreign ids are skipped.
 
-    With `filter_tag_id`, acts on every document carrying that tag, 500 per
-    call — the response's `remaining` says how many are left; call again
-    until it reaches zero."""
+    With `filter`, acts on every document that filter matches, 500 per call
+    — the response's `remaining` says how many are left; call again until it
+    reaches zero."""
     remaining = 0
     # Purge destroys the file for good; every other bulk action is reversible
     # (trash can be restored, tags re-applied), so members keep those.
@@ -1574,30 +1614,23 @@ async def bulk_action(
             "Permanently deleting documents is limited to the library owner.",
         )
     heavy = body.action in ("delete", "purge")
-    if body.filter_trash:
-        base = _light_document().where(
-            Document.tenant_id == user.tenant_id, Document.deleted_at.is_not(None)
-        )
-        count_where = [
-            Document.tenant_id == user.tenant_id, Document.deleted_at.is_not(None)
-        ]
-    elif body.filter_tag_id is not None:
-        base = _light_document().where(
-            Document.tenant_id == user.tenant_id,
-            Document.tags.any(Tag.id == body.filter_tag_id),
-            Document.deleted_at.is_(None),
-        )
-        count_where = [
-            Document.tenant_id == user.tenant_id,
-            Document.tags.any(Tag.id == body.filter_tag_id),
-            Document.deleted_at.is_(None),
-        ]
-    if body.filter_trash or body.filter_tag_id is not None:
+    # The two pre-filter spellings the iOS app sends, in terms of the general
+    # one. Keeping them mapped rather than special-cased is what stopped this
+    # endpoint understanding tags and nothing else.
+    selection = body.filter
+    if selection is None and body.filter_trash:
+        selection = DocumentFilter(status_filter="trash")
+    elif selection is None and body.filter_tag_id is not None:
+        selection = DocumentFilter(tag_id=body.filter_tag_id)
+
+    if selection is not None:
+        conditions = _filter_conditions(user.tenant_id, **selection.model_dump())
+        base = _light_document().where(*conditions)
         if heavy:
             # Purges do file IO — chunk them; caller repeats while remaining.
             docs = (await db.execute(base.limit(500))).scalars().all()
             total = (
-                await db.execute(select(func.count(Document.id)).where(*count_where))
+                await db.execute(select(func.count(Document.id)).where(*conditions))
             ).scalar_one()
             remaining = max(total - len(docs), 0)
         else:
@@ -1613,7 +1646,7 @@ async def bulk_action(
         ).scalars().all()
     else:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide ids or filter_tag_id"
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide ids or a filter"
         )
 
     # Validate FK targets belong to this tenant before assigning them.

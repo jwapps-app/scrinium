@@ -332,3 +332,152 @@ async def test_page_count_stamped_at_intake(client, auth, pdf_factory):
     for key in ("pages_per_min", "queue_pages_remaining", "queue_eta_seconds"):
         assert key in stats
     assert stats["queue_pages_remaining"] >= 7
+
+
+async def test_a_bulk_action_can_target_a_filter_that_is_not_a_tag(
+    client, auth, pdf_factory
+):
+    """The whole point of "all N in filter".
+
+    The endpoint understood tags and the trash and nothing else, and the list
+    it was paired with fetched a flat 100 rows with no offset. Between them,
+    any larger filter could only ever be acted on one screenful at a time —
+    which is how 233 documents with no archive sat unnoticed for six weeks.
+    """
+    corr = (
+        await client.post(
+            "/api/correspondents", headers=auth, json={"name": _name("bulkfilter")}
+        )
+    ).json()
+    ids = []
+    for i in range(3):
+        doc = (
+            await upload(
+                client, auth, pdf_factory(text=_name(f"filt{i}")), f"f{i}.pdf"
+            )
+        ).json()
+        ids.append(doc["id"])
+        await client.patch(
+            f"/api/documents/{doc['id']}",
+            headers=auth,
+            json={"correspondent_id": corr["id"]},
+        )
+
+    # No ids at all: the filter is the entire selection.
+    resp = await client.post(
+        "/api/documents/bulk",
+        headers=auth,
+        json={
+            "filter": {"correspondent_id": corr["id"]},
+            "action": "set_doc_type",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["processed"] == 3
+
+
+async def test_the_filter_a_bulk_action_uses_is_the_one_the_list_showed(
+    client, auth, pdf_factory
+):
+    """Both sides read the filter through the same builder, so a filter that
+    narrows the list narrows the action by exactly as much. When they were
+    separate the toolbar could promise a count the action would not honour."""
+    keep = (
+        await upload(client, auth, pdf_factory(text=_name("keep")), "keep.pdf")
+    ).json()
+    drop = (
+        await upload(client, auth, pdf_factory(text=_name("drop")), "drop.pdf")
+    ).json()
+    await client.delete(f"/api/documents/{drop['id']}", headers=auth)
+
+    listed = (
+        await client.get("/api/documents?status_filter=trash", headers=auth)
+    ).json()
+    trashed = {d["id"] for d in listed["items"]}
+    assert drop["id"] in trashed and keep["id"] not in trashed
+
+    # Same filter, as a bulk target: everything the list just showed, and
+    # nothing it did not.
+    resp = await client.post(
+        "/api/documents/bulk",
+        headers=auth,
+        json={"filter": {"status_filter": "trash"}, "action": "restore"},
+    )
+    assert resp.json()["processed"] == listed["total"]
+    restored = (await client.get(f"/api/documents/{drop['id']}", headers=auth)).json()
+    assert restored["deleted_at"] is None
+
+
+async def test_the_ios_apps_older_filter_spellings_still_work(
+    client, auth, pdf_factory
+):
+    """filter_tag_id and filter_trash predate the general filter and are what
+    the shipped iOS build sends. They are mapped onto it rather than kept as
+    separate paths, so this is what proves the mapping."""
+    tag = (
+        await client.post("/api/tags", headers=auth, json={"name": _name("legacy")})
+    ).json()
+    doc = (
+        await upload(client, auth, pdf_factory(text=_name("legacy")), "l.pdf")
+    ).json()
+    await client.post(
+        "/api/documents/bulk",
+        headers=auth,
+        json={"ids": [doc["id"]], "action": "add_tags", "tag_ids": [tag["id"]]},
+    )
+
+    by_tag = await client.post(
+        "/api/documents/bulk",
+        headers=auth,
+        json={"filter_tag_id": tag["id"], "action": "delete"},
+    )
+    assert by_tag.json()["processed"] == 1
+
+    by_trash = await client.post(
+        "/api/documents/bulk",
+        headers=auth,
+        json={"filter_trash": True, "action": "restore"},
+    )
+    assert by_trash.json()["processed"] >= 1
+
+
+async def test_a_bulk_action_with_neither_ids_nor_filter_is_refused(client, auth):
+    """The failure the UI used to produce: select-all set a flag the request
+    did not carry, so an empty id list arrived claiming to mean everything.
+    Acting on nothing is right; acting on everything would not be."""
+    resp = await client.post(
+        "/api/documents/bulk", headers=auth, json={"action": "delete"}
+    )
+    assert resp.status_code == 422
+
+
+async def test_the_list_pages_instead_of_stopping_at_the_first_screenful(
+    client, auth, pdf_factory
+):
+    """total is the size of the match, not of the page — the list has to be
+    able to walk past the first request or a large filter is unreachable."""
+    corr = (
+        await client.post(
+            "/api/correspondents", headers=auth, json={"name": _name("paged")}
+        )
+    ).json()
+    for i in range(3):
+        doc = (
+            await upload(
+                client, auth, pdf_factory(text=_name(f"page{i}")), f"p{i}.pdf"
+            )
+        ).json()
+        await client.patch(
+            f"/api/documents/{doc['id']}",
+            headers=auth,
+            json={"correspondent_id": corr["id"]},
+        )
+
+    base = f"/api/documents?correspondent_id={corr['id']}&sort=newest"
+    first = (await client.get(f"{base}&limit=2", headers=auth)).json()
+    second = (await client.get(f"{base}&limit=2&offset=2", headers=auth)).json()
+
+    assert first["total"] == second["total"] == 3
+    assert len(first["items"]) == 2 and len(second["items"]) == 1
+    # Disjoint, or "Show more" would repeat rows it had already shown.
+    assert not {d["id"] for d in first["items"]} & {d["id"] for d in second["items"]}

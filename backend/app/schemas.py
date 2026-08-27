@@ -143,14 +143,35 @@ class PageOpRequest(BaseModel):
     title: str | None = None
 
 
+class DocumentFilter(BaseModel):
+    """The library list's filter set, as a bulk action's target.
+
+    Sending the filter rather than a page of ids is what makes "everything in
+    this filter" true: the list shows one page, and ids could only ever cover
+    what had been loaded.
+    """
+
+    status_filter: str | None = None
+    tag_id: uuid.UUID | None = None
+    correspondent_id: uuid.UUID | None = None
+    doc_type_id: uuid.UUID | None = None
+    engine: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    needs_review: bool = False
+    expiring: bool = False
+    non_pdfa: bool = False
+
+
 class BulkActionRequest(BaseModel):
     ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
     correspondent_id: uuid.UUID | None = None
     doc_type_id: uuid.UUID | None = None
-    # Alternative to ids: act on every document carrying this tag.
+    # Alternative to ids: act on every document the filter matches.
     # Processed in chunks of 500; call again while `remaining` > 0.
+    filter: DocumentFilter | None = None
+    # Older spellings of the same thing, still sent by the iOS app.
     filter_tag_id: uuid.UUID | None = None
-    # Alternative to ids: act on everything in the trash.
     filter_trash: bool = False
     action: str = Field(
         pattern="^(reprocess|delete|restore|purge|add_tags|remove_tags|set_correspondent|set_doc_type)$"

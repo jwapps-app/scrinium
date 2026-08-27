@@ -41,6 +41,11 @@ function displayDate(d) {
   return new Date(d.doc_date ? raw + 'T00:00:00' : raw).toLocaleDateString()
 }
 
+// One page per “Show more”. The list used to ask for a flat 100 with no
+// offset, so a filter matching more than that could neither be seen past nor
+// acted on — 233 documents with no archive sat unnoticed behind it.
+const PAGE_SIZE = 100
+
 export default function Library() {
   // Emptying the trash destroys files for good — owner only.
   const isAdmin = useIsAdmin()
@@ -65,6 +70,7 @@ export default function Library() {
   const [selected, setSelected] = useState(() => new Set())
   const [wholeFilter, setWholeFilter] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
+  const [pageBusy, setPageBusy] = useState(false)
   const fileInput = useRef(null)
 
   const status = params.get('status')
@@ -96,8 +102,11 @@ export default function Library() {
     setParams(next, { replace: true })
   }
 
-  const load = useCallback(async () => {
-    try {
+  // One builder for the list query. load() and loadMorePage() asking for
+  // subtly different things is how a "Show more" page ends up not belonging
+  // to the list above it.
+  const listSearch = useCallback(
+    (offset) => {
       const search = new URLSearchParams()
       if (status === 'processing') {
         // The sidebar's "Processing" bucket covers the whole in-flight queue.
@@ -114,9 +123,28 @@ export default function Library() {
       if (from) search.set('date_from', from)
       if (to) search.set('date_to', to)
       search.set('sort', sort)
-      search.set('limit', '100')
-      const data = await apiJson(`/api/documents?${search.toString()}`)
-      setDocs(data.items)
+      search.set('offset', String(offset))
+      search.set('limit', String(PAGE_SIZE))
+      return search.toString()
+    },
+    [status, tag, correspondent, doctype, engine, sort, from, to, expiring, nonPdfa],
+  )
+
+  const load = useCallback(async () => {
+    try {
+      const data = await apiJson(`/api/documents?${listSearch(0)}`)
+      setDocs((prev) =>
+        prev.length <= PAGE_SIZE
+          ? data.items
+          : // Paged deeper than one page: this is the status poll coming
+            // round, so refresh the rows it re-read and leave the pages
+            // below them alone. Replacing outright would throw away
+            // everything the user had loaded, every 2.5 seconds.
+            (() => {
+              const fresh = new Map(data.items.map((d) => [d.id, d]))
+              return prev.map((d) => fresh.get(d.id) ?? d)
+            })(),
+      )
       setTotal(data.total)
       // Clear a previous failure: without this the banner from an outage
       // stayed up for the rest of the session, long after it had recovered.
@@ -124,11 +152,35 @@ export default function Library() {
     } catch (err) {
       setError(err.message)
     }
-  }, [status, tag, correspondent, doctype, engine, sort, from, to, expiring, nonPdfa])
+  }, [listSearch])
 
   useEffect(() => {
     load()
   }, [load])
+
+  // A new filter is a new list: drop the loaded pages so the next load
+  // replaces rather than merges into someone else's results.
+  useEffect(() => {
+    setDocs([])
+  }, [status, tag, correspondent, doctype, engine, sort, from, to, expiring, nonPdfa])
+
+  async function loadMorePage() {
+    setPageBusy(true)
+    try {
+      const data = await apiJson(`/api/documents?${listSearch(docs.length)}`)
+      // Guard against a document arriving mid-page and shifting the window,
+      // which would otherwise show the same row twice.
+      setDocs((prev) => {
+        const have = new Set(prev.map((d) => d.id))
+        return [...prev, ...data.items.filter((d) => !have.has(d.id))]
+      })
+      setTotal(data.total)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setPageBusy(false)
+    }
+  }
 
   useEffect(() => {
     apiJson('/api/tags').then(setTags).catch(() => {})
@@ -240,7 +292,8 @@ export default function Library() {
 
   const tagName = tag ? tags.find((t) => t.id === tag)?.name : null
   const inTrash = status === 'trash'
-  const hasFilters = status || tag || correspondent || doctype || engine || from || to
+  const hasFilters =
+    status || tag || correspondent || doctype || engine || from || to || expiring || nonPdfa
 
   async function saveCurrentView() {
     const name = window.prompt('Name this view:')
@@ -276,6 +329,27 @@ export default function Library() {
     setWholeFilter(false)
   }
 
+  // The filter the list is showing right now, in the shape the bulk endpoint
+  // takes. It has to mirror load() exactly: if the two drift, "all N in
+  // filter" acts on a different set than the one on screen.
+  function currentFilter() {
+    return {
+      status_filter: inTrash
+        ? 'trash'
+        : status === 'processing'
+          ? 'pending,processing'
+          : status || null,
+      tag_id: tag || null,
+      correspondent_id: correspondent || null,
+      doc_type_id: doctype || null,
+      engine: engine || null,
+      date_from: from || null,
+      date_to: to || null,
+      expiring,
+      non_pdfa: nonPdfa,
+    }
+  }
+
   async function bulk(action, extra = {}) {
     const count = wholeFilter ? total : selected.size
     if (count === 0) return
@@ -289,18 +363,15 @@ export default function Library() {
     setError('')
     setBulkBusy(true)
     try {
-      if (wholeFilter && (tag || inTrash)) {
-        // Server-side: acts on everything carrying the tag; deletes are
-        // chunked, so repeat until the server says nothing remains.
+      if (wholeFilter) {
+        // Server-side: acts on everything the filter matches, not just the
+        // pages that happen to be loaded. Deletes are chunked, so repeat
+        // until the server says nothing remains.
         let done = 0
         for (;;) {
           const result = await apiJson('/api/documents/bulk', {
             method: 'POST',
-            body: JSON.stringify(
-              inTrash
-                ? { filter_trash: true, action, ...extra }
-                : { filter_tag_id: tag, action, ...extra },
-            ),
+            body: JSON.stringify({ filter: currentFilter(), action, ...extra }),
           })
           done += result.processed
           load()
@@ -481,11 +552,11 @@ export default function Library() {
             >
               Select shown ({docs.length})
             </button>
-            {tag && total > 0 && (
+            {!inTrash && hasFilters && total > docs.length && (
               <button
                 className={wholeFilter ? '' : 'ghost'}
                 onClick={() => setWholeFilter(!wholeFilter)}
-                title="Act on every document with this tag, not just the ones loaded"
+                title="Act on every document these filters match, not just the ones loaded"
               >
                 Entire filter ({total})
               </button>
@@ -868,6 +939,18 @@ export default function Library() {
                   </li>
                 ))}
               </ul>
+            )}
+
+            {docs.length < total && (
+              <button
+                className="ghost load-more"
+                onClick={loadMorePage}
+                disabled={pageBusy}
+              >
+                {pageBusy
+                  ? 'Loading…'
+                  : `Show more (${(total - docs.length).toLocaleString()} left)`}
+              </button>
             )}
           </section>
         )}
