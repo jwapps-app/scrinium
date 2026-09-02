@@ -43,14 +43,44 @@ def _trusted_peer(request: Request) -> bool:
     return False
 
 
+def _in_any(address: str, networks: list[str]) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    for entry in networks:
+        try:
+            if ip in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def client_ip(request: Request) -> str:
-    """The caller's address: the forwarded header only if the peer is trusted,
-    otherwise the socket peer, which cannot be forged."""
-    if _trusted_peer(request):
-        forwarded = request.headers.get("cf-connecting-ip")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """The caller's address, as honestly as it can be known.
+
+    The socket peer cannot be forged, but behind nginx it is always nginx. So
+    from a trusted proxy, X-Real-IP (nginx's own view of its peer) stands in
+    for it — before that, every LAN caller collapsed into one bucket keyed on
+    nginx's container address, and one person's ten bad passwords locked
+    everyone on the network out for a minute.
+
+    CF-Connecting-IP is believed on top of that only when the request came
+    through the tunnel: with TUNNEL_PEERS set, that means X-Real-IP is
+    cloudflared; unset, it means any trusted proxy, as before.
+    """
+    peer = request.client.host if request.client else "unknown"
+    if not _trusted_peer(request):
+        return peer
+    real = (request.headers.get("x-real-ip") or "").split(",")[0].strip() or peer
+    forwarded = (request.headers.get("cf-connecting-ip") or "").split(",")[0].strip()
+    if not forwarded:
+        return real
+    tunnel = settings.tunnel_peer_list
+    if not tunnel or _in_any(real, tunnel):
+        return forwarded
+    return real
 
 
 def _consume(key: str, limit: int, window_seconds: int) -> None:

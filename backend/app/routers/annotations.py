@@ -6,9 +6,11 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.orm import defer
 
 from app.deps import DB, CurrentUser
 from app.models import Annotation, Document, ReadingPosition
+from app.schemas import AnnotationCreate, AnnotationUpdate, PositionRequest
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{3,8}$")
 
@@ -24,7 +26,7 @@ router = APIRouter(tags=["annotations"])
 
 
 async def _owned_doc(doc_id: uuid.UUID, user, db) -> Document:
-    doc = await db.get(Document, doc_id)
+    doc = await db.get(Document, doc_id, options=[defer(Document.text_content)])
     if doc is None or doc.tenant_id != user.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
     return doc
@@ -63,29 +65,25 @@ async def list_annotations(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> list
 
 @router.post("/documents/{doc_id}/annotations", status_code=status.HTTP_201_CREATED)
 async def create_annotation(
-    doc_id: uuid.UUID, body: dict, user: CurrentUser, db: DB
+    doc_id: uuid.UUID, body: AnnotationCreate, user: CurrentUser, db: DB
 ) -> dict:
     await _owned_doc(doc_id, user, db)
-    quote = (body.get("quote") or "").strip()
-    rects = body.get("rects") or []
-    page = body.get("page")
-    if not quote or not isinstance(page, int) or page < 1:
+    quote = body.quote.strip()
+    if not quote:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "quote and page required")
-    if not isinstance(rects, list) or not rects or len(rects) > 200:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "rects required")
-    for r in rects:
-        if not all(isinstance(r.get(k), (int, float)) for k in ("x", "y", "w", "h")):
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "bad rect")
     annotation = Annotation(
         tenant_id=user.tenant_id,
         document_id=doc_id,
-        page=page,
+        page=body.page,
         quote=quote[:2000],
-        note=(body.get("note") or "").strip() or None,
+        note=(body.note or "").strip() or None,
         rects=json.dumps(
-            [{k: round(float(r[k]), 5) for k in ("x", "y", "w", "h")} for r in rects]
+            [
+                {"x": round(r.x, 5), "y": round(r.y, 5), "w": round(r.w, 5), "h": round(r.h, 5)}
+                for r in body.rects
+            ]
         ),
-        color=_safe_color(body.get("color")),
+        color=_safe_color(body.color),
     )
     db.add(annotation)
     await db.flush()
@@ -95,13 +93,13 @@ async def create_annotation(
 
 @router.patch("/annotations/{annotation_id}")
 async def update_annotation(
-    annotation_id: uuid.UUID, body: dict, user: CurrentUser, db: DB
+    annotation_id: uuid.UUID, body: AnnotationUpdate, user: CurrentUser, db: DB
 ) -> dict:
     annotation = await db.get(Annotation, annotation_id)
     if annotation is None or annotation.tenant_id != user.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Annotation not found")
-    if "note" in body:
-        annotation.note = (body.get("note") or "").strip() or None
+    if "note" in body.model_fields_set:
+        annotation.note = (body.note or "").strip() or None
     await db.flush()
     return _out(annotation)
 
@@ -153,12 +151,10 @@ async def get_position(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> dict:
 
 @router.put("/documents/{doc_id}/position")
 async def save_position(
-    doc_id: uuid.UUID, body: dict, user: CurrentUser, db: DB
+    doc_id: uuid.UUID, body: PositionRequest, user: CurrentUser, db: DB
 ) -> dict:
     await _owned_doc(doc_id, user, db)
-    page = body.get("page")
-    if not isinstance(page, int) or page < 1:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "page required")
+    page = body.page
     row = await db.get(ReadingPosition, (user.id, doc_id))
     if row is None:
         db.add(ReadingPosition(user_id=user.id, document_id=doc_id, page=page))

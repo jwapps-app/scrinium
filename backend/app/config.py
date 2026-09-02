@@ -50,6 +50,21 @@ class Settings(BaseSettings):
     def trusted_proxy_list(self) -> list[str]:
         return [p.strip() for p in self.trusted_proxies.split(",") if p.strip()]
 
+    # Where the Cloudflare tunnel connects from. CF-Connecting-IP is only an
+    # honest client address when the request actually came through the
+    # tunnel; a client on the LAN reaching nginx directly can send the same
+    # header and it used to be believed, which made the per-IP login limit
+    # decorative for anyone on the network. Empty (the default) keeps the
+    # old behaviour — the header is trusted from any trusted proxy — so an
+    # existing deployment loses nothing. Set it to cloudflared's address(es)
+    # and the header is believed only from there; LAN callers are limited on
+    # their real address instead.
+    tunnel_peers: str = ""
+
+    @property
+    def tunnel_peer_list(self) -> list[str]:
+        return [p.strip() for p in self.tunnel_peers.split(",") if p.strip()]
+
     # OCR
     ocr_engine: str = "tesseract"  # "tesseract" | "apple"
     ocr_languages: str = "eng"

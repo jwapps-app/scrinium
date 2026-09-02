@@ -14,6 +14,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from app.config import settings
 from app.models import Blob, Document
@@ -69,6 +70,8 @@ async def purge_expired(db: AsyncSession, limit: int = 100) -> int:
     expired = (
         await db.execute(
             select(Document)
+            # Purging needs blob ids, not the OCR text those rows carry.
+            .options(defer(Document.text_content))
             .where(Document.deleted_at.is_not(None), Document.deleted_at < cutoff)
             .limit(limit)
         )

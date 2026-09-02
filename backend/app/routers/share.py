@@ -8,22 +8,27 @@ never leak anything beyond the shared document.
 
 import secrets
 import uuid
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
+from sqlalchemy.orm import defer
 
 from app.deps import DB, CurrentUser
 from app.models import Blob, Document, ShareLink
 from app.schemas import ShareLinkCreate, ShareLinkOut
 from app.services import storage
+from app.services.export import sanitize
 
 router = APIRouter(tags=["share"])
 
 
 async def _owned_doc(doc_id: uuid.UUID, user, db) -> Document:
-    doc = await db.get(Document, doc_id)
+    # Deferred: nothing here reads the OCR text, and loading it detoasts
+    # megabytes per book just to compare a tenant id.
+    doc = await db.get(Document, doc_id, options=[defer(Document.text_content)])
     if doc is None or doc.tenant_id != user.tenant_id or doc.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
     return doc
@@ -104,7 +109,9 @@ async def _shared_doc(token: str, db) -> Document:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found or expired")
     if link.expires_at is not None and link.expires_at < datetime.now(timezone.utc):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found or expired")
-    doc = await db.get(Document, link.document_id)
+    doc = await db.get(
+        Document, link.document_id, options=[defer(Document.text_content)]
+    )
     if doc is None or doc.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found or expired")
     return doc
@@ -127,13 +134,18 @@ async def shared_file(
 ) -> FileResponse:
     """Public: the shared document's file (archive if available)."""
     doc = await _shared_doc(token, db)
+    # Titles come from filenames and free edits. Starlette quotes non-ASCII
+    # names correctly but emits ASCII ones raw, so a title holding a quote
+    # produced a malformed Content-Disposition, and a control character
+    # failed the whole download.
     if doc.archive_blob_id is not None:
         blob_id = doc.archive_blob_id
-        filename = f"{doc.title}.pdf"
+        filename = f"{sanitize(doc.title)}.pdf"
         media_type = "application/pdf"
     else:
         blob_id = doc.original_blob_id
-        filename = doc.original_filename
+        original = Path(doc.original_filename)
+        filename = sanitize(original.stem) + original.suffix.lower()
         blob = await db.get(Blob, blob_id)
         media_type = blob.mime_type if blob else "application/octet-stream"
     path = storage.blob_file(blob_id)

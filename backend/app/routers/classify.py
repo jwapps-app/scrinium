@@ -1,19 +1,24 @@
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
 
 from app.deps import DB, CurrentUser
-from app.models import Document, Rule
+from app.models import Document
 from app.routers.documents import doc_out
-from app.schemas import BulkClassifyResult, ClassifyResult
-from app.services.classify import classify_document
+from app.schemas import ClassifyResult
+from app.services.background import spawn
+from app.services.classify import (
+    classify_document,
+    classify_status,
+    run_classify_all,
+)
 
 router = APIRouter(tags=["classify"])
 
 
 @router.post("/documents/{doc_id}/classify", response_model=ClassifyResult)
 async def classify_one(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> ClassifyResult:
+    # The full row on purpose: classification reads the text.
     doc = await db.get(Document, doc_id)
     if doc is None or doc.tenant_id != user.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
@@ -28,42 +33,24 @@ async def classify_one(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> Classify
     )
 
 
-@router.post("/classify/run", response_model=BulkClassifyResult)
-async def classify_all(user: CurrentUser, db: DB) -> BulkClassifyResult:
-    rules = (
-        await db.execute(
-            select(Rule)
-            .where(Rule.tenant_id == user.tenant_id, Rule.enabled)
-            .order_by(Rule.priority, Rule.created_at)
+@router.get("/classify/run")
+async def classify_all_status(user: CurrentUser, db: DB) -> dict:
+    """Progress of the library-wide pass: state, examined, changed, total."""
+    return await classify_status(db)
+
+
+@router.post("/classify/run")
+async def classify_all(user: CurrentUser, db: DB) -> dict:
+    """Start a pass over every live document, in the background.
+
+    It reads the whole library's OCR text, which on a real library is
+    gigabytes and many minutes; a request that waited for it timed out at
+    the proxy while the work carried on invisibly. Poll GET for progress.
+    """
+    state = await classify_status(db)
+    if state.get("state") == "running":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "A classification pass is already running"
         )
-    ).scalars().all()
-    # Batched by id keyset: loading every document's full OCR text at once is
-    # a memory spike on a large library, and trashed docs shouldn't reclassify.
-    examined = 0
-    changed = 0
-    last_id = None
-    while True:
-        q = (
-            select(Document)
-            .where(
-                Document.tenant_id == user.tenant_id,
-                Document.deleted_at.is_(None),
-            )
-            .order_by(Document.id)
-            .limit(200)
-        )
-        if last_id is not None:
-            q = q.where(Document.id > last_id)
-        docs = (await db.execute(q)).scalars().all()
-        if not docs:
-            break
-        for doc in docs:
-            outcome = await classify_document(db, doc, rules)
-            if outcome.added_tags or outcome.new_title:
-                changed += 1
-            last_id = doc.id
-        examined += len(docs)
-        await db.flush()
-        # Release the batch's loaded text before the next one.
-        db.expunge_all()
-    return BulkClassifyResult(documents_examined=examined, documents_changed=changed)
+    spawn(run_classify_all(user.tenant_id))
+    return {"started": True}

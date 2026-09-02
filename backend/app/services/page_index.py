@@ -48,8 +48,9 @@ async def reindex_pages(session: AsyncSession, document: Document) -> int:
     await session.execute(
         delete(DocumentPage).where(DocumentPage.document_id == document.id)
     )
-    if not document.text_content:
-        return 0
+    # No Python-side check on text_content: the query below yields nothing
+    # for NULL or blank text, and reading the attribute here pulled the whole
+    # OCR text into the worker for a decision the database makes anyway.
     result = await session.execute(
         text(
             """

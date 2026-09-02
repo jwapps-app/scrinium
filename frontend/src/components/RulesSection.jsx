@@ -113,13 +113,27 @@ export default function RulesSection() {
 
   async function classifyAll() {
     setError('')
-    setNotice('')
+    setNotice('Classifying…')
     try {
-      const result = await apiJson('/api/classify/run', { method: 'POST' })
-      setNotice(
-        `Classified ${result.documents_examined} documents; ${result.documents_changed} changed.`,
-      )
+      // The pass runs in the background now — on a large library it reads
+      // every document's text and outlives any request — so poll for it.
+      await apiJson('/api/classify/run', { method: 'POST' })
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        const s = await apiJson('/api/classify/run')
+        if (s.state === 'done') {
+          setNotice(`Classified ${s.examined} documents; ${s.changed} changed.`)
+          break
+        }
+        if (s.state === 'failed') {
+          setNotice('')
+          setError(s.error || 'Classification failed')
+          break
+        }
+        setNotice(`Classifying… ${s.examined ?? 0} of ${s.total ?? '?'}`)
+      }
     } catch (err) {
+      setNotice('')
       setError(err.message)
     }
   }

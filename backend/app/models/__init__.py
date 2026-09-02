@@ -17,6 +17,7 @@ from app.models.organize import (
     SavedView,
     document_custom_values,
 )
+from app.models.refresh_token import RefreshToken
 from app.models.rule import Rule
 from app.models.tag import Tag
 from app.models.tenant import Tenant
@@ -41,6 +42,7 @@ __all__ = [
     "document_custom_values",
     "Job",
     "JobStatus",
+    "RefreshToken",
     "Rule",
     "Tag",
     "Tenant",

@@ -1,19 +1,23 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.deps import DB, AdminUser, CurrentUser
-from app.models import Tenant, User
+from app.models import RefreshToken, Tenant, User
 from app.services.ratelimit import limit_account, rate_limit
 from app.schemas import (
     AuthStatus,
+    ChangePasswordRequest,
     LoginRequest,
     RefreshRequest,
     SetupRequest,
     TokenPair,
+    TotpCodeRequest,
+    TotpDisableRequest,
 )
 from app.services import totp as totp_service
 from app.security import (
@@ -31,10 +35,39 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _DUMMY_HASH = hash_password("scrinium-timing-equalizer")
 
 
-def _token_pair(user: User) -> TokenPair:
+# How long a just-rotated refresh token is still answered. A client whose
+# refresh response was lost on the wire retries with the token it still has;
+# inside this window it gets the same successor back. Outside it, the second
+# presentation is treated as what it most likely is: a copy in other hands.
+REFRESH_REUSE_GRACE = timedelta(seconds=60)
+
+
+async def _issue_pair(db, user: User) -> TokenPair:
+    """A fresh access/refresh pair, the refresh half backed by a row it can
+    be retired through."""
+    now = datetime.now(timezone.utc)
+    row = RefreshToken(
+        user_id=user.id, expires_at=now + timedelta(days=settings.refresh_token_days)
+    )
+    db.add(row)
+    await db.flush()
     return TokenPair(
         access_token=mint_access_token(user.id, user.token_version),
-        refresh_token=mint_refresh_token(user.id, user.token_version),
+        refresh_token=mint_refresh_token(user.id, user.token_version, row.id),
+    )
+
+
+async def _prune_tokens(db, user: User) -> None:
+    """Drop rows that can never be presented again — expired, or revoked long
+    past the grace window. Done at sign-in, when there is a user to scope it
+    to, rather than by yet another sweep."""
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        delete(RefreshToken).where(
+            RefreshToken.user_id == user.id,
+            (RefreshToken.expires_at < now)
+            | (RefreshToken.revoked_at < now - timedelta(days=1)),
+        )
     )
 
 
@@ -60,7 +93,7 @@ async def setup(body: SetupRequest, db: DB) -> TokenPair:
     )
     db.add(user)
     await db.flush()
-    return _token_pair(user)
+    return await _issue_pair(db, user)
 
 
 @router.post("/login", response_model=TokenPair, dependencies=[Depends(rate_limit("login", 10, 60))])
@@ -93,7 +126,8 @@ async def login(body: LoginRequest, db: DB) -> TokenPair:
             )
         user.totp_last_step = step
         await db.flush()
-    return _token_pair(user)
+    await _prune_tokens(db, user)
+    return await _issue_pair(db, user)
 
 
 @router.post(
@@ -102,30 +136,77 @@ async def login(body: LoginRequest, db: DB) -> TokenPair:
     dependencies=[Depends(rate_limit("refresh", 30, 60))],
 )
 async def refresh(body: RefreshRequest, db: DB) -> TokenPair:
+    """Exchange a refresh token for a new pair, retiring the one presented.
+
+    Single use, with one allowance: the exchange's response can be lost after
+    the server has already rotated, and the client then retries with the
+    token it still holds. For REFRESH_REUSE_GRACE after rotation that retry
+    is answered with the same successor. After that a revoked token is
+    refused — it is the shape a stolen copy takes.
+    """
     decoded = decode_token(body.refresh_token, "refresh")
     if decoded is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
-    user_id, token_version = decoded
+    user_id, token_version, jti = decoded
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
     if token_version != user.token_version:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired")
-    return _token_pair(user)
+    if jti is None:
+        # Issued before rotation existed. Honour it (its version and expiry
+        # still stand) and hand back a pair that is in the scheme, so every
+        # device migrates on its next refresh without being signed out.
+        return await _issue_pair(db, user)
+
+    row = await db.get(RefreshToken, jti)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
+    now = datetime.now(timezone.utc)
+    if row.revoked_at is not None:
+        if row.replaced_by is not None and now - row.revoked_at <= REFRESH_REUSE_GRACE:
+            successor = await db.get(RefreshToken, row.replaced_by)
+            if (
+                successor is not None
+                and successor.revoked_at is None
+                and successor.expires_at > now
+            ):
+                return TokenPair(
+                    access_token=mint_access_token(user.id, user.token_version),
+                    refresh_token=mint_refresh_token(
+                        user.id, user.token_version, successor.id
+                    ),
+                )
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "Refresh token already used"
+        )
+    if row.expires_at <= now:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Refresh token expired")
+
+    successor = RefreshToken(
+        user_id=user.id, expires_at=now + timedelta(days=settings.refresh_token_days)
+    )
+    db.add(successor)
+    await db.flush()
+    row.revoked_at = now
+    row.replaced_by = successor.id
+    await db.flush()
+    return TokenPair(
+        access_token=mint_access_token(user.id, user.token_version),
+        refresh_token=mint_refresh_token(user.id, user.token_version, successor.id),
+    )
 
 
 @router.post(
     "/change-password", dependencies=[Depends(rate_limit("change-password", 10, 60))]
 )
-async def change_password(body: dict, user: CurrentUser, db: DB) -> dict:
+async def change_password(
+    body: ChangePasswordRequest, user: CurrentUser, db: DB
+) -> dict:
     # A stolen access token must not buy unlimited guesses at the password.
     limit_account("change-password", str(user.id), 10, 300)
-    current = body.get("current_password") or ""
-    new = body.get("new_password") or ""
-    if len(new) < 8:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "New password needs 8+ characters"
-        )
+    current = body.current_password
+    new = body.new_password
     if not await run_in_threadpool(verify_password, current, user.password_hash):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Current password is wrong")
     user.password_hash = await run_in_threadpool(hash_password, new)
@@ -133,7 +214,7 @@ async def change_password(body: dict, user: CurrentUser, db: DB) -> dict:
     # caller a fresh pair so their current session continues seamlessly.
     user.token_version += 1
     await db.flush()
-    fresh = _token_pair(user)
+    fresh = await _issue_pair(db, user)
     return {
         "changed": True,
         "access_token": fresh.access_token,
@@ -170,7 +251,9 @@ async def me(user: CurrentUser) -> dict:
 
 
 @router.get("/users")
-async def list_users(user: CurrentUser, db: DB) -> list[dict]:
+async def list_users(user: AdminUser, db: DB) -> list[dict]:
+    """Owner-only, like the rest of account management: every account's
+    address and role is not something each member needs to see."""
     rows = (
         (
             await db.execute(
@@ -248,11 +331,11 @@ async def totp_setup(user: CurrentUser, db: DB) -> dict:
 @router.post(
     "/totp/enable", dependencies=[Depends(rate_limit("totp-enable", 10, 60))]
 )
-async def totp_enable(body: dict, user: CurrentUser, db: DB) -> dict:
+async def totp_enable(body: TotpCodeRequest, user: CurrentUser, db: DB) -> dict:
     limit_account("totp-enable", str(user.id), 10, 300)
     if not user.totp_secret:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Run setup first")
-    step = totp_service.matching_step(user.totp_secret, body.get("code") or "")
+    step = totp_service.matching_step(user.totp_secret, body.code)
     if step is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "That code doesn't match")
     user.totp_last_step = step
@@ -264,7 +347,7 @@ async def totp_enable(body: dict, user: CurrentUser, db: DB) -> dict:
 @router.post(
     "/totp/disable", dependencies=[Depends(rate_limit("totp-disable", 10, 60))]
 )
-async def totp_disable(body: dict, user: CurrentUser, db: DB) -> dict:
+async def totp_disable(body: TotpDisableRequest, user: CurrentUser, db: DB) -> dict:
     """Requires the password AND a current code — losing the phone means
     disabling via direct database access, which is the honest recovery
     story for a self-hosted single box."""
@@ -273,11 +356,9 @@ async def totp_disable(body: dict, user: CurrentUser, db: DB) -> dict:
     limit_account("totp-disable", str(user.id), 10, 300)
     if not user.totp_enabled:
         return {"enabled": False}
-    if not await run_in_threadpool(
-        verify_password, body.get("password") or "", user.password_hash
-    ):
+    if not await run_in_threadpool(verify_password, body.password, user.password_hash):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Wrong password")
-    step = totp_service.matching_step(user.totp_secret, body.get("code") or "")
+    step = totp_service.matching_step(user.totp_secret, body.code)
     if step is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "That code doesn't match")
     user.totp_enabled = False

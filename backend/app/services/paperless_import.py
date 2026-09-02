@@ -148,7 +148,9 @@ async def _run_import(tenant_id) -> None:
         await _status("running", note="extracting zip…")
         source = await asyncio.to_thread(_extract_zip, source)
 
-    manifest = json.loads((source / "manifest.json").read_text())
+    manifest = await asyncio.to_thread(
+        lambda: json.loads((source / "manifest.json").read_text())
+    )
 
     # A Scrinium export manifest is a dict with a "documents" list; a
     # Paperless export is a bare Django-fixture list. One Import button,
@@ -327,7 +329,12 @@ async def _restore_scrinium(tenant_id, source: Path, manifest: dict) -> None:
                 pages = entry.get("page_count")
                 archive_path = _safe_member(source, entry.get("archive"))
                 if archive_path and archive_path.exists():
-                    result = subprocess.run(
+                    # In a thread: this is a subprocess with a five-minute
+                    # timeout, run once per document, inside the API process.
+                    # Inline it froze every request for as long as each
+                    # pdftotext took, for the whole length of a restore.
+                    result = await asyncio.to_thread(
+                        subprocess.run,
                         ["pdftotext", "-layout", str(archive_path), "-"],
                         capture_output=True, encoding="utf-8", errors="replace",
                         timeout=300,

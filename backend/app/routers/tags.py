@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 
 from app.deps import DB, AdminUser, CurrentUser
-from app.models import Tag
+from app.models import Document, Tag
 from app.models.document import document_tags
 from app.schemas import TagCreate, TagOut, TagUpdate
 from app.services.tag_tree import is_descendant
@@ -29,8 +29,16 @@ async def _get_owned(tag_id: uuid.UUID, user, db) -> Tag:
 async def list_tags(user: CurrentUser, db: DB) -> list[TagOut]:
     rows = (
         await db.execute(
-            select(Tag, func.count(document_tags.c.document_id))
+            # Live documents only: correspondents and types already count
+            # that way, and a tag reading "3" over an empty filtered list
+            # was the trash showing through.
+            select(Tag, func.count(Document.id))
             .outerjoin(document_tags, document_tags.c.tag_id == Tag.id)
+            .outerjoin(
+                Document,
+                (Document.id == document_tags.c.document_id)
+                & Document.deleted_at.is_(None),
+            )
             .where(Tag.tenant_id == user.tenant_id)
             .group_by(Tag.id)
             .order_by(Tag.name)

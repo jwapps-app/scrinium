@@ -8,13 +8,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 from sqlalchemy import Integer, case, cast, func, select, text
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, defer
 
 from app.services import similarity
 from app.services.similarity import find_near_duplicates
 
 from app.config import settings as app_settings
 from app.deps import DB, CurrentUser
+from app.schemas import DismissPairRequest, DismissRequest
 from app.models import (
     DismissedDuplicate,
     Blob,
@@ -270,21 +271,15 @@ async def weak_ocr(
 
 
 @router.post("/insights/weak-ocr/dismiss")
-async def dismiss_weak_ocr(body: dict, user: CurrentUser, db: DB) -> dict:
+async def dismiss_weak_ocr(body: DismissRequest, user: CurrentUser, db: DB) -> dict:
     """Mark a document's scan as acceptable so it leaves the weak-OCR list."""
-    import uuid as _uuid
-
     from fastapi import HTTPException, status as http_status
 
-    try:
-        doc_id = _uuid.UUID(str(body.get("id")))
-    except (ValueError, TypeError):
-        raise HTTPException(http_status.HTTP_422_UNPROCESSABLE_ENTITY, "id required")
     doc = (
         await db.execute(
-            select(Document).where(
-                Document.id == doc_id, Document.tenant_id == user.tenant_id
-            )
+            select(Document)
+            .options(defer(Document.text_content))
+            .where(Document.id == body.id, Document.tenant_id == user.tenant_id)
         )
     ).scalar_one_or_none()
     if doc is None:
@@ -436,17 +431,9 @@ async def possible_duplicates(user: CurrentUser, db: DB) -> dict:
 
 
 @router.post("/insights/duplicates/dismiss")
-async def dismiss_duplicate(body: dict, user: CurrentUser, db: DB) -> dict:
+async def dismiss_duplicate(body: DismissPairRequest, user: CurrentUser, db: DB) -> dict:
     """Mark a pair as "not a duplicate" so the report stops resurfacing it."""
-    import uuid as _uuid
-
-    try:
-        a = _uuid.UUID(str(body.get("a")))
-        b = _uuid.UUID(str(body.get("b")))
-    except (ValueError, TypeError):
-        from fastapi import HTTPException, status as http_status
-
-        raise HTTPException(http_status.HTTP_422_UNPROCESSABLE_ENTITY, "a and b required")
+    a, b = body.a, body.b
     # Both documents must be the caller's, or this accepts arbitrary UUIDs and
     # accumulates junk rows forever (there is no FK on the pair columns).
     owned = (

@@ -12,6 +12,7 @@ from fastapi import APIRouter, Form, HTTPException, Query, Request, UploadFile, 
 from fastapi.responses import FileResponse
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy import update as sqla_update
+from sqlalchemy.orm import defer
 
 from app.deps import DB, AdminUser, CurrentUser
 from app.models import Blob, Document, DocumentStatus, Job, JobStatus, Tag
@@ -26,8 +27,10 @@ from app.schemas import (
     DocumentOut,
     DocumentUpdate,
     PageOpRequest,
+    ProcessingRequest,
     ReprocessRequest,
     ReviewReasonOut,
+    SelectionRequest,
 )
 from datetime import datetime, timezone
 from app.config import settings as app_settings
@@ -44,6 +47,7 @@ from app.services.app_state import (
     set_flag,
 )
 from app.services.intake import ACCEPTED_SUFFIXES
+from app.services.export import sanitize
 from app.services.tag_tree import with_ancestors
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -223,8 +227,34 @@ def _upload_session_dir(upload_id: uuid.UUID) -> Path:
     return Path(app_settings.data_dir) / "upload-sessions" / upload_id.hex
 
 
+# Open sessions per tenant. Each can hold 40 GB, and nothing bounded how many
+# could be opened, so one account could fill the volume with parts nobody
+# would ever assemble. A hundred is far beyond any real batch: the web client
+# uploads one file at a time and removes its session on completion.
+MAX_OPEN_UPLOAD_SESSIONS = 100
+
+
+def _open_sessions(tenant_id: uuid.UUID) -> int:
+    root = Path(app_settings.data_dir) / "upload-sessions"
+    if not root.is_dir():
+        return 0
+    count = 0
+    for session_dir in root.iterdir():
+        try:
+            if (session_dir / "owner").read_text() == str(tenant_id):
+                count += 1
+        except OSError:
+            continue
+    return count
+
+
 @router.post("/uploads")
 async def create_upload_session(user: CurrentUser) -> dict:
+    if await asyncio.to_thread(_open_sessions, user.tenant_id) >= MAX_OPEN_UPLOAD_SESSIONS:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Too many uploads in progress — let some finish first.",
+        )
     upload_id = uuid.uuid4()
     session_dir = _upload_session_dir(upload_id)
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -829,18 +859,22 @@ async def extract_dates(user: CurrentUser, db: DB) -> dict:
 
 
 @router.post("/processing")
-async def set_processing(body: dict, user: AdminUser, db: DB) -> dict:
+async def set_processing(body: ProcessingRequest, user: AdminUser, db: DB) -> dict:
     """Pause/resume the worker queue. Pausing lets the current file finish
     and stops new claims and watch-folder sweeps — safe to restart the
     server or the Mac (Apple OCR host) without losing work or quality."""
-    paused = bool(body.get("paused"))
+    paused = body.paused
     await set_flag(db, PROCESSING_PAUSED, paused)
     _STATS_CACHE.pop(user.tenant_id, None)  # reflect the toggle immediately
     return {"paused": paused}
 
 
 async def _get_owned(doc_id: uuid.UUID, user, db) -> Document:
-    doc = await db.get(Document, doc_id)
+    # text_content stays deferred: it averages half a megabyte and runs to
+    # 25 MB, and none of the thirty-odd routes reaching through here need it
+    # to decide ownership — they were detoasting it on every thumbnail and
+    # download. The one route that wants the text loads it (document_text).
+    doc = await db.get(Document, doc_id, options=[defer(Document.text_content)])
     if doc is None or doc.tenant_id != user.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
     return doc
@@ -1022,14 +1056,19 @@ async def download(
     disposition: str = "inline",
 ) -> FileResponse:
     doc = await _get_owned(doc_id, user, db)
+    # Pretty name is applied only here, at download time — and made safe
+    # for a header here too. Starlette quotes non-ASCII names but writes an
+    # ASCII one raw, so a quote in a title broke Content-Disposition and a
+    # control character failed the download outright. Titles are filenames
+    # and free edits; neither is ours to trust.
     if version == "archive" and doc.archive_blob_id is not None:
         blob_id = doc.archive_blob_id
-        # Pretty name is applied only here, at download time.
-        filename = f"{doc.title}.pdf"
+        filename = f"{sanitize(doc.title)}.pdf"
         media_type = "application/pdf"
     else:
         blob_id = doc.original_blob_id
-        filename = doc.original_filename
+        original = Path(doc.original_filename)
+        filename = sanitize(original.stem) + original.suffix.lower()
         blob = await db.get(Blob, blob_id)
         media_type = blob.mime_type if blob else "application/octet-stream"
     path = storage.blob_file(blob_id)
@@ -1102,7 +1141,9 @@ async def search_within(
     """
     doc = await _get_owned(doc_id, user, db)
     q = q.strip()
-    if not q or not doc.text_content:
+    # No text check here: the query below finds nothing for a document
+    # without text, and the column is deferred on purpose.
+    if not q:
         return {"query": q, "pages": [], "terms": []}
 
     rows = (
@@ -1338,20 +1379,23 @@ async def related_documents(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> dic
 async def document_text(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> dict:
     """Extracted text — the reader view for text-native formats."""
     doc = await _get_owned(doc_id, user, db)
+    # The one place the deferred column is wanted. Reading it unloaded
+    # would try a lazy load outside the session's greenlet and raise.
+    await db.refresh(doc, attribute_names=["text_content"])
     return {"text": doc.text_content or "", "title": doc.title}
 
 
 @router.post("/binder")
-async def build_binder_pdf(body: dict, user: CurrentUser, db: DB):
+async def build_binder_pdf(body: SelectionRequest, user: CurrentUser, db: DB):
     """One print-ready PDF: cover + contents + the selected documents (or
     everything under a tag). Searchable copies preferred."""
     from app.services import binder as binder_service
 
-    ids = body.get("ids") or []
-    tag_id = body.get("filter_tag_id")
-    title = (body.get("title") or "").strip() or "Scrinium Binder"
+    ids = body.ids
+    tag_id = body.filter_tag_id
+    title = (body.title or "").strip() or f"{app_settings.app_name} Binder"
     if ids:
-        docs = [await _get_owned(i, user, db) for i in _parse_ids(ids)[:300]]
+        docs = [await _get_owned(i, user, db) for i in ids[:300]]
     elif tag_id:
         docs = (
             await db.execute(
@@ -1359,7 +1403,7 @@ async def build_binder_pdf(body: dict, user: CurrentUser, db: DB):
                 .where(
                     Document.tenant_id == user.tenant_id,
                     Document.deleted_at.is_(None),
-                    Document.tags.any(Tag.id == _parse_id(tag_id, "filter_tag_id")),
+                    Document.tags.any(Tag.id == tag_id),
                 )
                 .order_by(func.lower(Document.title))
                 .limit(300)
@@ -1411,16 +1455,16 @@ async def build_binder_pdf(body: dict, user: CurrentUser, db: DB):
 
 
 @router.post("/download-zip")
-async def download_zip(body: dict, user: CurrentUser, db: DB):
+async def download_zip(body: SelectionRequest, user: CurrentUser, db: DB):
     """Zip of selected documents (ids) or everything under a tag
     (filter_tag_id) — searchable copies when available, pretty names,
     tag-path folders for tag downloads."""
-    from app.services.export import folder_for, sanitize
+    from app.services.export import folder_for
 
-    ids = body.get("ids") or []
-    tag_id = body.get("filter_tag_id")
+    ids = body.ids
+    tag_id = body.filter_tag_id
     if ids:
-        docs = [await _get_owned(i, user, db) for i in _parse_ids(ids)[:200]]
+        docs = [await _get_owned(i, user, db) for i in ids[:200]]
     elif tag_id:
         docs = (
             await db.execute(
@@ -1428,7 +1472,7 @@ async def download_zip(body: dict, user: CurrentUser, db: DB):
                 .where(
                     Document.tenant_id == user.tenant_id,
                     Document.deleted_at.is_(None),
-                    Document.tags.any(Tag.id == _parse_id(tag_id, "filter_tag_id")),
+                    Document.tags.any(Tag.id == tag_id),
                 )
                 .limit(1000)
             )
@@ -1473,11 +1517,17 @@ async def download_zip(body: dict, user: CurrentUser, db: DB):
 
     import zipfile as _zipfile
 
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        zip_path = Path(tmp.name)
-    with _zipfile.ZipFile(zip_path, "w", _zipfile.ZIP_STORED) as zf:
-        for arc, path in entries:
-            zf.write(path, arc)
+    def build_zip() -> Path:
+        # Up to 4 GB copied off the NAS: in a thread, or every other request
+        # waits behind it — the api runs a single event loop.
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+            zip_path = Path(tmp.name)
+        with _zipfile.ZipFile(zip_path, "w", _zipfile.ZIP_STORED) as zf:
+            for arc, path in entries:
+                zf.write(path, arc)
+        return zip_path
+
+    zip_path = await asyncio.to_thread(build_zip)
 
     from starlette.background import BackgroundTask
 
@@ -1491,38 +1541,47 @@ async def download_zip(body: dict, user: CurrentUser, db: DB):
 
 
 @router.post("/merge")
-async def merge_documents(body: dict, user: CurrentUser, db: DB) -> dict:
+async def merge_documents(body: SelectionRequest, user: CurrentUser, db: DB) -> dict:
     """Concatenate 2+ PDF documents into a new one (in the given order);
     the sources move to the trash. The inverse of extract/split."""
     import pikepdf
 
-    ids = body.get("ids") or []
+    ids = body.ids
     if len(ids) < 2 or len(ids) > 50:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Pick 2-50 documents")
     docs = []
-    for raw in ids:
-        docs.append(await _get_owned(_parse_id(raw, "id"), user, db))
+    for doc_id in ids:
+        docs.append(await _get_owned(doc_id, user, db))
     for doc in docs:
         if not doc.original_filename.lower().endswith(".pdf"):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 f"“{doc.title}” isn't a PDF — merge only combines PDFs",
             )
-    title = (body.get("title") or "").strip() or f"{docs[0].title} (merged)"
+    title = (body.title or "").strip() or f"{docs[0].title} (merged)"
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         merged_path = Path(tmp.name)
-    try:
+    # (title, path) pairs, read before the thread: the rows are loaded, and
+    # touching ORM attributes off the loop is not something to rely on.
+    sources = [(doc.title, storage.blob_file(doc.original_blob_id)) for doc in docs]
+
+    def build_merged() -> None:
         merged = pikepdf.new()
-        for doc in docs:
-            source = storage.blob_file(doc.original_blob_id)
+        for doc_title, source in sources:
             if not source.exists():
-                raise HTTPException(
-                    status.HTTP_404_NOT_FOUND, f"File missing for “{doc.title}”"
-                )
+                raise FileNotFoundError(doc_title)
             with pikepdf.open(source) as src:
                 for page in src.pages:
                     merged.pages.append(page)
         merged.save(merged_path)
+
+    try:
+        try:
+            await asyncio.to_thread(build_merged)
+        except FileNotFoundError as missing:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, f"File missing for “{missing}”"
+            )
         try:
             new_doc = await intake.ingest_file(
                 db, user.tenant_id, merged_path, f"{title}.pdf",

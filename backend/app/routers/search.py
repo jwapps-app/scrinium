@@ -1,14 +1,88 @@
-from sqlalchemy import Float, cast, func, or_, select
+from sqlalchemy import func, select, text
 
 from fastapi import APIRouter, HTTPException, status
 
 from app.deps import DB, CurrentUser
 import uuid
 
-from app.models import Correspondent, Document, DocumentPage, Tag
+from app.models import Correspondent, Document, Tag
 from app.schemas import SearchResponse, SearchResult
 
 router = APIRouter(prefix="/search", tags=["search"])
+
+
+# One pass over the page index, then a join — not a subquery per document.
+#
+# The previous shape correlated three subqueries on document_pages to each
+# row of documents, and Postgres executed the `search_vector @@ query` GIN
+# scan inside that per-document loop. For a term matching many pages the same
+# 80,000-row index scan ran once for every document in the library: measured
+# at 88 seconds for "steam engine" (3,783 matches), and the separate count
+# query then did it all again. Aggregating the index once — sum of page
+# ranks, page count, and the best page per document — took 451 ms on the
+# same data. The count now rides along as a window function over the same
+# match set, so it cannot disagree with the rows.
+#
+# The snippet is drawn from the best-matching page rather than the whole
+# text. ts_headline over a full document detoasts and parses megabytes per
+# result (175 ms each on this library); a page is a few thousand characters.
+# Pages are split on the same form feed the index uses, so `best_page` lines
+# up with split_part's 1-based numbering. A title-only match has no page, so
+# it headlines the opening of the text instead.
+_SEARCH_SQL = """
+WITH q AS (
+    SELECT websearch_to_tsquery('english', :q) AS query
+),
+hits AS (
+    SELECT p.document_id,
+           sum(ts_rank(p.search_vector, q.query)) AS page_score,
+           count(*) AS pages_hit,
+           (array_agg(p.page ORDER BY ts_rank(p.search_vector, q.query) DESC))[1]
+               AS best_page
+    FROM document_pages p, q
+    WHERE p.search_vector @@ q.query
+    GROUP BY p.document_id
+),
+matched AS (
+    SELECT d.id, d.title, d.status, d.text_content,
+           coalesce(h.pages_hit, 0) AS pages_hit,
+           h.best_page,
+           coalesce(h.page_score, 0) + ts_rank(d.title_vector, q.query) * 2.0 AS score
+    FROM documents d
+    CROSS JOIN q
+    LEFT JOIN hits h ON h.document_id = d.id
+    WHERE d.tenant_id = :tenant_id
+      AND d.deleted_at IS NULL
+      AND (h.document_id IS NOT NULL OR d.title_vector @@ q.query)
+      {tag_clause}
+),
+page AS (
+    SELECT id, title, status, text_content, pages_hit, best_page, score,
+           count(*) OVER () AS total
+    FROM matched
+    ORDER BY score DESC, id
+    LIMIT :limit OFFSET :offset
+)
+SELECT page.id, page.title, page.status, page.score, page.pages_hit, page.total,
+       ts_headline(
+           'english',
+           CASE WHEN page.best_page IS NULL
+                THEN left(coalesce(page.text_content, ''), 20000)
+                ELSE split_part(coalesce(page.text_content, ''), chr(12), page.best_page)
+           END,
+           q.query,
+           'StartSel=[[, StopSel=]], MaxWords=30, MinWords=15, MaxFragments=2'
+       ) AS snippet
+FROM page CROSS JOIN q
+ORDER BY page.score DESC, page.id
+"""
+
+_TAG_CLAUSE = """
+      AND EXISTS (
+          SELECT 1 FROM document_tags dt
+          WHERE dt.document_id = d.id AND dt.tag_id = :tag_id
+      )
+"""
 
 
 @router.get("", response_model=SearchResponse)
@@ -35,97 +109,18 @@ async def search(
                 status.HTTP_422_UNPROCESSABLE_ENTITY, "tag_id must be a UUID"
             )
 
-    tsquery = func.websearch_to_tsquery("english", q)
-    snippet = func.ts_headline(
-        "english",
-        func.coalesce(Document.text_content, ""),
-        tsquery,
-        # Plain markers, not HTML — document text is untrusted and the
-        # frontend renders highlights itself.
-        "StartSel=[[, StopSel=]], MaxWords=30, MinWords=15, MaxFragments=2",
-    )
-    # Matching and ranking both come from the per-page index. The old
-    # whole-document vector is gone: a tsvector caps at 1 MB, its size tracks
-    # distinct lexemes rather than characters, and an encyclopedia therefore
-    # blew straight past the ceiling — failing not just its indexing but the
-    # entire UPDATE that wrote its OCR text, which took the ingest down with
-    # it. A page is small enough that no such limit is in reach.
-    #
-    # It ranks better too. Postgres records token positions only for roughly
-    # the first 16,383 words and ts_rank reads positions, so one vector over a
-    # whole book described its opening pages: a 4.75 MB encyclopedia scored as
-    # though a word appearing twenty-eight times appeared twice, and sat 82nd
-    # of 376 matches. Summed pages reflect the real distribution, and demote
-    # long volumes honestly — a thousand-page book with two matching pages
-    # ranks below a short work on the subject.
-    page_match = (
-        select(DocumentPage.document_id)
-        .where(
-            DocumentPage.document_id == Document.id,
-            DocumentPage.search_vector.op("@@")(tsquery),
-        )
-        .correlate(Document)
-        .exists()
-    )
-    # Title or page text. Dropping the combined vector removed title matching
-    # outright — "find the document called X" returned nothing — which is the
-    # same class of silent gap as the one that started this.
-    matches = [
-        Document.tenant_id == user.tenant_id,
-        Document.deleted_at.is_(None),
-        or_(page_match, Document.title_vector.op("@@")(tsquery)),
-        # Scoped search: restrict to the active tag filter.
-        *([Document.tags.any(Tag.id == tag_uuid)] if tag_uuid else []),
-    ]
+    params = {
+        "q": q,
+        "tenant_id": user.tenant_id,
+        "limit": min(limit, 100),
+        "offset": offset,
+    }
+    if tag_uuid is not None:
+        params["tag_id"] = tag_uuid
+    sql = _SEARCH_SQL.format(tag_clause=_TAG_CLAUSE if tag_uuid is not None else "")
+    rows = (await db.execute(text(sql), params)).all()
+    total = int(rows[0].total) if rows else 0
 
-    page_score = (
-        select(
-            func.coalesce(func.sum(func.ts_rank(DocumentPage.search_vector, tsquery)), 0.0)
-        )
-        .where(
-            DocumentPage.document_id == Document.id,
-            DocumentPage.search_vector.op("@@")(tsquery),
-        )
-        .correlate(Document)
-        .scalar_subquery()
-    )
-    pages_hit = (
-        select(func.count())
-        .select_from(DocumentPage)
-        .where(
-            DocumentPage.document_id == Document.id,
-            DocumentPage.search_vector.op("@@")(tsquery),
-        )
-        .correlate(Document)
-        .scalar_subquery()
-    )
-    # A title hit counts for a lot: a document named for the term is usually
-    # what was wanted, and it may have no page rows at all (an image-only scan
-    # with a meaningful filename).
-    title_rank = func.ts_rank(Document.title_vector, tsquery) * 2.0
-    score = cast(page_score + title_rank, Float)
-
-    rows = (
-        await db.execute(
-            select(
-                Document.id, Document.title, Document.status, snippet,
-                score, pages_hit,
-            )
-            .where(*matches)
-            # id breaks ties, so paging can't repeat or skip a row when two
-            # documents score identically.
-            .order_by(score.desc(), Document.id)
-            .limit(min(limit, 100))
-            .offset(offset)
-        )
-    ).all()
-    # The count comes from the same predicate, so "showing 25 of 376" is
-    # honest even when the page is the last one.
-    total = (
-        await db.execute(
-            select(func.count()).select_from(Document).where(*matches)
-        )
-    ).scalar_one()
     suggestions: list[str] = []
     if not rows and len(q) >= 3 and " " not in q:
         # Zero hits on a single word: offer close matches from titles,
@@ -162,8 +157,8 @@ async def search(
         query=q,
         results=[
             SearchResult(
-                id=r[0], title=r[1], status=r[2], snippet=r[3],
-                rank=r[4], pages_hit=r[5],
+                id=r.id, title=r.title, status=r.status, snippet=r.snippet or "",
+                rank=float(r.score or 0.0), pages_hit=int(r.pages_hit or 0),
             )
             for r in rows
         ],

@@ -1,12 +1,43 @@
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+
+# bcrypt reads the first 72 bytes of a password and silently ignores the
+# rest, so a longer one is only ever checked on its prefix. Refuse to *set*
+# one — never to check one: an account that already has a long password was
+# hashed on the same prefix and must keep logging in.
+BCRYPT_LIMIT = 72
+
+
+def _within_bcrypt_limit(value: str) -> str:
+    if len(value.encode("utf-8")) > BCRYPT_LIMIT:
+        raise ValueError(f"Passwords are limited to {BCRYPT_LIMIT} bytes")
+    return value
 
 
 class SetupRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
+
+    _cap = field_validator("password")(_within_bcrypt_limit)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = ""
+    new_password: str = Field(min_length=8)
+
+    _cap = field_validator("new_password")(_within_bcrypt_limit)
+
+
+class TotpCodeRequest(BaseModel):
+    code: str = ""
+
+
+class TotpDisableRequest(BaseModel):
+    password: str = ""
+    code: str = ""
 
 
 class LoginRequest(BaseModel):
@@ -331,3 +362,71 @@ class CustomFieldOut(BaseModel):
 class CustomFieldCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     kind: str = Field(pattern="^(text|number|date|money|url|bool)$")
+
+
+# --- Small typed bodies for endpoints that used to take a bare dict ---------
+# Wrong types surfaced as 500s (int() on a string) or were silently coerced;
+# a model answers 422 with the field named, the way every other route does.
+
+
+class ProcessingRequest(BaseModel):
+    paused: bool = False
+
+
+class OcrEngineRequest(BaseModel):
+    engine: str | None = ""
+
+
+class ArchiveFormatRequest(BaseModel):
+    format: str | None = ""
+
+
+class ArchiveDpiRequest(BaseModel):
+    # The iOS app sends a number, the web UI a numeric string, and "" or
+    # null return to the env default — all three shapes are meaningful.
+    dpi: int | str | None = None
+
+
+class ExportRequest(BaseModel):
+    format: str | None = None
+    part_gb: int | None = Field(default=None, ge=1, le=500)
+
+
+class AnnotationRect(BaseModel):
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class AnnotationCreate(BaseModel):
+    page: int = Field(ge=1)
+    quote: str
+    rects: list[AnnotationRect] = Field(min_length=1, max_length=200)
+    note: str | None = None
+    color: str | None = None
+
+
+class AnnotationUpdate(BaseModel):
+    note: str | None = None
+
+
+class PositionRequest(BaseModel):
+    page: int = Field(ge=1)
+
+
+class DismissRequest(BaseModel):
+    id: uuid.UUID
+
+
+class DismissPairRequest(BaseModel):
+    a: uuid.UUID
+    b: uuid.UUID
+
+
+class SelectionRequest(BaseModel):
+    """ids, or everything under a tag — binder, zip download, merge."""
+
+    ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
+    filter_tag_id: uuid.UUID | None = None
+    title: str | None = None

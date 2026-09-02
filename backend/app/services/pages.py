@@ -12,6 +12,7 @@ the system never touches an original; a user reshaping their document is
 the sanctioned exception, and even then the old bytes survive in the trash.
 """
 
+import asyncio
 import logging
 import tempfile
 import uuid
@@ -60,7 +61,12 @@ async def _replace_original(
     document that goes straight to the trash — restorable for the retention
     window, purged automatically after. Undo for the one destructive edit in
     the app, at zero disk cost (the blobs just change owner)."""
-    new_id, sha256, size = storage.store_file(edited)
+    # Hashing and copying a whole book is file work; on the event loop it
+    # froze every other request for the duration.
+    new_id, sha256, size = await asyncio.to_thread(storage.store_file, edited)
+    # The row arrives with text_content deferred (ownership checks do not
+    # need it); the snapshot does, so load it explicitly before reading it.
+    await session.refresh(doc, attribute_names=["text_content"])
     session.add(
         Blob(id=new_id, sha256=sha256, size_bytes=size, mime_type="application/pdf")
     )
@@ -90,18 +96,32 @@ async def _replace_original(
     await session.flush()
 
 
+def _edit_copy(doc: Document, pages: list[int], degrees: int | None) -> tuple[Path, list[int]]:
+    """Write an edited copy of the original: rotated when `degrees` is given,
+    otherwise with the selected pages removed. Runs in a thread — pikepdf is
+    pure CPU and disk, and a 700-page save takes seconds."""
+    with _open_source(doc) as pdf:
+        selected = _check_pages(pages, len(pdf.pages))
+        if degrees is not None:
+            for number in selected:
+                pdf.pages[number - 1].rotate(degrees, relative=True)
+        else:
+            if len(selected) >= len(pdf.pages):
+                raise PageOpError("Cannot delete every page — trash the document instead")
+            for number in reversed(selected):
+                del pdf.pages[number - 1]
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            edited = Path(tmp.name)
+        pdf.save(edited)
+    return edited, selected
+
+
 async def rotate_pages(
     session: AsyncSession, doc: Document, pages: list[int], degrees: int
 ) -> None:
     if degrees not in (90, -90, 180):
         raise PageOpError("Rotation must be 90, -90, or 180 degrees")
-    with _open_source(doc) as pdf:
-        selected = _check_pages(pages, len(pdf.pages))
-        for number in selected:
-            pdf.pages[number - 1].rotate(degrees, relative=True)
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            edited = Path(tmp.name)
-        pdf.save(edited)
+    edited, selected = await asyncio.to_thread(_edit_copy, doc, pages, degrees)
     try:
         await _replace_original(session, doc, edited)
     finally:
@@ -112,20 +132,24 @@ async def rotate_pages(
 async def delete_pages(
     session: AsyncSession, doc: Document, pages: list[int]
 ) -> None:
-    with _open_source(doc) as pdf:
-        selected = _check_pages(pages, len(pdf.pages))
-        if len(selected) >= len(pdf.pages):
-            raise PageOpError("Cannot delete every page — trash the document instead")
-        for number in reversed(selected):
-            del pdf.pages[number - 1]
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            edited = Path(tmp.name)
-        pdf.save(edited)
+    edited, selected = await asyncio.to_thread(_edit_copy, doc, pages, None)
     try:
         await _replace_original(session, doc, edited)
     finally:
         edited.unlink(missing_ok=True)
     logger.info("deleted %d page(s) from %s", len(selected), doc.id)
+
+
+def _extract_copy(doc: Document, pages: list[int]) -> tuple[Path, list[int]]:
+    with _open_source(doc) as pdf:
+        selected = _check_pages(pages, len(pdf.pages))
+        out = pikepdf.new()
+        for number in selected:
+            out.pages.append(pdf.pages[number - 1])
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            extracted = Path(tmp.name)
+        out.save(extracted)
+    return extracted, selected
 
 
 async def extract_pages(
@@ -135,14 +159,7 @@ async def extract_pages(
     title: str | None,
 ) -> Document:
     """Copy the selected pages into a brand-new document (source untouched)."""
-    with _open_source(doc) as pdf:
-        selected = _check_pages(pages, len(pdf.pages))
-        out = pikepdf.new()
-        for number in selected:
-            out.pages.append(pdf.pages[number - 1])
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            extracted = Path(tmp.name)
-        out.save(extracted)
+    extracted, selected = await asyncio.to_thread(_extract_copy, doc, pages)
 
     name = (title or "").strip() or f"{doc.title} p{selected[0]}-{selected[-1]}"
     tags: list[Tag] = list(doc.tags)

@@ -8,6 +8,7 @@ from sqlalchemy import update as sqla_update
 
 from app.deps import DB, AdminUser, CurrentUser
 from app.models import AppSetting
+from app.schemas import ArchiveDpiRequest, ArchiveFormatRequest, OcrEngineRequest
 from app.services.app_state import (
     ARCHIVE_FORMAT,
     ARCHIVE_FORMATS,
@@ -89,10 +90,10 @@ async def ocr_settings(user: CurrentUser, db: DB) -> dict:
 
 
 @router.post("/ocr")
-async def set_ocr_engine(body: dict, user: AdminUser, db: DB) -> dict:
+async def set_ocr_engine(body: OcrEngineRequest, user: AdminUser, db: DB) -> dict:
     """Runtime engine choice; empty string returns to the env default.
     Applies to jobs claimed from now on — no restart needed."""
-    engine = (body.get("engine") or "").strip()
+    engine = (body.engine or "").strip()
     if engine not in ("", "tesseract", "apple"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown engine")
     if engine == "apple" and not settings.apple_ocr_url:
@@ -124,7 +125,7 @@ async def archive_format_settings(user: CurrentUser, db: DB) -> dict:
 
 
 @router.post("/archive-format")
-async def set_archive_format(body: dict, user: AdminUser, db: DB) -> dict:
+async def set_archive_format(body: ArchiveFormatRequest, user: AdminUser, db: DB) -> dict:
     """How the searchable archive is written.
 
     pdfa always, pdf never, auto to decide from the original, or measured to
@@ -141,7 +142,7 @@ async def set_archive_format(body: dict, user: AdminUser, db: DB) -> dict:
 
     Applies to OCR from now on; existing archives are unchanged until re-OCR'd.
     """
-    raw = (body.get("format") or "").strip()
+    raw = (body.format or "").strip()
     if raw == "":
         await set_value(db, ARCHIVE_FORMAT, "")
         return {"format": await resolve_archive_format(db), "format_override": ""}
@@ -155,10 +156,10 @@ async def set_archive_format(body: dict, user: AdminUser, db: DB) -> dict:
 
 
 @router.post("/archive-dpi")
-async def set_archive_dpi(body: dict, user: AdminUser, db: DB) -> dict:
+async def set_archive_dpi(body: ArchiveDpiRequest, user: AdminUser, db: DB) -> dict:
     """Runtime cap on archive image DPI. 0 disables downsampling; empty string
     returns to the env default. Applies to OCR and downsample jobs from now on."""
-    raw = body.get("dpi")
+    raw = body.dpi
     if raw in (None, ""):
         await set_value(db, ARCHIVE_MAX_DPI, "")
         return {"dpi": await resolve_archive_dpi(db), "dpi_override": ""}

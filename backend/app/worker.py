@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, delete, func, or_, select, text, union
 from sqlalchemy import true as sqla_true
 from sqlalchemy import update as sqla_update
+from sqlalchemy.orm import defer
 
 from app.config import settings
 from app.database import SessionLocal, engine
@@ -95,7 +96,10 @@ async def _backfill_page_index() -> None:
             _page_index_done = True
             return
         for doc_id in ids:
-            document = await session.get(Document, doc_id)
+            # The split happens in SQL; the worker never needs the text.
+            document = await session.get(
+                Document, doc_id, options=[defer(Document.text_content)]
+            )
             if document is None:
                 continue
             await page_index.reindex_pages(session, document)
@@ -169,41 +173,52 @@ async def _sweep_orphan_blobs() -> None:
     if not blob_root.exists():
         return
     cutoff = time.time() - 86400
-    candidates: list[Path] = []
-    for path in blob_root.glob("*/*/*"):
-        try:
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                candidates.append(path)
-        except OSError:
-            continue
-        if len(candidates) >= 5000:
-            break  # bound one sweep; the next hour catches the rest
-    if not candidates:
+
+    def scan() -> dict:
+        """Walk the store in a thread. It is ~30,000 stat() calls over NFS,
+        and on the event loop it stalled every lane's heartbeat and progress
+        commit for the duration — the one sweep here that was not threaded
+        while all its siblings were."""
+        found: dict = {}
+        for path in blob_root.glob("*/*/*"):
+            try:
+                if not (path.is_file() and path.stat().st_mtime < cutoff):
+                    continue
+            except OSError:
+                continue
+            try:
+                found[_uuid.UUID(path.name)] = path
+            except ValueError:
+                continue
+            if len(found) >= 5000:
+                break  # bound one sweep; the next hour catches the rest
+        return found
+
+    by_id = await asyncio.to_thread(scan)
+    if not by_id:
         return
-    ids = []
-    by_id = {}
-    for path in candidates:
-        try:
-            bid = _uuid.UUID(path.name)
-        except ValueError:
-            continue
-        ids.append(bid)
-        by_id[bid] = path
-    removed = 0
     async with SessionLocal() as session:
         known = {
             row
             for row in (
-                await session.execute(select(Blob.id).where(Blob.id.in_(ids)))
+                await session.execute(
+                    select(Blob.id).where(Blob.id.in_(list(by_id)))
+                )
             ).scalars()
         }
-    for bid, path in by_id.items():
-        if bid not in known:
+    orphans = [path for bid, path in by_id.items() if bid not in known]
+
+    def remove(paths: list) -> int:
+        count = 0
+        for path in paths:
             try:
                 os.unlink(path)
-                removed += 1
+                count += 1
             except OSError:
                 pass
+        return count
+
+    removed = await asyncio.to_thread(remove, orphans) if orphans else 0
     if removed:
         logger.info("orphan sweep removed %d row-less blob file(s)", removed)
 

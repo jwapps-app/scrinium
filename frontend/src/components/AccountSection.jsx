@@ -24,9 +24,11 @@ export default function AccountSection() {
   }, [])
 
   useEffect(() => {
-    load()
+    // The user list is owner-only server-side now; asking as a member
+    // would just paint a 403 into the error banner.
+    if (isAdmin) load()
     apiJson('/api/auth/totp').then((d) => setTotpEnabled(d.enabled)).catch(() => {})
-  }, [load])
+  }, [load, isAdmin])
 
   async function startEnroll() {
     setError('')

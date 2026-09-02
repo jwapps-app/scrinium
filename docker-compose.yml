@@ -41,6 +41,14 @@ services:
       - "8010:8000"
     volumes:
       - ./data:/data
+    # Root stays (see the Dockerfile note) but with nothing it does not use:
+    # no capability except overriding file permissions on the bind mount,
+    # no way to gain any, and a ceiling on processes so a parser bug in
+    # Ghostscript or poppler cannot fork the box flat.
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE, FOWNER, CHOWN]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,6 +86,14 @@ services:
       MAIL_POLL_SECONDS: ${MAIL_POLL_SECONDS:-300}
     volumes:
       - ./data:/data
+    # Root stays (see the Dockerfile note) but with nothing it does not use:
+    # no capability except overriding file permissions on the bind mount,
+    # no way to gain any, and a ceiling on processes so a parser bug in
+    # Ghostscript or poppler cannot fork the box flat.
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE, FOWNER, CHOWN]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 2048
     depends_on:
       postgres:
         condition: service_healthy

@@ -178,9 +178,10 @@ async def _run_export(tenant_id, fmt: str = "folder", part_gb: int = 10) -> None
         ).scalar_one()
         await _status("running", done=0, total=total)
 
-        manifest = []
-        # (folder, arcname, disk path, size) collected while the session is open
-        files: list[tuple] = []
+        # Collected while the session is open; sized afterwards. stat() on
+        # every blob in the library ran here on the event loop — ~14,000
+        # calls against NFS, in the API process, freezing every request.
+        records: list[dict] = []
         done = 0
         async for doc in docs_stream:
             suffix = Path(doc.original_filename).suffix.lower() or ".bin"
@@ -197,41 +198,61 @@ async def _run_export(tenant_id, fmt: str = "folder", part_gb: int = 10) -> None
                 if doc.archive_blob_id is not None
                 else None
             )
-            original_path = storage.blob_file(doc.original_blob_id)
-            if original_path.exists():
-                files.append(
-                    (folder, original_name, original_path, original_path.stat().st_size)
-                )
-            if archive_name:
-                archive_path = storage.blob_file(doc.archive_blob_id)
-                if archive_path.exists():
-                    files.append(
-                        (folder, archive_name, archive_path, archive_path.stat().st_size)
-                    )
-                else:
-                    archive_name = None
-            manifest.append(
+            records.append(
                 {
-                    "id": str(doc.id),
-                    "title": doc.title,
-                    "original_filename": doc.original_filename,
-                    "original": original_name,
-                    "archive": archive_name,
-                    "status": str(doc.status),
-                    "ocr_engine": doc.ocr_engine,
-                    "page_count": doc.page_count,
-                    "doc_date": doc.doc_date.isoformat() if doc.doc_date else None,
-                    "created_at": doc.created_at.isoformat(),
-                    "correspondent": doc.correspondent.name if doc.correspondent else None,
-                    "doc_type": doc.doc_type.name if doc.doc_type else None,
-                    "tags": [t.name for t in doc.tags],
-                    "notes": doc.notes,
-                    "custom_values": custom_by_doc.get(doc.id, {}),
+                    "folder": folder,
+                    "original_name": original_name,
+                    "original_path": storage.blob_file(doc.original_blob_id),
+                    "archive_name": archive_name,
+                    "archive_path": (
+                        storage.blob_file(doc.archive_blob_id) if archive_name else None
+                    ),
+                    "manifest": {
+                        "id": str(doc.id),
+                        "title": doc.title,
+                        "original_filename": doc.original_filename,
+                        "original": original_name,
+                        "archive": archive_name,
+                        "status": str(doc.status),
+                        "ocr_engine": doc.ocr_engine,
+                        "page_count": doc.page_count,
+                        "doc_date": doc.doc_date.isoformat() if doc.doc_date else None,
+                        "created_at": doc.created_at.isoformat(),
+                        "correspondent": doc.correspondent.name if doc.correspondent else None,
+                        "doc_type": doc.doc_type.name if doc.doc_type else None,
+                        "tags": [t.name for t in doc.tags],
+                        "notes": doc.notes,
+                        "custom_values": custom_by_doc.get(doc.id, {}),
+                    },
                 }
             )
             done += 1
             if done % EXPORT_BATCH == 0:
                 await _status("running", done=done, total=total)
+
+    def measure(items: list[dict]) -> list[tuple]:
+        """(folder, arcname, path, size) for every file that is actually
+        there. An archive that has gone missing is dropped from the manifest
+        too, exactly as before; a missing original keeps its manifest entry."""
+        sized: list[tuple] = []
+        for r in items:
+            try:
+                size = r["original_path"].stat().st_size
+            except OSError:
+                size = None
+            if size is not None:
+                sized.append((r["folder"], r["original_name"], r["original_path"], size))
+            if r["archive_path"] is not None:
+                try:
+                    asize = r["archive_path"].stat().st_size
+                except OSError:
+                    r["manifest"]["archive"] = None
+                else:
+                    sized.append((r["folder"], r["archive_name"], r["archive_path"], asize))
+        return sized
+
+    files = await asyncio.to_thread(measure, records)
+    manifest = [r["manifest"] for r in records]
 
     manifest_bytes = json.dumps(
         {

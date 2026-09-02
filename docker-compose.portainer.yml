@@ -44,6 +44,14 @@ services:
       MAIL_FOLDER: ${MAIL_FOLDER:-INBOX}
     volumes:
       - ${DATA_ROOT:-/volume1/docker/scrinium}/data:/data
+    # Root stays (see the Dockerfile note) but with nothing it does not use:
+    # no capability except overriding file permissions on the bind mount,
+    # no way to gain any, and a ceiling on processes so a parser bug in
+    # Ghostscript or poppler cannot fork the box flat.
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE, FOWNER, CHOWN]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
     mem_limit: 1g
     restart: unless-stopped
     depends_on:
@@ -88,6 +96,14 @@ services:
       MAIL_POLL_SECONDS: ${MAIL_POLL_SECONDS:-300}
     volumes:
       - ${DATA_ROOT:-/volume1/docker/scrinium}/data:/data
+    # Root stays (see the Dockerfile note) but with nothing it does not use:
+    # no capability except overriding file permissions on the bind mount,
+    # no way to gain any, and a ceiling on processes so a parser bug in
+    # Ghostscript or poppler cannot fork the box flat.
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE, FOWNER, CHOWN]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 2048
     mem_limit: ${WORKER_MEM_LIMIT:-2g}
     restart: unless-stopped
     depends_on:

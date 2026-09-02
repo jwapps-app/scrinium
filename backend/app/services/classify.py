@@ -7,15 +7,18 @@ Rules are ordered by priority (lower first); the first matching rule with a
 """
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 
 import regex
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database import SessionLocal
 from app.models import Document, Rule, Tag
+from app.services.app_state import get_value, set_value
 from app.services.tag_tree import with_ancestors
 
 logger = logging.getLogger(__name__)
@@ -140,3 +143,82 @@ async def classify_document(
         document.title = title_candidate
         outcome.new_title = title_candidate
     return outcome
+
+
+# --- The whole library at once --------------------------------------------
+# This used to run inside one HTTP request: every document's OCR text —
+# gigabytes on a real library — read through the API process while the
+# request waited, past nginx's five-minute timeout, and any signed-in user
+# could start it. It is a background run now, like export and import, with
+# its progress in app_settings for the UI to poll.
+
+CLASSIFY_STATUS = "classify_run_status"
+BATCH = 200
+
+
+async def classify_status(session: AsyncSession) -> dict:
+    raw = await get_value(session, CLASSIFY_STATUS)
+    try:
+        return json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+
+
+async def _status(state: str, **extra) -> None:
+    async with SessionLocal() as session:
+        await set_value(session, CLASSIFY_STATUS, json.dumps({"state": state, **extra}))
+        await session.commit()
+
+
+async def run_classify_all(tenant_id) -> None:
+    try:
+        await _run_classify_all(tenant_id)
+    except Exception as exc:
+        logger.exception("library classification failed")
+        await _status("failed", error=str(exc)[:500])
+
+
+async def _run_classify_all(tenant_id) -> None:
+    examined = changed = 0
+    async with SessionLocal() as session:
+        rules = (
+            await session.execute(
+                select(Rule)
+                .where(Rule.tenant_id == tenant_id, Rule.enabled)
+                .order_by(Rule.priority, Rule.created_at)
+            )
+        ).scalars().all()
+        live = (Document.tenant_id == tenant_id, Document.deleted_at.is_(None))
+        total = (
+            await session.execute(select(func.count(Document.id)).where(*live))
+        ).scalar_one()
+        await _status("running", examined=0, changed=0, total=total)
+
+        # Keyset batches: the text is needed, so it is loaded — but never more
+        # than one batch of it at a time, and each batch is released before
+        # the next is read.
+        last_id = None
+        while True:
+            q = select(Document).where(*live).order_by(Document.id).limit(BATCH)
+            if last_id is not None:
+                q = q.where(Document.id > last_id)
+            docs = (await session.execute(q)).scalars().all()
+            if not docs:
+                break
+            for doc in docs:
+                outcome = await classify_document(session, doc, rules)
+                if outcome.added_tags or outcome.new_title:
+                    changed += 1
+                last_id = doc.id
+            examined += len(docs)
+            await session.commit()
+            session.expunge_all()
+            # A rule auto-disabled mid-run must still be written: re-attach
+            # the rule rows the expunge just detached.
+            for rule in rules:
+                session.add(rule)
+            await _status(
+                "running", examined=examined, changed=changed, total=total
+            )
+        await session.commit()
+    await _status("done", examined=examined, changed=changed, total=total)
