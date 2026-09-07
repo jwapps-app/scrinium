@@ -31,6 +31,7 @@ from app.services.app_state import (
     resolve_archive_dpi,
 )
 from app.services.ocr import get_provider
+from app.services.ocr import tesseract as ocr_tesseract
 
 logger = logging.getLogger(__name__)
 
@@ -223,28 +224,38 @@ async def _run_with_progress(
     )
     last: tuple[str, int, int] | None = None
     last_beat = 0.0
-    while True:
-        done, _ = await asyncio.wait({task}, timeout=1.5)
-        if done:
-            break
-        # Liveness signal for orphan recovery; cheap, so every ~15s is plenty.
-        if time.monotonic() - last_beat >= 15:
-            last_beat = time.monotonic()
-            job.heartbeat_at = datetime.now(timezone.utc)
-            await session.commit()
-        try:
-            report = json.loads(progress_file.read_text())
-            snapshot = (
-                str(report["phase"]),
-                int(float(report["done"])),
-                int(float(report["total"])),
-            )
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-        if snapshot != last and snapshot[2] > 0:
-            last = snapshot
-            job.phase, job.pages_done, job.pages_total = snapshot
-            await session.commit()
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=1.5)
+            if done:
+                break
+            # Liveness signal for orphan recovery; cheap, so every ~15s is plenty.
+            if time.monotonic() - last_beat >= 15:
+                last_beat = time.monotonic()
+                job.heartbeat_at = datetime.now(timezone.utc)
+                await session.commit()
+            try:
+                report = json.loads(progress_file.read_text())
+                snapshot = (
+                    str(report["phase"]),
+                    int(float(report["done"])),
+                    int(float(report["total"])),
+                )
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if snapshot != last and snapshot[2] > 0:
+                last = snapshot
+                job.phase, job.pages_done, job.pages_total = snapshot
+                await session.commit()
+    except BaseException:
+        # The job is lost — a heartbeat commit failed because the database
+        # went away, or the lane was cancelled. The thread cannot be stopped,
+        # but the subprocess it is waiting on can: leave a cancel marker the
+        # watchdog checks, so the run stops within ten seconds rather than
+        # finishing a 700-page book for a result nobody will keep.
+        if not task.done():
+            ocr_tesseract.request_cancel(workdir)
+        raise
     return task.result()
 
 

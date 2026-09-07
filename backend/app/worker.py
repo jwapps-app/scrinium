@@ -594,7 +594,60 @@ async def pulse_loop() -> None:
 # full-resolution image, so a 400-page book at 400 DPI is gigabytes.
 TEMP_PREFIXES = (
     "ingest-", "downsample-", "thumb-", "gsdef-", "pdfa-", "sepscan-", "binder-",
+    # Not ours: ocrmypdf's and Ghostscript's own working directories. They are
+    # by far the largest — a 700-page book rasterised is 20 GB — and when the
+    # stall watchdog SIGKILLs the process group nothing cleans them up. Three
+    # of them, idle since the morning, filled the root disk at 16:29 on
+    # 2026-09-07 and put Postgres into a recovery loop it could not complete.
+    "ocrmypdf.io.", "gs_",
 )
+
+# A directory nobody has open and nobody has written to for this long is
+# dead: the stall watchdog kills any run that goes quiet for ocr_stall_minutes,
+# so a live job's directory is always fresher than this.
+IDLE_SECONDS = 30 * 60
+
+
+def _dirs_held_open() -> set:
+    """Every /tmp directory some process has as its cwd or an open file.
+
+    Read from /proc, so it costs nothing and needs no ps. A working directory
+    still in use always shows up here — ocrmypdf keeps its input open and
+    Ghostscript writes page images into it — which is what lets the sweep act
+    on idleness rather than on a day-long age.
+    """
+    import os
+    from pathlib import Path as _Path
+
+    root = _Path(tempfile.gettempdir())
+    held: set = set()
+    proc = _Path("/proc")
+    if not proc.is_dir():
+        return held
+    for pid_dir in proc.iterdir():
+        if not pid_dir.name.isdigit():
+            continue
+        candidates = []
+        try:
+            candidates.append(os.readlink(pid_dir / "cwd"))
+        except OSError:
+            pass
+        try:
+            for fd in (pid_dir / "fd").iterdir():
+                try:
+                    candidates.append(os.readlink(fd))
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        for target in candidates:
+            try:
+                rel = _Path(target).relative_to(root)
+            except ValueError:
+                continue
+            if rel.parts:
+                held.add(root / rel.parts[0])
+    return held
 
 
 def _sweep_stale_tempdirs(max_age_seconds: float | None = None) -> int:
@@ -603,8 +656,10 @@ def _sweep_stale_tempdirs(max_age_seconds: float | None = None) -> int:
     Called with no age at startup: this worker owns nothing yet, so anything
     present is by definition from a previous life — the same reasoning
     reclaim_interrupted_jobs uses for RUNNING jobs. Called periodically with an
-    age, so a directory belonging to a live job is never pulled out from under
-    it.
+    age, and then a directory goes when it is either older than that age, or
+    idle for IDLE_SECONDS with no process holding it open. The age alone was
+    not enough: it was the OCR ceiling, a day, and a killed job's 20 GB does
+    not wait a day to matter on a 63 GB disk shared with the database.
 
     This filled a 63 GB root disk with 42 GB of orphans over two days of
     restarts. Every OCR job then failed on FileNotFoundError writing its own
@@ -616,15 +671,21 @@ def _sweep_stale_tempdirs(max_age_seconds: float | None = None) -> int:
     from pathlib import Path as _Path
 
     root = _Path(tempfile.gettempdir())
-    cutoff = time.time() - max_age_seconds if max_age_seconds else None
+    now = time.time()
+    cutoff = now - max_age_seconds if max_age_seconds else None
+    held = _dirs_held_open() if cutoff is not None else set()
     freed = 0
     for prefix in TEMP_PREFIXES:
         for path in root.glob(f"{prefix}*"):
             try:
                 if not path.is_dir():
                     continue
-                if cutoff is not None and path.stat().st_mtime > cutoff:
-                    continue
+                if cutoff is not None:
+                    mtime = path.stat().st_mtime
+                    aged_out = mtime <= cutoff
+                    abandoned = mtime <= now - IDLE_SECONDS and path not in held
+                    if not (aged_out or abandoned):
+                        continue
                 shutil.rmtree(path, ignore_errors=True)
                 freed += 1
             except OSError:
@@ -649,7 +710,10 @@ async def maintenance_loop() -> None:
         # whether or not new work is being claimed, and the disk it fills is
         # shared with Postgres. Older than the OCR ceiling, so a directory
         # belonging to a job still legitimately running is never touched.
-        if now - last_tempsweep >= 3600:
+        # Every ten minutes, not every hour: four lanes rasterising books can
+        # hold 30 GB of live scratch, so an orphan of the same size has to be
+        # found within the hour, not within it plus the sweep interval.
+        if now - last_tempsweep >= 600:
             last_tempsweep = now
             try:
                 await asyncio.to_thread(

@@ -244,3 +244,110 @@ def test_the_sweep_runs_before_any_job_is_claimed():
     sweep = source.index("_sweep_stale_tempdirs")
     reclaim = source.index("reclaim_interrupted_jobs")
     assert sweep < reclaim, "clear the disk before taking work back"
+
+
+def test_the_sweep_knows_the_child_processes_own_directories():
+    """ocrmypdf and Ghostscript name their own scratch, and those are the
+    largest directories in /tmp by a wide margin. Three of them, idle since
+    the morning, filled the root disk on 2026-09-07 while the sweep walked
+    past them looking only for the app's own prefixes."""
+    from app import worker
+
+    assert "ocrmypdf.io." in worker.TEMP_PREFIXES
+    assert "gs_" in worker.TEMP_PREFIXES
+
+
+def test_an_idle_directory_nobody_holds_is_swept_before_the_age_limit(
+    tmp_path, monkeypatch
+):
+    """A day's age was the only criterion, and a killed job's scratch does not
+    take a day to matter. Idle past the stall window with no process attached
+    is dead — the watchdog would have killed anything that quiet."""
+    import os
+
+    from app import worker
+
+    monkeypatch.setattr(worker.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(worker, "_dirs_held_open", lambda: set())
+    abandoned = tmp_path / "ocrmypdf.io.dead"
+    abandoned.mkdir()
+    os.utime(abandoned, (0, 0))
+    recent = tmp_path / "ocrmypdf.io.working"
+    recent.mkdir()
+
+    freed = worker._sweep_stale_tempdirs(max_age_seconds=86400)
+
+    assert freed == 1
+    assert not abandoned.exists()
+    assert recent.exists(), "fresh scratch is a running job's"
+
+
+def test_a_directory_a_process_holds_open_survives_however_idle(tmp_path, monkeypatch):
+    import os
+    import time as _time
+
+    from app import worker
+
+    monkeypatch.setattr(worker.tempfile, "gettempdir", lambda: str(tmp_path))
+    held = tmp_path / "gs_busy"
+    held.mkdir()
+    # Idle past the stall window but well inside the day: only the
+    # held-open check stands between it and deletion.
+    os.utime(held, (_time.time() - 3600, _time.time() - 3600))
+    monkeypatch.setattr(worker, "_dirs_held_open", lambda: {held})
+
+    assert worker._sweep_stale_tempdirs(max_age_seconds=86400) == 0
+    assert held.exists()
+
+
+def test_a_cancelled_run_is_killed_by_its_own_watchdog(tmp_path, monkeypatch):
+    """A lane that loses its job must not leave the OCR subprocess running:
+    it rasterises into /tmp for nobody, and the recovered lane starts
+    another beside it. During the 2026-09-07 outage that doubled the
+    scratch on a disk already at its limit."""
+    import time as _time
+
+    from app.services.ocr import tesseract
+
+    monkeypatch.setattr(tesseract.time, "sleep", lambda s: None)
+    tesseract.request_cancel(tmp_path)
+    code, reason = tesseract._run_watched(["sleep", "30"], tmp_path)
+    assert code == 137 and "cancelled" in reason
+
+
+def test_cancellation_reaches_the_subprocess_when_the_lane_fails(tmp_path):
+    """The async side's only handle on the thread is the workdir; the marker
+    it leaves there is what the watchdog reads."""
+    from app.services.ocr import tesseract
+
+    assert not tesseract.cancel_requested(tmp_path)
+    tesseract.request_cancel(tmp_path)
+    assert tesseract.cancel_requested(tmp_path)
+
+
+def test_a_cancelled_apple_run_does_not_fall_back_to_tesseract(tmp_path, monkeypatch):
+    """The fallback exists for a sidecar that is down, not for a job that
+    is gone. When the four orphans of 2026-09-07 were killed, each started
+    a Tesseract run of its own in a directory that no longer existed."""
+    from app.services.ocr import apple, tesseract
+
+    class _Fallback:
+        called = False
+
+        def process(self, *a, **k):
+            _Fallback.called = True
+
+    provider = apple.AppleVisionProvider(fallback=_Fallback())
+    monkeypatch.setattr(provider, "sidecar_healthy", lambda: True)
+
+    def _boom(*a, **k):
+        raise tesseract.OCRError("killed: job cancelled")
+
+    monkeypatch.setattr(provider, "_ocr_via_sidecar", _boom)
+    tesseract.request_cancel(tmp_path)
+
+    import pytest as _pytest
+
+    with _pytest.raises(tesseract.OCRError):
+        provider.process(tmp_path / "input.pdf", tmp_path, "redo", True)
+    assert not _Fallback.called

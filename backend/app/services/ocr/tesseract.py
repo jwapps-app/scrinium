@@ -122,11 +122,30 @@ def pdfa_fallback_commands(cmd: list[str]) -> list[tuple[str, list[str]]]:
     ]
 
 
+# Written by the async side when the job it is babysitting is lost — the
+# database went away mid-heartbeat, the lane crashed — so the subprocess is
+# stopped instead of running to completion for nobody. Without it, a two-
+# minute Postgres outage left four ocrmypdf runs rasterising 700-page books
+# into /tmp with no job attached, while the recovered lanes started four more.
+CANCEL_FILE = "cancel"
+
+
+def cancel_requested(workdir: Path) -> bool:
+    return (workdir / CANCEL_FILE).exists()
+
+
+def request_cancel(workdir: Path) -> None:
+    try:
+        (workdir / CANCEL_FILE).touch()
+    except OSError:
+        pass
+
+
 def _run_watched(attempt: list[str], workdir: Path):
     """Run one ocrmypdf attempt under a stall watchdog instead of a fixed
     timeout: as long as the progress file keeps changing, the run may take
     as long as the book demands. Kill only after `ocr_stall_minutes` of
-    silence (wedged), or the `ocr_max_hours` backstop."""
+    silence (wedged), the `ocr_max_hours` backstop, or a cancel request."""
     progress_file = workdir / "progress"
     stall_limit = settings.ocr_stall_minutes * 60
     hard_limit = settings.ocr_max_hours * 3600
@@ -152,6 +171,9 @@ def _run_watched(attempt: list[str], workdir: Path):
             if code is not None:
                 break
             time.sleep(10)
+            if cancel_requested(workdir):
+                _kill_group(proc)
+                return 137, "killed: job cancelled"
             try:
                 snapshot = progress_file.read_text()
             except OSError:
@@ -233,7 +255,8 @@ def run_ocrmypdf(cmd: list[str], workdir: Path) -> None:
         if any(sig in last_error.lower() for sig in UNFIXABLE):
             break  # no escalation can fix this
         if returncode == 137 and "killed:" in last_error:
-            # A stalled run won't behave differently under the remedies.
+            # A stalled or cancelled run won't behave differently under the
+            # remedies.
             break
         # Log why, not just that. Only the final attempt's error reaches the
         # OCRError, so without this the reason the cheap attempts fail is
@@ -358,6 +381,9 @@ def _ocr_pages(pages: list[Path], workdir: Path) -> str:
         for done, future in enumerate(as_completed(pending), start=1):
             texts[pending[future]] = future.result()
             write_progress(workdir, "text-only", done, total)
+            if cancel_requested(workdir):
+                logger.warning("text-only fallback cancelled at %d/%d pages", done, total)
+                break
             if time.monotonic() > deadline:
                 logger.warning(
                     "text-only fallback stopped at %d/%d pages after %d minutes; "
@@ -385,6 +411,8 @@ def process_with_fallbacks(
             archive_path=archive, text=extract_text(archive), engine=engine
         )
     except OCRError as exc:
+        if cancel_requested(workdir):
+            raise
         # Logged on the way in, not on the way out: on a long document the
         # fallback runs for hours, and a line that only appears afterwards is
         # no help to anyone wondering what the worker is doing.

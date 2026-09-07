@@ -21,6 +21,7 @@ from app.services.ocr.tesseract import (
     MODE_FLAGS,
     PROGRESS_PLUGIN,
     OCRError,
+    cancel_requested,
     extract_text,
     process_with_fallbacks,
     rotate_flags,
@@ -54,6 +55,11 @@ class AppleVisionProvider:
         try:
             return self._ocr_via_sidecar(original, workdir, mode, pdfa)
         except Exception as exc:
+            if cancel_requested(workdir):
+                # The job this run belonged to is gone. Falling back here
+                # started a second, equally ownerless Tesseract run — four of
+                # them, in working directories that had already been removed.
+                raise
             logger.warning(
                 "Apple sidecar OCR failed (%s); falling back to Tesseract", exc
             )
