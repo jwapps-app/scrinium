@@ -11,7 +11,7 @@ PyJWT==2.*
 python-multipart==0.0.*
 ocrmypdf==16.*
 pypdf==5.*
-Pillow==11.*
+Pillow==12.*
 aiofiles==24.*
 httpx==0.28.*
 pyzbar==0.1.*
