@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import Blob, Document, DocumentStatus, Job, JobStatus
-from app.services import compress, push, similarity, storage, thumbnails
+from app.services import compress, push, similarity, storage, textdocs, thumbnails
 from app.services.classify import classify_document
 from app.services.dates import extract_document_date
 from app.services.app_state import (
@@ -34,6 +34,10 @@ from app.services.ocr import get_provider
 from app.services.ocr import tesseract as ocr_tesseract
 
 logger = logging.getLogger(__name__)
+
+
+class NativeTextError(Exception):
+    """A text-native file yielded no text; there is no OCR to fall back to."""
 
 
 def _page_count(pdf: Path) -> int | None:
@@ -82,11 +86,39 @@ def _run_ocr(
     max_dpi: int = 0,
     archive_format: str = "auto",
 ) -> IngestOutcome:
-    provider = get_provider(engine)
     # Blob paths are opaque (no extension); providers dispatch on suffix,
     # so hand them a properly-named symlink to the untouched original.
     source = workdir / f"input{suffix.lower()}"
     source.symlink_to(original)
+
+    # Text-native formats never go near ocrmypdf: there is nothing to
+    # rasterise. Upload extracts their text directly and skips the queue, but
+    # a Re-OCR — from the document page, a bulk action, or a batch that took
+    # "no archive" to mean "needs OCR" — sent them down this path anyway, and
+    # poppler's complaint that a .txt is not a PDF was flagged on the row as
+    # an OCR failure. Redoing a text-native document means extracting again.
+    if suffix.lower() in textdocs.TEXT_SUFFIXES:
+        text = textdocs.extract_text(source) or ""
+        if not text.strip():
+            raise NativeTextError(
+                "No readable text in this file. It is not a scan, so OCR does "
+                "not apply; the original is stored unchanged."
+            )
+        thumb_dir = workdir / "thumbwork"
+        thumb_dir.mkdir()
+        thumb_path = thumbnails.make_thumbnail(source, thumb_dir)
+        return IngestOutcome(
+            blob_id=None,
+            sha256=None,
+            size_bytes=None,
+            text=text,
+            engine="native",
+            page_count=None,
+            thumb=storage.store_file(thumb_path) if thumb_path else None,
+            archive_pdfa_wanted=False,
+        )
+
+    provider = get_provider(engine)
     # Cheap (samples a couple of pages) and only meaningful for PDFs; an
     # image original has no embedded images to probe.
     original_dpi = (

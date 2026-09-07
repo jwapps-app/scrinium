@@ -1,6 +1,7 @@
 """Archive downsampling: the compress helpers, the DPI setting, and the
 low-priority backfill fleet endpoint."""
 
+import pytest
 import tempfile
 import uuid
 from pathlib import Path
@@ -909,3 +910,37 @@ async def test_measured_is_accepted_by_the_settings_endpoint(client, auth):
     assert bad.status_code == 400
 
     await client.post("/api/settings/archive-format", headers=auth, json={"format": ""})
+
+
+
+def test_a_text_native_redo_extracts_instead_of_rasterising(tmp_path, monkeypatch):
+    """Two documents — a .txt and an .xlsx — were flagged "OCR failed:
+    poppler rasterize failed ... May not be a PDF file" after a batch Re-OCR.
+    Upload had extracted their text correctly; the redo path handed them to
+    ocrmypdf, which has nothing to do with them."""
+    from app.services import ingest
+
+    original = tmp_path / "blob"
+    original.write_text("Med supplies checklist\nbandages 12\n")
+    monkeypatch.setattr(ingest, "get_provider", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("ocrmypdf must not run for a text-native file")
+    ))
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    outcome = ingest._run_ocr(original, ".txt", "redo", workdir)
+
+    assert outcome.engine == "native"
+    assert "bandages" in outcome.text
+    assert outcome.blob_id is None, "text-native documents have no archive"
+
+
+def test_a_text_native_file_with_nothing_in_it_is_flagged_plainly(tmp_path):
+    from app.services import ingest
+
+    original = tmp_path / "blob"
+    original.write_text("   \n")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    with pytest.raises(ingest.NativeTextError, match="not a scan"):
+        ingest._run_ocr(original, ".txt", "redo", workdir)
