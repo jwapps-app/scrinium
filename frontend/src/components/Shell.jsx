@@ -290,6 +290,20 @@ export default function Shell({ children }) {
               <span className="side-count">{stats.review}</span>
             </Link>
           )}
+          {stats?.untagged > 0 && (
+            <Link
+              to="/?untagged=1"
+              className={`side-link untagged-link ${
+                onLibrary && params.get('untagged') === '1' ? 'active' : ''
+              }`}
+              title="Documents with no tag at all, whatever else they have"
+            >
+              <span className="side-label">
+                <Icon name="tag" className="side-icon" /> Untagged
+              </span>
+              <span className="side-count">{stats.untagged}</span>
+            </Link>
+          )}
           {stats && (
             <button
               className={`side-link side-button pause-toggle ${

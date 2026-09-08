@@ -481,3 +481,44 @@ async def test_the_list_pages_instead_of_stopping_at_the_first_screenful(
     assert len(first["items"]) == 2 and len(second["items"]) == 1
     # Disjoint, or "Show more" would repeat rows it had already shown.
     assert not {d["id"] for d in first["items"]} & {d["id"] for d in second["items"]}
+
+
+
+async def test_the_untagged_filter_means_no_tag_whatever_else_is_set(
+    client, auth, pdf_factory
+):
+    """The review bucket wants no tag, no correspondent and no type at once,
+    so a document filed under a correspondent but never tagged was in no
+    list anywhere. This filter asks the one question: has it a tag?"""
+    corr = (
+        await client.post("/api/correspondents", headers=auth, json={"name": _name("c")})
+    ).json()
+    tag = (await client.post("/api/tags", headers=auth, json={"name": _name("t")})).json()
+    filed_untagged = (
+        await upload(client, auth, pdf_factory(text=_name("u1")), "u1.pdf")
+    ).json()
+    await client.patch(
+        f"/api/documents/{filed_untagged['id']}", headers=auth,
+        json={"correspondent_id": corr["id"]},
+    )
+    tagged = (await upload(client, auth, pdf_factory(text=_name("u2")), "u2.pdf")).json()
+    await client.patch(
+        f"/api/documents/{tagged['id']}", headers=auth, json={"tag_ids": [tag["id"]]}
+    )
+
+    listed = (
+        await client.get("/api/documents?untagged=true&limit=200", headers=auth)
+    ).json()
+    ids = {d["id"] for d in listed["items"]}
+    assert filed_untagged["id"] in ids
+    assert tagged["id"] not in ids
+
+    # And as a bulk target — the whole point: select every untagged
+    # document and tag it in one go.
+    resp = await client.post(
+        "/api/documents/bulk", headers=auth,
+        json={"filter": {"untagged": True}, "action": "add_tags", "tag_ids": [tag["id"]]},
+    )
+    assert resp.json()["processed"] == listed["total"]
+    after = (await client.get("/api/documents?untagged=true", headers=auth)).json()
+    assert after["total"] == 0

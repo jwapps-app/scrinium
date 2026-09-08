@@ -443,6 +443,7 @@ def _filter_conditions(
     needs_review: bool = False,
     expiring: bool = False,
     non_pdfa: bool = False,
+    untagged: bool = False,
     title_q: str | None = None,
 ) -> list:
     """The library list's filter set, shared with the bulk endpoint.
@@ -476,6 +477,12 @@ def _filter_conditions(
             conditions.append(Document.status.in_(status_filter.split(",")))
     if tag_id:
         conditions.append(Document.tags.any(Tag.id == tag_id))
+    if untagged:
+        # No tag at all, whatever else the document has. Distinct from the
+        # review bucket, which also wants no correspondent and no type: a
+        # document filed under a correspondent but never tagged is invisible
+        # there, and the tag filter can only select documents that have one.
+        conditions.append(~Document.tags.any())
     if correspondent_id:
         conditions.append(Document.correspondent_id == correspondent_id)
     if doc_type_id:
@@ -514,6 +521,7 @@ async def list_documents(
     needs_review: bool = False,
     expiring: bool = False,
     non_pdfa: bool = False,
+    untagged: bool = False,
     title_q: str | None = None,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1)] = 50,
@@ -530,6 +538,7 @@ async def list_documents(
         needs_review=needs_review,
         expiring=expiring,
         non_pdfa=non_pdfa,
+        untagged=untagged,
         title_q=title_q,
     )
     total = (
@@ -782,6 +791,16 @@ async def _compute_stats(user: CurrentUser, db: DB) -> dict:
         )
     ).scalar_one()
 
+    untagged_count = (
+        await db.execute(
+            select(func.count(Document.id)).where(
+                Document.tenant_id == user.tenant_id,
+                Document.deleted_at.is_(None),
+                ~Document.tags.any(),
+            )
+        )
+    ).scalar_one()
+
     # Current-wave progress: cumulative completed since the wave anchored,
     # over the wave's high-water size. Restart-proof (see worker pulse).
     base_raw = await get_value(db, "wave_baseline")
@@ -801,6 +820,7 @@ async def _compute_stats(user: CurrentUser, db: DB) -> dict:
         "flagged": counts.get(DocumentStatus.FLAGGED, 0),
         "trash": trash_count,
         "non_pdfa": non_pdfa_count,
+        "untagged": untagged_count,
         "recent": [{"id": str(r[0]), "title": r[1]} for r in recent_added],
         "paused": await get_flag(db, PROCESSING_PAUSED),
         "running": running,

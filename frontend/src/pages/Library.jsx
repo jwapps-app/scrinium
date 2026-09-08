@@ -94,6 +94,7 @@ export default function Library() {
   const q = params.get('q')
   const expiring = params.get('expiring') === '1'
   const nonPdfa = params.get('non_pdfa') === '1'
+  const untagged = params.get('untagged') === '1'
 
   function setParam(key, value) {
     const next = new URLSearchParams(params)
@@ -120,6 +121,7 @@ export default function Library() {
       if (engine) search.set('engine', engine)
       if (expiring) search.set('expiring', 'true')
       if (nonPdfa) search.set('non_pdfa', 'true')
+      if (untagged) search.set('untagged', 'true')
       if (from) search.set('date_from', from)
       if (to) search.set('date_to', to)
       search.set('sort', sort)
@@ -127,7 +129,7 @@ export default function Library() {
       search.set('limit', String(PAGE_SIZE))
       return search.toString()
     },
-    [status, tag, correspondent, doctype, engine, sort, from, to, expiring, nonPdfa],
+    [status, tag, correspondent, doctype, engine, sort, from, to, expiring, nonPdfa, untagged],
   )
 
   const load = useCallback(async () => {
@@ -162,7 +164,7 @@ export default function Library() {
   // replaces rather than merges into someone else's results.
   useEffect(() => {
     setDocs([])
-  }, [status, tag, correspondent, doctype, engine, sort, from, to, expiring, nonPdfa])
+  }, [status, tag, correspondent, doctype, engine, sort, from, to, expiring, nonPdfa, untagged])
 
   async function loadMorePage() {
     setPageBusy(true)
@@ -293,7 +295,7 @@ export default function Library() {
   const tagName = tag ? tags.find((t) => t.id === tag)?.name : null
   const inTrash = status === 'trash'
   const hasFilters =
-    status || tag || correspondent || doctype || engine || from || to || expiring || nonPdfa
+    status || tag || correspondent || doctype || engine || from || to || expiring || nonPdfa || untagged
 
   async function saveCurrentView() {
     const name = window.prompt('Name this view:')
@@ -347,6 +349,7 @@ export default function Library() {
       date_to: to || null,
       expiring,
       non_pdfa: nonPdfa,
+      untagged,
     }
   }
 

@@ -192,6 +192,7 @@ class DocumentFilter(BaseModel):
     needs_review: bool = False
     expiring: bool = False
     non_pdfa: bool = False
+    untagged: bool = False
 
 
 class BulkActionRequest(BaseModel):
