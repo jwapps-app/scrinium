@@ -71,6 +71,36 @@ export default function Insights() {
     }
   }
 
+  const [converting, setConverting] = useState(false)
+
+  async function convertPdfa() {
+    if (
+      !window.confirm(
+        `Convert ${storage.non_pdfa.toLocaleString()} archives to PDF/A? A direct conversion of the finished archive — no re-OCR, seconds per document, originals never touched. Runs at the lowest priority.`,
+      )
+    )
+      return
+    setConverting(true)
+    let queued = 0
+    try {
+      for (let i = 0; i < 1000; i++) {
+        const r = await apiJson('/api/documents/convert-pdfa', { method: 'POST' })
+        queued += r.queued
+        if (r.queued === 0 || r.remaining === 0) break
+      }
+      const fresh = await apiJson('/api/documents/downsample-candidates').catch(
+        () => null,
+      )
+      if (fresh) setStorage(fresh)
+      window.alert(`${queued.toLocaleString()} archives queued for PDF/A conversion.`)
+      window.dispatchEvent(new Event('library-changed'))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setConverting(false)
+    }
+  }
+
   async function reclaim() {
     if (
       !window.confirm(
@@ -371,6 +401,16 @@ export default function Insights() {
                     </>
                   )}
                 </p>
+                {storage.non_pdfa > 0 && (
+                  <div className="organize-head">
+                    <strong>
+                      {storage.non_pdfa.toLocaleString()} archives can be converted to PDF/A
+                    </strong>
+                    <button disabled={converting} onClick={convertPdfa}>
+                      {converting ? 'Queueing…' : 'Convert to PDF/A'}
+                    </button>
+                  </div>
+                )}
               </section>
             )}
 

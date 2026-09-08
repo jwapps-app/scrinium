@@ -994,3 +994,139 @@ async def test_an_archive_already_tried_at_the_cap_is_not_a_candidate_again(clie
                 )
             )
         ).scalar_one() == 1
+
+
+def test_pdfa_validity_ignores_size_for_a_born_digital_archive(monkeypatch, tmp_path):
+    """Three of the four shortfalls tried came out larger as PDF/A. For a
+    born-digital document that is not a reason to refuse — the fonts are the
+    point — so this check is the downsample's minus the size test."""
+    from app.services import compress
+
+    plain = tmp_path / "plain.pdf"
+    plain.write_bytes(b"small")
+    pdfa = tmp_path / "pdfa.pdf"
+    pdfa.write_bytes(b"considerably larger output")
+    monkeypatch.setattr(compress, "_page_count", lambda p: 12)
+    monkeypatch.setattr(compress, "_has_text", lambda p: True)
+    monkeypatch.setattr(compress, "is_pdfa", lambda p: True)
+    assert compress.pdfa_is_valid(plain, pdfa) is None
+
+    monkeypatch.setattr(compress, "is_pdfa", lambda p: False)
+    assert compress.pdfa_is_valid(plain, pdfa) == "not_pdfa"
+    monkeypatch.setattr(compress, "_has_text", lambda p: p == plain)
+    assert compress.pdfa_is_valid(plain, pdfa) == "lost_text"
+
+
+def test_ingest_converts_directly_when_ocrmypdf_falls_back_from_pdfa(monkeypatch, tmp_path):
+    """The remedy chain drops PDF/A at its third rung; a direct Ghostscript
+    pass is a different converter and succeeded on every document it was
+    tried on. So it is the last rung, before the archive is stored."""
+    from app.services import compress, ingest, storage, thumbnails
+
+    class _Result:
+        text = "born digital text"
+        engine = "stub"
+
+        def __init__(self, archive):
+            self.archive_path = archive
+
+    class _Provider:
+        def process(self, source, workdir, mode, pdfa):
+            archive = workdir / "archive.pdf"
+            archive.write_bytes(b"%PDF-1.7 plain fallback\n")
+            return _Result(archive)
+
+    monkeypatch.setattr(ingest, "get_provider", lambda engine: _Provider())
+    monkeypatch.setattr(compress, "max_image_dpi", lambda path: 0)  # born-digital
+    monkeypatch.setattr(compress, "over_cap", lambda dpi, cap: False)
+    # Plain until converted; the direct copy is PDF/A.
+    # By file name: pytest's tmp_path carries the test's own name, and this
+    # test's name contains "direct", so matching on the whole path made
+    # every file look like PDF/A and skipped the rung under test.
+    monkeypatch.setattr(
+        compress, "is_pdfa", lambda path: Path(path).name == "archive_direct_pdfa.pdf"
+    )
+
+    def _convert(src, dst):
+        dst.write_bytes(b"%PDF-1.7 pdfa\n")
+        return True
+
+    monkeypatch.setattr(compress, "convert_to_pdfa", _convert)
+    monkeypatch.setattr(compress, "pdfa_is_valid", lambda plain, pdfa: None)
+    monkeypatch.setattr(thumbnails, "make_thumbnail", lambda src, out: None)
+    monkeypatch.setattr(ingest, "_page_count", lambda path: 3)
+    stored = {}
+    monkeypatch.setattr(
+        storage, "store_file", lambda path: stored.setdefault("path", path) and (uuid.uuid4(), "sha", 1)
+    )
+
+    original = tmp_path / "blob"
+    original.write_bytes(b"%PDF-1.7\n")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    outcome = ingest._run_ocr(original, ".pdf", "redo", workdir, None, 300, "measured")
+
+    assert outcome.archive_pdfa is True
+    assert outcome.archive_pdfa_wanted is True
+    assert stored["path"].name == "archive_direct_pdfa.pdf"
+
+
+async def test_convert_pdfa_queues_only_shortfalls_and_drops_them_from_the_count(client, auth):
+    import uuid as _uuid
+
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models import Blob, Document, Job, User
+
+    async with SessionLocal() as session:
+        tenant_id = (await session.execute(sa.select(User.tenant_id).limit(1))).scalar_one()
+        blob = Blob(id=_uuid.uuid4(), sha256="1" * 64, size_bytes=1, mime_type="application/pdf")
+        session.add(blob)
+        await session.flush()
+        short = Document(
+            tenant_id=tenant_id, title="fell short", original_filename="s.pdf",
+            original_blob_id=blob.id, archive_blob_id=blob.id, status="ready",
+            archive_pdfa=False, archive_pdfa_wanted=True, original_dpi=0,
+        )
+        fine = Document(
+            tenant_id=tenant_id, title="plain on purpose", original_filename="p.pdf",
+            original_blob_id=blob.id, archive_blob_id=blob.id, status="ready",
+            archive_pdfa=False, archive_pdfa_wanted=False, original_dpi=300,
+        )
+        session.add_all([short, fine])
+        await session.commit()
+        short_id, fine_id = short.id, fine.id
+
+    before = (await client.get("/api/documents/downsample-candidates", headers=auth)).json()
+    resp = await client.post("/api/documents/convert-pdfa", headers=auth)
+    assert resp.status_code == 200
+    assert resp.json()["queued"] >= 1
+    after = (await client.get("/api/documents/downsample-candidates", headers=auth)).json()
+    assert after["non_pdfa"] == 0, "queued shortfalls leave the count"
+    assert before["non_pdfa"] >= 1
+
+    async with SessionLocal() as session:
+        kinds = {
+            doc_id: kind
+            for doc_id, kind in (
+                await session.execute(
+                    sa.select(Job.document_id, Job.kind).where(
+                        Job.document_id.in_([short_id, fine_id]), Job.kind == "pdfa"
+                    )
+                )
+            ).all()
+        }
+    assert short_id in kinds and fine_id not in kinds
+
+
+def test_the_worker_dispatches_pdfa_jobs_and_the_handler_swaps_carefully():
+    import inspect
+
+    from app import worker
+    from app.services import compress
+
+    assert 'job.kind == "pdfa"' in inspect.getsource(worker.claim_and_run)
+    source = inspect.getsource(compress.process_pdfa_job)
+    assert "with_for_update=True" in source, "the swap must be compare-and-swapped"
+    assert "pdfa_is_valid" in source, "size must not decide a born-digital conversion"

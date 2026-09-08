@@ -240,6 +240,26 @@ def convert_to_pdfa(src: Path, dst: Path) -> bool:
     return True
 
 
+def pdfa_is_valid(plain: Path, pdfa: Path) -> str | None:
+    """None when a PDF/A copy of `plain` is fit to replace it — no size test.
+
+    For a born-digital document PDF/A is chosen to embed the fonts against
+    the decades, not to save bytes, so a copy that came out larger is still
+    the right archive. It has to keep every page and keep the text; that is
+    the whole bar.
+    """
+    pages = _page_count(plain)
+    if pages is None:
+        return "unreadable"
+    if _page_count(pdfa) != pages:
+        return "page_mismatch"
+    if _has_text(plain) and not _has_text(pdfa):
+        return "lost_text"
+    if not is_pdfa(pdfa):
+        return "not_pdfa"
+    return None
+
+
 def pdfa_is_better(plain: Path, pdfa: Path) -> str | None:
     """None when the PDF/A copy should be kept instead of the plain one.
 
@@ -438,6 +458,104 @@ async def process_downsample_job(
 
     # Free the superseded full-resolution archive (blobs aren't deduped, so no
     # other document can be relying on it).
+    old_blob = await session.get(Blob, old_archive_id)
+    if old_blob is not None:
+        await session.delete(old_blob)
+        await session.commit()
+    storage.delete_blob(old_archive_id)
+
+
+async def process_pdfa_job(session: AsyncSession, job: Job) -> None:
+    """Convert a document's archive to PDF/A in place.
+
+    For the 44 born-digital documents whose PDF/A conversion failed inside
+    the OCR chain on 11 July and fell back to plain. Re-running OCR would be
+    the wrong tool — nothing about the text needs redoing — and a direct
+    Ghostscript pass over the finished archive converts every one that was
+    tried in about a second. Same shape as the downsample: the document stays
+    READY throughout, the swap is compare-and-swapped against a concurrent
+    job, and the original is never touched.
+    """
+    document = await session.get(Document, job.document_id)
+    if document is None or document.archive_blob_id is None:
+        job.status = JobStatus.FAILED if document is None else JobStatus.DONE
+        job.error = "document no longer exists" if document is None else None
+        job.finished_at = datetime.now(timezone.utc)
+        await session.commit()
+        return
+
+    job.status = JobStatus.RUNNING
+    job.phase = "finishing"
+    job.started_at = datetime.now(timezone.utc)
+    job.attempts += 1
+    await session.commit()
+
+    archive_at_start = document.archive_blob_id
+    archive_path = storage.blob_file(document.archive_blob_id)
+    if await asyncio.to_thread(is_pdfa, archive_path):
+        # Already there — the marker was just stale.
+        document.archive_pdfa = True
+        job.status = JobStatus.DONE
+        job.finished_at = datetime.now(timezone.utc)
+        await session.commit()
+        return
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="pdfa-") as tmp:
+            out = Path(tmp) / "archive.pdf"
+
+            def convert() -> str | None:
+                if not convert_to_pdfa(archive_path, out):
+                    return "gs_failed"
+                return pdfa_is_valid(archive_path, out)
+
+            why = await _run_with_heartbeat(session, job, convert)
+            if why is not None:
+                logger.info("pdfa: %s could not be converted (%s)", document.id, why)
+                job.status = JobStatus.FAILED
+                job.error = f"PDF/A conversion declined: {why}"
+                job.finished_at = datetime.now(timezone.utc)
+                await session.commit()
+                return
+            blob_id, sha256, size = await asyncio.to_thread(storage.store_file, out)
+    except Exception as exc:
+        logger.warning("pdfa conversion failed for document %s: %s", document.id, exc)
+        job.status = JobStatus.FAILED
+        job.error = str(exc)[:4000]
+        job.finished_at = datetime.now(timezone.utc)
+        await session.commit()
+        return
+
+    await session.refresh(document, with_for_update=True)
+    if document.archive_blob_id != archive_at_start:
+        logger.warning(
+            "document %s archive changed under pdfa job %s; discarding",
+            document.id, job.id,
+        )
+        storage.delete_blob(blob_id)
+        job.status = JobStatus.DONE
+        job.error = "superseded by a concurrent job"
+        job.finished_at = datetime.now(timezone.utc)
+        await session.commit()
+        return
+
+    old_archive_id = document.archive_blob_id
+    session.add(
+        Blob(id=blob_id, sha256=sha256, size_bytes=size, mime_type="application/pdf")
+    )
+    document.archive_blob_id = blob_id
+    document.archive_pdfa = True
+    document.archive_pdfa_wanted = True
+    # A new archive: whatever a downsample learned about the old one no
+    # longer applies, and the DPI is re-measured on the next pass.
+    document.downsample_tried_blob = None
+    document.downsample_tried_dpi = None
+    document.downsample_note = None
+    document.archive_dpi = None
+    job.status = JobStatus.DONE
+    job.finished_at = datetime.now(timezone.utc)
+    await session.commit()
+
     old_blob = await session.get(Blob, old_archive_id)
     if old_blob is not None:
         await session.delete(old_blob)

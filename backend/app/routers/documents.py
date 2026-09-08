@@ -1013,16 +1013,51 @@ async def downsample_candidates(user: CurrentUser, db: DB) -> dict:
     ).scalar_one()
     non_pdfa = (
         await db.execute(
-            select(func.count(Document.id)).where(
-                Document.tenant_id == user.tenant_id,
-                Document.deleted_at.is_(None),
-                *_pdfa_shortfall(),
-            )
+            select(func.count(Document.id)).where(*_pdfa_convertible(user.tenant_id))
         )
     ).scalar_one()
     return {
         "count": count, "target_dpi": dpi, "enabled": dpi > 0, "non_pdfa": non_pdfa
     }
+
+
+def _pdfa_convertible(tenant_id):
+    """Shortfalls a conversion job can be queued for: not already in a job,
+    so the count drops as soon as the button is pressed, the way the
+    downsample count does."""
+    active_jobs = select(Job.document_id).where(
+        Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])
+    )
+    return (
+        Document.tenant_id == tenant_id,
+        Document.deleted_at.is_(None),
+        Document.status == DocumentStatus.READY,
+        ~Document.id.in_(active_jobs),
+        *_pdfa_shortfall(),
+    )
+
+
+@router.post("/convert-pdfa")
+async def convert_pdfa(
+    user: AdminUser, db: DB, limit: Annotated[int, Query(ge=1)] = 1000
+) -> dict:
+    """Queue a PDF/A conversion for every archive that was meant to be PDF/A
+    and fell back to plain. Lowest priority; a direct Ghostscript pass over
+    the finished archive, seconds per document, original untouched."""
+    ids = (
+        await db.execute(
+            select(Document.id).where(*_pdfa_convertible(user.tenant_id)).limit(limit)
+        )
+    ).scalars().all()
+    for doc_id in ids:
+        db.add(Job(document_id=doc_id, kind="pdfa", mode="skip", priority=5))
+    await db.flush()
+    remaining = (
+        await db.execute(
+            select(func.count(Document.id)).where(*_pdfa_convertible(user.tenant_id))
+        )
+    ).scalar_one()
+    return {"queued": len(ids), "remaining": remaining}
 
 
 @router.post("/downsample-archives")

@@ -29,7 +29,7 @@ from app.services.app_state import (
     set_value,
 )
 from app.services import compress, page_index, similarity
-from app.services.compress import process_downsample_job
+from app.services.compress import process_downsample_job, process_pdfa_job
 from app.services.deletion import purge_expired, sweep_upload_sessions
 from app.services.export import run_export
 from app.services.ingest import process_job
@@ -377,6 +377,8 @@ async def claim_and_run() -> bool:
             if job.kind == "downsample":
                 target = await resolve_archive_dpi(session)
                 await process_downsample_job(session, job, target)
+            elif job.kind == "pdfa":
+                await process_pdfa_job(session, job)
             else:
                 await process_job(session, job)
         except Exception as exc:

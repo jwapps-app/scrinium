@@ -161,6 +161,26 @@ def _run_ocr(
                     "archive left at %s DPI (cap %s): %s", dpi, max_dpi, why
                 )
 
+    # PDF/A was asked for and ocrmypdf's own conversion fell back to plain —
+    # the remedy chain drops PDF/A at its third rung. A direct Ghostscript
+    # pass over the finished archive is a different converter and succeeds
+    # where that failed: every one of the 44 documents stranded this way on
+    # 11 July converted cleanly when tried. Size is not a consideration for
+    # a born-digital document; the fonts are the point.
+    if (
+        archive_path is not None
+        and pdfa_wanted
+        and not compress.is_pdfa(archive_path)
+    ):
+        direct = workdir / "archive_direct_pdfa.pdf"
+        if compress.convert_to_pdfa(archive_path, direct):
+            why = compress.pdfa_is_valid(archive_path, direct)
+            if why is None:
+                logger.info("archive converted to PDF/A directly after ocrmypdf fell back")
+                archive_path = direct
+            else:
+                logger.info("direct PDF/A conversion declined (%s)", why)
+
     # `measured`: for a scan, weigh the two formats instead of predicting.
     #
     # Which one wins is genuinely unpredictable from anything knowable at
