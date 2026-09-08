@@ -944,3 +944,53 @@ def test_a_text_native_file_with_nothing_in_it_is_flagged_plainly(tmp_path):
     workdir.mkdir()
     with pytest.raises(ingest.NativeTextError, match="not a scan"):
         ingest._run_ocr(original, ".txt", "redo", workdir)
+
+
+async def test_an_archive_already_tried_at_the_cap_is_not_a_candidate_again(client, auth):
+    """0031 recorded the archive's own DPI as the target it was tried at, so
+    everything marked "not smaller" at 400 read as tried above a 300 cap and
+    came back on every Reclaim pass. 475 of the 592 candidates were this."""
+    import uuid as _uuid
+
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models import Blob, Document, User
+    from app.routers.documents import _downsample_eligible
+
+    async with SessionLocal() as session:
+        tenant_id = (await session.execute(sa.select(User.tenant_id).limit(1))).scalar_one()
+        blob = Blob(id=_uuid.uuid4(), sha256="0" * 64, size_bytes=1, mime_type="application/pdf")
+        session.add(blob)
+        await session.flush()
+        doc = Document(
+            tenant_id=tenant_id, title="tried", original_filename="t.pdf",
+            original_blob_id=blob.id, archive_blob_id=blob.id, status="ready",
+            archive_dpi=400, downsample_note="not_smaller",
+            downsample_tried_blob=blob.id,
+            downsample_tried_dpi=400,  # the backfill's guess
+        )
+        session.add(doc)
+        await session.commit()
+        doc_id = doc.id
+
+        def eligible():
+            return sa.select(sa.func.count(Document.id)).where(
+                Document.id == doc_id, *_downsample_eligible(tenant_id, 300)
+            )
+
+        assert (await session.execute(eligible())).scalar_one() == 1, "reproduces the bug"
+        # What 0034 does to such a row.
+        await session.execute(
+            sa.update(Document).where(Document.id == doc_id).values(downsample_tried_dpi=300)
+        )
+        await session.commit()
+        assert (await session.execute(eligible())).scalar_one() == 0
+        # And lowering the cap below the recorded target re-opens it, as intended.
+        assert (
+            await session.execute(
+                sa.select(sa.func.count(Document.id)).where(
+                    Document.id == doc_id, *_downsample_eligible(tenant_id, 200)
+                )
+            )
+        ).scalar_one() == 1
