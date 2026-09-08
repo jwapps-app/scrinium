@@ -375,3 +375,42 @@ def test_the_pdf_viewer_ships_its_jpeg2000_decoder():
         src = (web / "src" / "components" / name).read_text()
         assert "getDocument(" not in src, f"{name} must go through loadPdf()"
         assert "loadPdf(" in src, f"{name} should use the shared loader"
+
+
+async def test_a_stable_export_is_replaced_in_place_and_never_half_written(
+    client, auth, pdf_factory
+):
+    """The scheduled export used to land under a new timestamped name each
+    night, so nothing outside the app could point at it. With `stable` it
+    builds beside the live folder and swaps in when complete: the name never
+    changes, the old tree goes, and an unfinished build is cleared next time."""
+    import os
+
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models import User
+    from app.services import export
+    from app.services.export import _run_export
+
+    await upload(client, auth, pdf_factory(text=_name("stable")), "stable.pdf")
+    async with SessionLocal() as session:
+        tenant_id = (await session.execute(sa.select(User.tenant_id).limit(1))).scalar_one()
+
+    dest = os.path.join(os.environ["DATA_DIR"], "export")
+    os.makedirs(dest, exist_ok=True)
+    # Debris from a build that died mid-way must not survive.
+    os.makedirs(os.path.join(dest, f"{export.BUILDING_PREFIX}old"), exist_ok=True)
+
+    await _run_export(tenant_id, fmt="folder", stable="current")
+    current = os.path.join(dest, "current")
+    assert os.path.isfile(os.path.join(current, "manifest.json"))
+    assert not os.path.exists(os.path.join(dest, f"{export.BUILDING_PREFIX}old"))
+
+    # Something only the first tree had — the swap must not merge into it.
+    marker = os.path.join(current, "stale-from-last-night")
+    open(marker, "w").close()
+    await _run_export(tenant_id, fmt="folder", stable="current")
+    assert os.path.isfile(os.path.join(current, "manifest.json"))
+    assert not os.path.exists(marker), "the old tree was replaced, not added to"
+    assert not [n for n in os.listdir(dest) if n.startswith((export.BUILDING_PREFIX, export.PREVIOUS_PREFIX))]

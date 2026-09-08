@@ -933,6 +933,9 @@ async def _expiry_notice() -> None:
         await session.commit()
 
 
+SCHEDULED_EXPORT_NAME = "current"
+
+
 async def _scheduled_export() -> None:
     """Kick a full-library export when the newest zip is older than the
     schedule; prune beyond EXPORT_KEEP. Skips while a big import runs
@@ -941,9 +944,16 @@ async def _scheduled_export() -> None:
 
     dest = Path(settings.data_dir) / "export"
     newest = 0.0
+    # The scheduled export replaces export/current in place — one folder
+    # whose name never changes, so a bookmark, a Plex library or an rsync
+    # exclusion keeps meaning the same thing. Manual exports still land as
+    # timestamped snapshots beside it; both count towards "recent enough".
     exports = (
-        sorted(dest.glob("library-export-*")) if dest.is_dir() else []
+        sorted(dest.glob("library-export-*")) + [dest / SCHEDULED_EXPORT_NAME]
+        if dest.is_dir()
+        else []
     )
+    exports = [e for e in exports if e.exists()]
     if exports:
         newest = max(e.stat().st_mtime for e in exports)
     if time.time() - newest < settings.export_every_days * 86400:
@@ -955,7 +965,7 @@ async def _scheduled_export() -> None:
     if tenant_id is None:
         return
     logger.info("scheduled export starting")
-    await run_export(tenant_id)
+    await run_export(tenant_id, stable=SCHEDULED_EXPORT_NAME)
     keep = max(1, settings.export_keep)
     import shutil as _shutil
 

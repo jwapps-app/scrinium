@@ -70,13 +70,20 @@ async def _status(state: str, **extra) -> None:
 
 
 async def run_export(
-    tenant_id, fmt: str | None = None, part_gb: int | None = None
+    tenant_id,
+    fmt: str | None = None,
+    part_gb: int | None = None,
+    stable: str | None = None,
 ) -> None:
+    """`stable` names a folder that is replaced in place rather than a new
+    timestamped one — what the scheduled export uses, so a bookmark, a Plex
+    library or an rsync target keeps pointing at something that exists."""
     try:
         await _run_export(
             tenant_id,
             fmt or settings.export_format,
             part_gb or settings.export_part_gb,
+            stable=stable,
         )
     except Exception as exc:
         logger.exception("library export failed")
@@ -120,10 +127,29 @@ def plan_parts(entries: list[tuple], cap_bytes: int) -> list[list[tuple]]:
     return [p for p in parts if p]
 
 
-async def _run_export(tenant_id, fmt: str = "folder", part_gb: int = 10) -> None:
+# A stable export is built beside the live one and swapped in. Anything left
+# with these prefixes is a build or a retirement that did not finish.
+BUILDING_PREFIX = ".building-"
+PREVIOUS_PREFIX = ".previous-"
+
+
+def _clear_unfinished(dest_dir: Path) -> None:
+    import shutil
+
+    for stale in list(dest_dir.glob(f"{BUILDING_PREFIX}*")) + list(
+        dest_dir.glob(f"{PREVIOUS_PREFIX}*")
+    ):
+        shutil.rmtree(stale, ignore_errors=True)
+
+
+async def _run_export(
+    tenant_id, fmt: str = "folder", part_gb: int = 10, stable: str | None = None
+) -> None:
     dest_dir = Path(settings.data_dir) / "export"
     dest_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    if stable:
+        await asyncio.to_thread(_clear_unfinished, dest_dir)
 
     async with SessionLocal() as session:
         live = (Document.tenant_id == tenant_id, Document.deleted_at.is_(None))
@@ -309,7 +335,11 @@ async def _run_export(tenant_id, fmt: str = "folder", part_gb: int = 10) -> None
     import os
     import shutil
 
-    root = dest_dir / f"library-export-{stamp}"
+    # A stable export is built under a hidden name and moved into place
+    # only when complete, so the folder people point things at is never
+    # half-written and is missing for the length of two renames.
+    final = dest_dir / (stable if stable else f"library-export-{stamp}")
+    root = dest_dir / f"{BUILDING_PREFIX}{stamp}" if stable else final
 
     def build_tree() -> tuple[int, int]:
         written = linked = 0
@@ -329,14 +359,26 @@ async def _run_export(tenant_id, fmt: str = "folder", part_gb: int = 10) -> None
         return written, linked
 
     written, linked = await asyncio.to_thread(build_tree)
+
+    if stable:
+        def swap() -> None:
+            previous = dest_dir / f"{PREVIOUS_PREFIX}{stamp}"
+            if final.exists():
+                os.rename(final, previous)
+            os.rename(root, final)
+            if previous.exists():
+                shutil.rmtree(previous, ignore_errors=True)
+
+        await asyncio.to_thread(swap)
+
     await _status(
         "done",
         total=total,
         files=written,
         hardlinked=linked,
-        path=str(root),
+        path=str(final),
     )
     logger.info(
         "library export done: %d docs → %s (%d/%d hardlinked)",
-        total, root, linked, written,
+        total, final, linked, written,
     )
