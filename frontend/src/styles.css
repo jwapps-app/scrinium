@@ -2619,3 +2619,15 @@ button.linklike {
   color: var(--muted);
   font-style: italic;
 }
+
+/* An API token shown once: wide enough to read in full, selectable, never
+   wrapped mid-token so a copy by hand cannot lose a character. */
+.token-secret {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  user-select: all;
+  white-space: nowrap;
+  overflow-x: auto;
+  padding: 0.35rem 0.5rem;
+  flex: 1;
+}

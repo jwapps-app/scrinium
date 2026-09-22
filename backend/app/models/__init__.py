@@ -1,3 +1,4 @@
+from app.models.api_token import ApiToken
 from app.models.app_setting import AppSetting
 from app.models.blob import Blob
 from app.models.device import DeviceToken
@@ -24,6 +25,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 
 __all__ = [
+    "ApiToken",
     "AppSetting",
     "Blob",
     "DeviceToken",

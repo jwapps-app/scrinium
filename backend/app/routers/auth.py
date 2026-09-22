@@ -6,10 +6,13 @@ from sqlalchemy import delete, func, select
 from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
-from app.deps import DB, AdminUser, CurrentUser
-from app.models import RefreshToken, Tenant, User
+from app.deps import DB, AdminUser, CurrentUser, SessionUser
+from app.models import ApiToken, RefreshToken, Tenant, User
 from app.services.ratelimit import limit_account, rate_limit
 from app.schemas import (
+    ApiTokenCreate,
+    ApiTokenCreated,
+    ApiTokenOut,
     AuthStatus,
     ChangePasswordRequest,
     LoginRequest,
@@ -22,7 +25,9 @@ from app.schemas import (
 from app.services import totp as totp_service
 from app.security import (
     decode_token,
+    hash_api_token,
     hash_password,
+    mint_api_token,
     mint_access_token,
     mint_refresh_token,
     verify_password,
@@ -366,3 +371,50 @@ async def totp_disable(body: TotpDisableRequest, user: CurrentUser, db: DB) -> d
     user.totp_last_step = None
     await db.flush()
     return {"enabled": False}
+
+
+# --- API tokens ---------------------------------------------------------------
+# Session-only, all three: a token cannot list, make or revoke tokens.
+
+
+@router.get("/tokens", response_model=list[ApiTokenOut])
+async def list_api_tokens(user: SessionUser, db: DB) -> list[ApiTokenOut]:
+    rows = (
+        await db.execute(
+            select(ApiToken)
+            .where(ApiToken.user_id == user.id, ApiToken.revoked_at.is_(None))
+            .order_by(ApiToken.created_at.desc())
+        )
+    ).scalars().all()
+    return [ApiTokenOut.model_validate(r) for r in rows]
+
+
+@router.post("/tokens", response_model=ApiTokenCreated, status_code=status.HTTP_201_CREATED)
+async def create_api_token(
+    body: ApiTokenCreate, user: SessionUser, db: DB
+) -> ApiTokenCreated:
+    """Mint a token and return it — the one time it is ever visible."""
+    secret = mint_api_token()
+    row = ApiToken(
+        user_id=user.id,
+        name=body.name.strip(),
+        token_hash=hash_api_token(secret),
+        suffix=secret[-4:],
+        read_only=body.read_only,
+    )
+    db.add(row)
+    await db.flush()
+    await db.refresh(row)
+    out = ApiTokenOut.model_validate(row)
+    return ApiTokenCreated(**out.model_dump(), token=secret)
+
+
+@router.delete("/tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_api_token(token_id: uuid.UUID, user: SessionUser, db: DB) -> None:
+    row = await db.get(ApiToken, token_id)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Token not found")
+    # Kept, not deleted: the list stops showing it, and its hash can never
+    # match a request again — a revocation that is not undone by a restore.
+    row.revoked_at = datetime.now(timezone.utc)
+    await db.flush()

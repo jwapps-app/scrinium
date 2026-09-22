@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -82,3 +84,22 @@ def decode_token(
         return uuid.UUID(payload["sub"]), int(payload.get("ver", 0)), jti
     except (KeyError, ValueError):
         return None
+
+
+# API tokens: a fixed prefix so the bearer check can tell them from a JWT
+# without touching the JWT path, and enough randomness that a hash of the
+# secret can be looked up directly — no salt, no slow hash, because there is
+# nothing to guess against 256 bits.
+API_TOKEN_PREFIX = "scr_"
+
+
+def mint_api_token() -> str:
+    return API_TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+
+def hash_api_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def is_api_token(bearer: str) -> bool:
+    return bearer.startswith(API_TOKEN_PREFIX)

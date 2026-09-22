@@ -431,3 +431,27 @@ class SelectionRequest(BaseModel):
     ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
     filter_tag_id: uuid.UUID | None = None
     title: str | None = None
+
+
+# --- API tokens ---------------------------------------------------------------
+
+
+class ApiTokenCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    read_only: bool = False
+
+
+class ApiTokenOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    suffix: str
+    read_only: bool
+    created_at: datetime
+    last_used_at: datetime | None = None
+
+
+class ApiTokenCreated(ApiTokenOut):
+    # The secret, this once. It is not stored and cannot be shown again.
+    token: str

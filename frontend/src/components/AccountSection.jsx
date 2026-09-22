@@ -15,6 +15,10 @@ export default function AccountSection() {
   const [enrollCode, setEnrollCode] = useState('')
   const [disable, setDisable] = useState({ password: '', code: '' })
   const [showDisable, setShowDisable] = useState(false)
+  const [tokens, setApiTokens] = useState([])
+  const [newToken, setNewToken] = useState({ name: '', read_only: true })
+  // The secret, shown exactly once after creation and never again.
+  const [revealed, setRevealed] = useState(null)
   // Account management is owner-only server-side; hide it for everyone else
   // rather than offering buttons that come back 403.
   const isAdmin = useIsAdmin()
@@ -23,12 +27,47 @@ export default function AccountSection() {
     apiJson('/api/auth/users').then(setUsers).catch((e) => setError(e.message))
   }, [])
 
+  const loadTokens = useCallback(() => {
+    apiJson('/api/auth/tokens').then(setApiTokens).catch(() => {})
+  }, [])
+
   useEffect(() => {
     // The user list is owner-only server-side now; asking as a member
     // would just paint a 403 into the error banner.
     if (isAdmin) load()
     apiJson('/api/auth/totp').then((d) => setTotpEnabled(d.enabled)).catch(() => {})
-  }, [load, isAdmin])
+    loadTokens()
+  }, [load, loadTokens, isAdmin])
+
+  async function createToken(e) {
+    e.preventDefault()
+    setError('')
+    try {
+      const made = await apiJson('/api/auth/tokens', {
+        method: 'POST',
+        body: JSON.stringify(newToken),
+      })
+      setRevealed(made)
+      setNewToken({ name: '', read_only: true })
+      loadTokens()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function revokeToken(t) {
+    if (!window.confirm(`Revoke "${t.name}"? Anything using it stops working immediately.`))
+      return
+    setError('')
+    try {
+      const resp = await apiFetch(`/api/auth/tokens/${t.id}`, { method: 'DELETE' })
+      if (!resp.ok) throw new Error(`Could not revoke (${resp.status})`)
+      if (revealed?.id === t.id) setRevealed(null)
+      loadTokens()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
 
   async function startEnroll() {
     setError('')
@@ -223,6 +262,78 @@ export default function AccountSection() {
             </div>
           </form>
         )}
+      </div>
+
+      <div className="organize-block">
+        <div className="organize-head">
+          <strong>API tokens</strong>
+        </div>
+        <p className="settings-help">
+          For other programs that read your library — a token stands in for
+          your sign-in and skips the two-factor code. It is shown once, when
+          made. Read-only is enough for anything that only looks; give a full
+          token only to something that has to change documents.
+        </p>
+        {revealed && (
+          <div className="notice">
+            <strong>{revealed.name}</strong> — copy this now; it will not be
+            shown again.
+            <div className="rule-form-row">
+              <code className="token-secret">{revealed.token}</code>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => navigator.clipboard?.writeText(revealed.token)}
+              >
+                Copy
+              </button>
+              <button type="button" className="ghost" onClick={() => setRevealed(null)}>
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+        {tokens.length > 0 && (
+          <ul className="rule-list">
+            {tokens.map((t) => (
+              <li key={t.id} className="rule-row">
+                <div className="rule-main">
+                  <strong>{t.name}</strong>
+                  <span className="rule-detail">
+                    scr_…{t.suffix} · {t.read_only ? 'read-only' : 'full access'} ·
+                    created {new Date(t.created_at).toLocaleDateString()}
+                    {t.last_used_at
+                      ? ` · last used ${new Date(t.last_used_at).toLocaleString()}`
+                      : ' · never used'}
+                  </span>
+                </div>
+                <button className="ghost danger" onClick={() => revokeToken(t)}>
+                  Revoke
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <form className="rule-form" onSubmit={createToken}>
+          <div className="rule-form-row">
+            <input
+              placeholder="What will use it (e.g. Quaero)"
+              value={newToken.name}
+              onChange={(e) => setNewToken({ ...newToken, name: e.target.value })}
+              maxLength={255}
+              required
+            />
+            <label className="reclaim-dpi">
+              <input
+                type="checkbox"
+                checked={newToken.read_only}
+                onChange={(e) => setNewToken({ ...newToken, read_only: e.target.checked })}
+              />
+              <span>Read-only</span>
+            </label>
+            <button type="submit">Create token</button>
+          </div>
+        </form>
       </div>
 
       {users.length > 0 && (
