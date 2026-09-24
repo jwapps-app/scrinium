@@ -92,6 +92,16 @@ export default function SidecarSetup({ connected }) {
                 ? 'The helper is answering — server-side documents now get Apple-quality OCR.'
                 : 'Waiting for the helper to answer the health check…'}
             </p>
+            {!connected && setup.recover_commands && (
+              <>
+                <p className="settings-help">
+                  <strong>Was it working before?</strong> A macOS upgrade can
+                  stop the launch agent loading at login, with nothing in any
+                  log. On the Mac, check and reload it:
+                </p>
+                <Commands text={setup.recover_commands} />
+              </>
+            )}
           </Step>
         </ol>
       )}

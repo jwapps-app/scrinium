@@ -80,9 +80,32 @@ binary path, then `launchctl load` it:
 ```
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.example.scrinium-ocr-helper.plist
+xattr -d com.apple.quarantine ~/Library/LaunchAgents/com.example.scrinium-ocr-helper.plist 2>/dev/null
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.scrinium-ocr-helper.plist
 curl http://localhost:9876/health
 ```
+
+The `xattr` line matters if the plist was downloaded rather than written in
+place: a downloaded file carries a quarantine attribute, and from macOS 27
+launchd silently skips a quarantined launch agent at login. The helper then
+works until the next reboot and vanishes after it, with nothing in any log.
+
+## If it worked and then stopped
+
+Usually a macOS upgrade. Check whether launchd still has the agent, and
+reload it:
+
+```bash
+launchctl print gui/$(id -u)/com.example.scrinium-ocr-helper >/dev/null 2>&1 && echo loaded || echo NOT LOADED
+xattr -d com.apple.quarantine ~/Library/LaunchAgents/com.example.scrinium-ocr-helper.plist 2>/dev/null
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.scrinium-ocr-helper.plist
+curl http://localhost:9876/health
+```
+
+Scrinium falls back to Tesseract while the helper is down and sends a push
+notification the first time a document has to. Documents processed that way
+show under Settings › Server-side OCR as "used Tesseract", with an Upgrade
+button that re-OCRs them once the helper is back.
 
 ## Endpoints
 

@@ -347,9 +347,23 @@ async def sidecar_setup(user: CurrentUser) -> dict:
             label=HELPER_LABEL, binary=HELPER_BIN, port=port
         ),
         "plist_path": plist_path,
+        # The downloaded plist carries a quarantine attribute, and since
+        # macOS 27 launchd silently skips a quarantined agent at login. It
+        # loaded once by hand and worked for two months, then vanished at the
+        # first reboot after the upgrade. Strip the attribute before loading.
         "load_commands": (
             f"mv ~/Downloads/{HELPER_LABEL}.plist ~/Library/LaunchAgents/\n"
-            f"launchctl load {plist_path}\n"
+            f"xattr -d com.apple.quarantine {plist_path}\n"
+            f"launchctl bootstrap gui/$(id -u) {plist_path}\n"
+            f"sleep 2 && curl http://localhost:{port}/health"
+        ),
+        # For a helper that worked and stopped — after a macOS upgrade, most
+        # likely. Shown in place of the setup steps when it is not answering.
+        "recover_commands": (
+            f"launchctl print gui/$(id -u)/{HELPER_LABEL} >/dev/null 2>&1 "
+            "&& echo loaded || echo NOT LOADED\n"
+            f"xattr -d com.apple.quarantine {plist_path} 2>/dev/null\n"
+            f"launchctl bootstrap gui/$(id -u) {plist_path}\n"
             f"sleep 2 && curl http://localhost:{port}/health"
         ),
         "server_env": (

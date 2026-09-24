@@ -1130,3 +1130,65 @@ def test_the_worker_dispatches_pdfa_jobs_and_the_handler_swaps_carefully():
     source = inspect.getsource(compress.process_pdfa_job)
     assert "with_for_update=True" in source, "the swap must be compare-and-swapped"
     assert "pdfa_is_valid" in source, "size must not decide a born-digital conversion"
+
+
+
+async def test_the_first_fallback_to_tesseract_is_announced_and_then_quiet(monkeypatch):
+    """The helper was down a week before anyone noticed. The first job that
+    falls back sends a push; the ones after it inside the window do not; a
+    job that reaches the helper again resets it so the next outage is heard."""
+    from types import SimpleNamespace
+
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.services import ingest, push
+    from app.services.app_state import get_value
+
+    sent = []
+
+    async def _notify(session, tenant_id, title, body, data):
+        sent.append(body)
+
+    monkeypatch.setattr(push, "notify_tenant", _notify)
+    monkeypatch.setattr(ingest.settings, "ocr_engine", "apple")
+    monkeypatch.setattr(ingest.settings, "apple_ocr_url", "http://helper:9876")
+    doc = SimpleNamespace(title="Solar invoice", tenant_id=uuid.uuid4(), id=uuid.uuid4())
+
+    async with SessionLocal() as session:
+        await session.execute(
+            sa.text("delete from app_settings where key = :k"),
+            {"k": ingest.SIDECAR_FALLBACK_NOTICE},
+        )
+        await session.commit()
+        fell_back = SimpleNamespace(engine="tesseract")
+        await ingest._notice_sidecar_fallback(session, doc, fell_back, None)
+        await ingest._notice_sidecar_fallback(session, doc, fell_back, None)
+        assert len(sent) == 1 and "Apple Vision helper" in sent[0]
+        assert await get_value(session, ingest.SIDECAR_FALLBACK_NOTICE)
+
+        recovered = SimpleNamespace(engine="apple")
+        await ingest._notice_sidecar_fallback(session, doc, recovered, None)
+        assert await get_value(session, ingest.SIDECAR_FALLBACK_NOTICE) == ""
+        await ingest._notice_sidecar_fallback(session, doc, fell_back, None)
+        assert len(sent) == 2, "a new outage after recovery is announced again"
+
+        # Tesseract by choice is not an outage.
+        monkeypatch.setattr(ingest.settings, "ocr_engine", "tesseract")
+        await ingest._notice_sidecar_fallback(session, doc, fell_back, None)
+        assert len(sent) == 2
+
+
+def test_the_setup_instructions_strip_quarantine_before_loading():
+    """The steps used to say `mv` from Downloads then `launchctl load`. That
+    leaves the quarantine attribute on the plist, and from macOS 27 launchd
+    skips such an agent at login — the helper worked for two months and
+    vanished at the first reboot after the upgrade."""
+    import inspect
+
+    from app.routers import settings as settings_router
+
+    source = inspect.getsource(settings_router.sidecar_setup)
+    assert "xattr -d com.apple.quarantine" in source
+    assert "launchctl bootstrap" in source
+    assert "recover_commands" in source

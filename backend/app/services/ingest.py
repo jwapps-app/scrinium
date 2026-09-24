@@ -11,7 +11,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -29,6 +29,7 @@ from app.services.app_state import (
     wants_pdfa,
     get_value,
     resolve_archive_dpi,
+    set_value,
 )
 from app.services.ocr import get_provider
 from app.services.ocr import tesseract as ocr_tesseract
@@ -464,10 +465,61 @@ async def process_job(session: AsyncSession, job: Job) -> None:
         for old_id in superseded:
             storage.delete_blob(old_id)
 
+    await _notice_sidecar_fallback(session, document, outcome, engine_override)
+
     await push.notify_tenant(
         session,
         document.tenant_id,
         settings.app_name,
         f"“{document.title}” is ready to search.",
         {"document_id": str(document.id)},
+    )
+
+
+# The Apple Vision helper stayed down for a week in September 2026 — the
+# macOS 27 upgrade stopped its launch agent loading — and the only sign was
+# a badge on a Settings page nobody had reason to open. Every job checks the
+# helper, so the first one to fall back knows; this makes it say so.
+SIDECAR_FALLBACK_NOTICE = "sidecar_fallback_noticed_at"
+SIDECAR_NOTICE_EVERY_HOURS = 12
+
+
+async def _notice_sidecar_fallback(session, document, outcome, engine_override) -> None:
+    wanted = (engine_override or settings.ocr_engine) == "apple" and bool(
+        settings.apple_ocr_url
+    )
+    if not wanted:
+        return
+    if outcome.engine == "apple":
+        # Back to normal: clear the notice so the next outage is announced
+        # afresh rather than swallowed by a stale timestamp.
+        if await get_value(session, SIDECAR_FALLBACK_NOTICE):
+            await set_value(session, SIDECAR_FALLBACK_NOTICE, "")
+            await session.commit()
+        return
+    if outcome.engine != "tesseract":
+        return  # text-only is a different failure, reported on the document
+    last = await get_value(session, SIDECAR_FALLBACK_NOTICE)
+    now = datetime.now(timezone.utc)
+    if last:
+        try:
+            since = now - datetime.fromisoformat(last)
+            if since < timedelta(hours=SIDECAR_NOTICE_EVERY_HOURS):
+                return
+        except ValueError:
+            pass
+    await set_value(session, SIDECAR_FALLBACK_NOTICE, now.isoformat())
+    await session.commit()
+    logger.warning(
+        "Apple Vision helper unreachable: “%s” was processed with Tesseract",
+        document.title,
+    )
+    await push.notify_tenant(
+        session,
+        document.tenant_id,
+        settings.app_name,
+        "The Apple Vision helper isn’t answering — “"
+        f"{document.title}” used the built-in engine instead. "
+        "Check Settings › Server-side OCR.",
+        {"sidecar_down": True},
     )
