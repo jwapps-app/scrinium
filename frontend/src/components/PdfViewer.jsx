@@ -3,6 +3,13 @@ import { pdfjsLib, loadPdf } from '../pdfjs'
 import { TextLayer } from 'pdfjs-dist'
 
 const RENDER_MARGIN = 900 // px beyond the viewport to render ahead
+// Pages further than this from the visible run are torn down. A rendered
+// page at device-pixel ratio 2 is tens of megabytes of canvas; keeping every
+// page of a scanned book resident ran into the gigabytes.
+const KEEP_DISTANCE = 6
+// Text content is small next to a canvas but still per page; bounded so a
+// long session cannot grow it without limit.
+const TEXT_CACHE_MAX = 40
 
 /**
  * Lazy PDF viewer: only pages near the viewport render, so a 1,000-page
@@ -90,6 +97,7 @@ export default function PdfViewer({
         }).promise
         const textContent = await page.getTextContent()
         st.textCache.set(n, { textContent, viewport })
+        trimTextCache()
         // Selectable/copyable text over the canvas. Errors here cost only
         // selection, never the page render.
         try {
@@ -121,16 +129,46 @@ export default function PdfViewer({
       }
     }
 
+    // Drop a page's canvas and text layer. The slot keeps the height it was
+    // measured at, so nothing above or below moves; scrolling back renders
+    // it again like any page seen for the first time.
+    function evictPage(n) {
+      const slot = st.slots[n - 1]
+      if (slot) {
+        for (const canvas of slot.querySelectorAll('canvas')) {
+          // Release the backing store now rather than whenever GC gets to it.
+          canvas.width = 0
+          canvas.height = 0
+        }
+        slot.replaceChildren()
+      }
+      st.rendered.delete(n)
+      st.textCache.delete(n)
+    }
+
+    function trimTextCache() {
+      // Oldest entries first (Map keeps insertion order); a page still on
+      // screen keeps its entry since highlights are drawn from it.
+      for (const n of st.textCache.keys()) {
+        if (st.textCache.size <= TEXT_CACHE_MAX) break
+        if (!st.rendered.has(n)) st.textCache.delete(n)
+      }
+    }
+
     function renderVisible() {
       if (!st.slots.length) return
       const top = window.scrollY - RENDER_MARGIN
       const bottom = window.scrollY + window.innerHeight + RENDER_MARGIN
       let anchored = false
+      let firstNear = null
+      let lastNear = null
       for (let i = 0; i < st.slots.length; i++) {
         const slot = st.slots[i]
         const y = slot.offsetTop
         if (y > bottom) break
         if (y + slot.offsetHeight >= top) {
+          if (firstNear === null) firstNear = i + 1
+          lastNear = i + 1
           renderPage(i + 1)
           // First slot still under the reading position = current page.
           if (!anchored && y + slot.offsetHeight > window.scrollY + 120) {
@@ -148,6 +186,11 @@ export default function PdfViewer({
               if (onPositionChange) onPositionChange(i + 1)
             }
           }
+        }
+      }
+      if (firstNear !== null) {
+        for (const n of [...st.rendered]) {
+          if (n < firstNear - KEEP_DISTANCE || n > lastNear + KEEP_DISTANCE) evictPage(n)
         }
       }
     }

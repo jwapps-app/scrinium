@@ -30,6 +30,23 @@ from app.routers import (
 logger = logging.getLogger(__name__)
 
 
+async def _reconcile_after_migrations(migration_task: asyncio.Task | None) -> None:
+    """Housekeeping that needs the schema at head and the previous process gone.
+
+    Import/export run as tasks inside the API process and record "running" in
+    the database; a process that died mid-transfer left that flag behind.
+    Nothing from before this start can still be running, so clear it here.
+    """
+    if migration_task is not None:
+        await migration_task
+    if startup.STATE.state != "ready":
+        return
+    try:
+        await transfer.reset_interrupted_transfers()
+    except Exception:
+        logger.exception("could not reconcile transfer status at startup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.require_strong_secret()
@@ -39,9 +56,11 @@ async def lifespan(app: FastAPI):
         # through against a schema that has not been brought to head yet.
         startup.STATE.state = "starting"
         migration_task = asyncio.create_task(startup.run_migrations())
+    reconcile_task = asyncio.create_task(_reconcile_after_migrations(migration_task))
     yield
-    if migration_task is not None and not migration_task.done():
-        migration_task.cancel()
+    for task in (migration_task, reconcile_task):
+        if task is not None and not task.done():
+            task.cancel()
     await engine.dispose()
 
 

@@ -16,13 +16,27 @@ from sqlalchemy.orm import defer, selectinload
 
 from app.config import settings
 from app.database import SessionLocal
-from app.models import Document, document_custom_values
+from app.models import (
+    Annotation,
+    CustomField,
+    Document,
+    ReadingPosition,
+    Tag,
+    User,
+    document_custom_values,
+)
 from app.services import storage
 from app.services.app_state import set_value
 
 logger = logging.getLogger(__name__)
 
 EXPORT_STATUS = "library_export_status"
+
+# Bumped when the manifest gains fields the restore side must know about.
+# 1 (implicit — no key) carried title/date/notes/correspondent/type/flat tag
+# names; 2 adds tag colour and parent, custom field definitions with values
+# keyed by field name, expiry, annotations and reading positions.
+MANIFEST_VERSION = 2
 
 # Rows per round trip while streaming, and how often progress is published.
 EXPORT_BATCH = 500
@@ -59,6 +73,33 @@ def folder_for(doc, parents: dict) -> str:
     if not best:
         return "Untagged"
     return "/".join(sanitize(part) for part in best)
+
+
+def reserve_name(
+    taken: set[str], folder: str, base: str, suffix: str, with_archive: bool
+) -> str:
+    """The title stem to use for a document so that neither its original
+    nor its searchable copy lands on a path already handed out.
+
+    The earlier counter reserved only the bare title, so "x", "x", "x (2)"
+    produced two "x (2).pdf" — and the folder export then skipped the second
+    without a word while the manifest still listed all three. Every final
+    path (lower-cased, with extension) is reserved here, and the counter
+    keeps climbing until the candidate is genuinely free."""
+
+    def paths(stem: str) -> list[str]:
+        out = [f"originals/{folder}/{stem}{suffix}".lower()]
+        if with_archive:
+            out.append(f"searchable/{folder}/{stem}.pdf".lower())
+        return out
+
+    stem = base
+    n = 1
+    while any(candidate in taken for candidate in paths(stem)):
+        n += 1
+        stem = f"{base} ({n})"
+    taken.update(paths(stem))
+    return stem
 
 
 async def _status(state: str, **extra) -> None:
@@ -182,22 +223,78 @@ async def _run_export(
                 .where(*live)
             )
         ).all()
+        # Values keyed by field *name*: a field id means nothing on another
+        # install, so the restore side used to drop every custom value.
+        field_defs = (
+            await session.execute(
+                select(CustomField)
+                .where(CustomField.tenant_id == tenant_id)
+                .order_by(CustomField.name)
+            )
+        ).scalars().all()
+        field_names = {f.id: f.name for f in field_defs}
         custom_by_doc: dict = {}
         for row in custom_rows:
-            custom_by_doc.setdefault(row.document_id, {})[str(row.field_id)] = row.value
+            name = field_names.get(row.field_id)
+            if name is not None:
+                custom_by_doc.setdefault(row.document_id, {})[name] = row.value
+
+        annotation_rows = (
+            await session.execute(
+                select(Annotation)
+                .join(Document, Document.id == Annotation.document_id)
+                .where(*live)
+                .order_by(Annotation.created_at)
+            )
+        ).scalars().all()
+        annotations_by_doc: dict = {}
+        for a in annotation_rows:
+            try:
+                rects = json.loads(a.rects)
+            except (TypeError, ValueError):
+                rects = a.rects
+            annotations_by_doc.setdefault(a.document_id, []).append(
+                {
+                    "page": a.page,
+                    "quote": a.quote,
+                    "note": a.note,
+                    "rects": rects,
+                    "color": a.color,
+                    "created_at": a.created_at.isoformat() if a.created_at else None,
+                }
+            )
+
+        # Positions are per user; the email is the only portable handle.
+        position_rows = (
+            await session.execute(
+                select(ReadingPosition, User.email)
+                .join(User, User.id == ReadingPosition.user_id)
+                .join(Document, Document.id == ReadingPosition.document_id)
+                .where(*live)
+            )
+        ).all()
+        positions_by_doc: dict = {}
+        for pos, email in position_rows:
+            positions_by_doc.setdefault(pos.document_id, []).append(
+                {"user": email, "page": pos.page}
+            )
 
         # id → (name, parent_id) for every tag, to walk chains cheaply.
-        from app.models import Tag
-
-        parents = {
-            t.id: (t.name, t.parent_id)
-            for t in (
-                await session.execute(
-                    select(Tag).where(Tag.tenant_id == tenant_id)
-                )
-            ).scalars()
-        }
-        used_names: dict[str, int] = {}
+        all_tags = (
+            await session.execute(
+                select(Tag).where(Tag.tenant_id == tenant_id).order_by(Tag.name)
+            )
+        ).scalars().all()
+        parents = {t.id: (t.name, t.parent_id) for t in all_tags}
+        tag_defs = [
+            {
+                "name": t.name,
+                "color": t.color,
+                "parent": parents[t.parent_id][0] if t.parent_id in parents else None,
+            }
+            for t in all_tags
+        ]
+        taken_names: set[str] = set()
 
         total = (
             await session.execute(select(func.count(Document.id)).where(*live))
@@ -212,12 +309,14 @@ async def _run_export(
         async for doc in docs_stream:
             suffix = Path(doc.original_filename).suffix.lower() or ".bin"
             folder = folder_for(doc, parents)
-            base = sanitize(doc.title)
             # De-collide titles within a folder: "x", "x (2)", "x (3)"…
-            key = f"{folder}/{base}".lower()
-            used_names[key] = used_names.get(key, 0) + 1
-            if used_names[key] > 1:
-                base = f"{base} ({used_names[key]})"
+            base = reserve_name(
+                taken_names,
+                folder,
+                sanitize(doc.title),
+                suffix,
+                doc.archive_blob_id is not None,
+            )
             original_name = f"originals/{folder}/{base}{suffix}"
             archive_name = (
                 f"searchable/{folder}/{base}.pdf"
@@ -243,12 +342,15 @@ async def _run_export(
                         "ocr_engine": doc.ocr_engine,
                         "page_count": doc.page_count,
                         "doc_date": doc.doc_date.isoformat() if doc.doc_date else None,
+                        "expires_on": doc.expires_on.isoformat() if doc.expires_on else None,
                         "created_at": doc.created_at.isoformat(),
                         "correspondent": doc.correspondent.name if doc.correspondent else None,
                         "doc_type": doc.doc_type.name if doc.doc_type else None,
                         "tags": [t.name for t in doc.tags],
                         "notes": doc.notes,
                         "custom_values": custom_by_doc.get(doc.id, {}),
+                        "annotations": annotations_by_doc.get(doc.id, []),
+                        "reading_positions": positions_by_doc.get(doc.id, []),
                     },
                 }
             )
@@ -283,7 +385,10 @@ async def _run_export(
     manifest_bytes = json.dumps(
         {
             "app": settings.app_name,
+            "version": MANIFEST_VERSION,
             "exported_at": datetime.now(timezone.utc).isoformat(),
+            "tags": tag_defs,
+            "custom_fields": [{"name": f.name, "kind": f.kind} for f in field_defs],
             "documents": manifest,
         },
         indent=2,
@@ -339,6 +444,14 @@ async def _run_export(
     # only when complete, so the folder people point things at is never
     # half-written and is missing for the length of two renames.
     final = dest_dir / (stable if stable else f"library-export-{stamp}")
+    if not stable:
+        # Stamps are second-resolution; a second run inside the same second
+        # used to write into the first run's tree and skip whatever it found
+        # there. It gets its own directory instead.
+        n = 1
+        while final.exists():
+            n += 1
+            final = dest_dir / f"library-export-{stamp}-{n}"
     root = dest_dir / f"{BUILDING_PREFIX}{stamp}" if stable else final
 
     def build_tree() -> tuple[int, int]:
@@ -348,8 +461,11 @@ async def _run_export(
         for _folder, arcname, path, _size in files:
             dest = root / arcname
             dest.parent.mkdir(parents=True, exist_ok=True)
+            # Names are reserved up front, so an existing destination means
+            # the tree is not the fresh one this run created. Stopping is
+            # better than quietly delivering an export short of a document.
             if dest.exists():
-                continue
+                raise FileExistsError(f"export destination already exists: {dest}")
             try:
                 os.link(path, dest)
                 linked += 1

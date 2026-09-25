@@ -12,6 +12,7 @@ import email
 import email.header
 import email.utils
 import imaplib
+import re
 import ssl
 import logging
 import tempfile
@@ -27,6 +28,18 @@ from app.services import intake, tag_tree
 logger = logging.getLogger(__name__)
 
 MAIL_STATUS_KEY = "mail_last_result"
+
+# Socket timeout for every IMAP operation. Without one a stalled server left
+# the maintenance lane waiting on this thread indefinitely, and with it every
+# other sweep that shares the lane.
+MAIL_TIMEOUT_SECONDS = 60.0
+
+# A base64-encoded attachment is about a third larger than its bytes, so a
+# message whose raw size is past this multiple of the attachment cap cannot
+# contain an attachment that would be accepted anyway.
+_ENCODING_OVERHEAD = 1.5
+
+_SIZE_RE = re.compile(rb"RFC822\.SIZE\s+(\d+)")
 
 
 def _decode(value: str | None) -> str:
@@ -54,9 +67,24 @@ def _connect() -> imaplib.IMAP4_SSL:
         settings.mail_host,
         settings.mail_port,
         ssl_context=ssl.create_default_context(),
+        timeout=MAIL_TIMEOUT_SECONDS,
     )
     imap.login(settings.mail_username, settings.mail_password)
     return imap
+
+
+def _message_size(imap: imaplib.IMAP4, uid: bytes) -> int | None:
+    """Raw size of a message from the server, without transferring it.
+    None when the server's reply does not parse — then the body fetch
+    decides, as it always did."""
+    _, data = imap.uid("FETCH", uid.decode(), "(RFC822.SIZE)")
+    for item in data or []:
+        raw = item[0] if isinstance(item, tuple) else item
+        if isinstance(raw, bytes):
+            match = _SIZE_RE.search(raw)
+            if match:
+                return int(match.group(1))
+    return None
 
 
 def _fetch_unseen() -> tuple[list[dict], list[bytes]]:
@@ -64,6 +92,11 @@ def _fetch_unseen() -> tuple[list[dict], list[bytes]]:
     marked Seen here — that happens only after their attachments actually
     ingest, so a failed ingestion is retried on the next poll instead of the
     attachment being silently lost.
+
+    The body is fetched with BODY.PEEK[]: a plain RFC822 (or BODY[]) fetch
+    in a read/write session sets \\Seen as a side effect, which made every
+    message vanish from the UNSEEN search before its attachment was stored,
+    so the retry logic below never saw a failed message again.
 
     Identifiers are true UIDs, not message sequence numbers: sequence numbers
     shift whenever anything is expunged, and since the Seen flags are applied
@@ -78,9 +111,25 @@ def _fetch_unseen() -> tuple[list[dict], list[bytes]]:
         imap.select(settings.mail_folder)
         _, data = imap.uid("SEARCH", "UNSEEN")
         uids = (data[0] or b"").split()
+        size_cap = int(per_file * _ENCODING_OVERHEAD)
         for uid in uids[:20]:  # cap per poll; the rest next time
             try:
-                _, msg_data = imap.uid("FETCH", uid.decode(), "(RFC822)")
+                # Size first: the attachment limit used to be applied only
+                # after the whole message had been fetched and decoded, so
+                # the memory ceiling it was meant to enforce came too late.
+                size = _message_size(imap, uid)
+                if size is not None and size > size_cap:
+                    logger.warning(
+                        "mail: skipping uid %s, message too large (%d bytes)",
+                        uid.decode(),
+                        size,
+                    )
+                    # It will never fit, so it counts as handled: left
+                    # unseen it would hold one of the per-poll slots for
+                    # ever and twenty of them would stop intake outright.
+                    scanned.append(uid)
+                    continue
+                _, msg_data = imap.uid("FETCH", uid.decode(), "(BODY.PEEK[])")
                 if not msg_data or not isinstance(msg_data[0], tuple):
                     continue
                 message = email.message_from_bytes(msg_data[0][1])

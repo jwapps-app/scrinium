@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import QRCode from 'qrcode'
-import { apiFetch, apiJson, setTokens } from '../api'
+import { apiDelete, apiFetch, apiJson, setTokens } from '../api'
 import { useIsAdmin } from '../session'
 
 /** Settings card: change password, manage accounts. */
@@ -160,8 +160,9 @@ export default function AccountSection() {
 
   async function removeUser(u) {
     if (!window.confirm(`Remove the account ${u.email}?`)) return
+    setError('')
     try {
-      await apiFetch(`/api/auth/users/${u.id}`, { method: 'DELETE' })
+      await apiDelete(`/api/auth/users/${u.id}`)
       load()
     } catch (err) {
       setError(err.message)

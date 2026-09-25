@@ -351,3 +351,22 @@ def test_a_cancelled_apple_run_does_not_fall_back_to_tesseract(tmp_path, monkeyp
     with _pytest.raises(tesseract.OCRError):
         provider.process(tmp_path / "input.pdf", tmp_path, "redo", True)
     assert not _Fallback.called
+
+
+def test_the_database_session_commits_before_the_response_is_sent():
+    """FastAPI 0.118+ runs a yield dependency's exit code after the response
+    by default. get_db commits there, so a refresh sent the instant login
+    answered found no token row and failed with 401 — only over a real
+    socket, never under the in-process test client. scope="function" keeps
+    the commit inside the request."""
+    from typing import get_args
+
+    from app import deps
+
+    for annotated in (deps.DB,):
+        dep = get_args(annotated)[1]
+        assert dep.scope == "function"
+    import inspect
+
+    src = inspect.getsource(deps)
+    assert 'Depends(get_db)' not in src, "every get_db dependency needs scope=\"function\""

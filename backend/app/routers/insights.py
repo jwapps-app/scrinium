@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Query
-from sqlalchemy import Integer, case, cast, func, select, text
+from sqlalchemy import Integer, cast, func, select, text
 from sqlalchemy.orm import aliased, defer
 
 from app.services import similarity

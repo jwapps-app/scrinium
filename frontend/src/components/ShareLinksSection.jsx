@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { apiFetch, apiJson } from '../api'
+import { apiDelete, apiJson } from '../api'
 
 /** Everything currently shared publicly — audit and revoke in one place. */
 export default function ShareLinksSection() {
@@ -51,7 +51,13 @@ export default function ShareLinksSection() {
             <button
               className="ghost danger"
               onClick={async () => {
-                await apiFetch(`/api/share-links/${l.id}`, { method: 'DELETE' })
+                setError('')
+                try {
+                  await apiDelete(`/api/share-links/${l.id}`)
+                } catch (err) {
+                  setError(`Could not revoke the link: ${err.message}`)
+                  return
+                }
                 load()
               }}
             >

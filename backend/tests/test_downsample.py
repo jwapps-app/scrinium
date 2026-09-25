@@ -1161,13 +1161,13 @@ async def test_the_first_fallback_to_tesseract_is_announced_and_then_quiet(monke
             {"k": ingest.SIDECAR_FALLBACK_NOTICE},
         )
         await session.commit()
-        fell_back = SimpleNamespace(engine="tesseract")
+        fell_back = "tesseract"
         await ingest._notice_sidecar_fallback(session, doc, fell_back, None)
         await ingest._notice_sidecar_fallback(session, doc, fell_back, None)
         assert len(sent) == 1 and "Apple Vision helper" in sent[0]
         assert await get_value(session, ingest.SIDECAR_FALLBACK_NOTICE)
 
-        recovered = SimpleNamespace(engine="apple")
+        recovered = "apple"
         await ingest._notice_sidecar_fallback(session, doc, recovered, None)
         assert await get_value(session, ingest.SIDECAR_FALLBACK_NOTICE) == ""
         await ingest._notice_sidecar_fallback(session, doc, fell_back, None)
@@ -1192,3 +1192,62 @@ def test_the_setup_instructions_strip_quarantine_before_loading():
     assert "xattr -d com.apple.quarantine" in source
     assert "launchctl bootstrap" in source
     assert "recover_commands" in source
+
+
+async def test_a_job_that_dies_after_ocr_is_marked_failed_not_left_running(token):
+    """`_fail_orphaned_job` used to compare the status with `is`. A string
+    read back from Postgres is never the same object as the constant, so
+    the check always said "not running" and the job stayed RUNNING with
+    nothing working on it — the exact hang the function exists to prevent."""
+    import uuid as _uuid
+
+    import sqlalchemy as sa
+
+    from app.database import SessionLocal
+    from app.models.blob import Blob
+    from app.models.document import Document
+    from app.models.job import Job, JobStatus
+    from app.models.user import User
+    from app.worker import _fail_orphaned_job
+
+    async with SessionLocal() as session:
+        tenant_id = (await session.execute(sa.select(User.tenant_id).limit(1))).scalar_one()
+        blob = Blob(id=_uuid.uuid4(), sha256="1" * 64, size_bytes=1, mime_type="application/pdf")
+        session.add(blob)
+        await session.flush()
+        doc = Document(
+            tenant_id=tenant_id, title="dies late", original_filename="d.pdf",
+            original_blob_id=blob.id, status="processing",
+        )
+        session.add(doc)
+        await session.flush()
+        job = Job(document_id=doc.id, status=JobStatus.RUNNING)
+        session.add(job)
+        await session.commit()
+        job_id, doc_id = job.id, doc.id
+
+    await _fail_orphaned_job(job_id, doc_id, RuntimeError("boom"))
+
+    async with SessionLocal() as session:
+        job = await session.get(Job, job_id)
+        doc = await session.get(Document, doc_id)
+        assert job.status == JobStatus.FAILED
+        assert "boom" in (job.error or "")
+        assert doc.status == "flagged"
+        await session.delete(job)
+        await session.delete(doc)
+        await session.commit()
+
+
+def test_the_fallback_notice_reads_the_engine_off_the_document():
+    """After OCR commits, `outcome` is rebound to the classifier's report,
+    which has no `.engine`. The first release read `outcome.engine` there
+    and every successful Apple job raised after commit — document ready,
+    no push, a stack trace per job. The notice takes the engine string."""
+    import inspect
+
+    from app.services import ingest
+
+    src = inspect.getsource(ingest.process_job)
+    assert "_notice_sidecar_fallback(session, document, document.ocr_engine" in src
+    assert "outcome.engine" not in inspect.getsource(ingest._notice_sidecar_fallback)

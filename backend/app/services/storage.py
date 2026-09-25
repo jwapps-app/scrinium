@@ -22,9 +22,28 @@ def _blob_path(blob_id: uuid.UUID) -> Path:
     return Path(settings.data_dir) / "blobs" / hex_id[:2] / hex_id[2:4] / hex_id
 
 
+def open_source(path: Path):
+    """Open a file for reading without following a symlink at the last
+    path component.
+
+    The watch share is writable by less-privileged NAS accounts, and the
+    scan-time symlink check is separated from the reads by database round
+    trips — long enough for the checked file to be swapped for a link to
+    something the container (running as root) can read. Refusing here, at
+    the open itself, closes that window for the final component; O_NOFOLLOW
+    raises ELOOP on a link instead of opening through it.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        return os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+
+
 def sha256_of(path: Path) -> str:
     digest = hashlib.sha256()
-    with open(path, "rb") as f:
+    with open_source(path) as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -38,7 +57,7 @@ def store_file(source: Path, blob_id: uuid.UUID | None = None) -> tuple[uuid.UUI
     dest.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256()
     size = 0
-    with open(source, "rb") as src, open(dest, "wb") as out:
+    with open_source(source) as src, open(dest, "wb") as out:
         while chunk := src.read(1024 * 1024):
             digest.update(chunk)
             out.write(chunk)

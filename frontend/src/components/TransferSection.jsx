@@ -57,6 +57,7 @@ export default function TransferSection() {
         ? `working… ${st.done ?? 0}/${st.total}`
         : st.note || 'working…'
     if (st.state === 'failed') return `failed: ${st.error}`
+    if (st.state === 'interrupted') return st.error || 'interrupted by a restart'
     return null
   }
 

@@ -353,8 +353,14 @@ async def test_open_upload_sessions_are_bounded(client, auth):
     from app.routers import documents as docs_router
 
     created = []
+    # Other tests leave sessions open on purpose (a refused completion keeps
+    # its parts for a retry), so fill only the room that is left.
+    first = (await client.post("/api/documents/uploads", headers=auth)).json()["upload_id"]
+    created.append(first)
+    owner = (docs_router._upload_session_dir(uuid.UUID(first)) / "owner").read_text()
+    already = docs_router._open_sessions(uuid.UUID(owner))
     try:
-        for _ in range(docs_router.MAX_OPEN_UPLOAD_SESSIONS):
+        for _ in range(docs_router.MAX_OPEN_UPLOAD_SESSIONS - already):
             r = await client.post("/api/documents/uploads", headers=auth)
             assert r.status_code == 200
             created.append(r.json()["upload_id"])

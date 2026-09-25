@@ -130,16 +130,39 @@ def _page_count(pdf: Path) -> int | None:
         return None
 
 
-def _has_text(pdf: Path) -> bool:
+# A rebuilt archive must keep this fraction of the source's extracted text or
+# it is refused. Ghostscript's re-encoding occasionally drops a glyph or a
+# word (the text layer is re-emitted, not copied), and a fraction of a percent
+# is the price of a smaller file; losing pages of it is not. Compared as
+# character counts, which is enough to catch a rebuild that dropped a page's
+# layer while keeping every page.
+TEXT_KEEP_RATIO = 0.97
+
+
+def _has_text(pdf: Path) -> int:
+    """How much text pdftotext can pull out of `pdf`, in characters.
+
+    The acceptance checks compare this between a source and its rebuild,
+    so it returns the size rather than a yes/no: "some text survived" let
+    a candidate through that had kept one word of a hundred pages. 0 when
+    there is none or the probe cannot run.
+    """
     try:
         out = subprocess.run(
             ["pdftotext", "-q", str(pdf), "-"],
             capture_output=True, encoding="utf-8", errors="replace",
             timeout=120, stdin=subprocess.DEVNULL,
         )
-        return bool((out.stdout or "").strip())
+        return len((out.stdout or "").strip())
     except (subprocess.SubprocessError, OSError):
-        return False
+        return 0
+
+
+def _kept_text(src_len: int, dst_len: int) -> bool:
+    """True when a rebuild retained enough of the source's text layer."""
+    if src_len <= 0:
+        return True  # nothing to lose
+    return dst_len >= TEXT_KEEP_RATIO * src_len
 
 
 def _gs_downsample(src: Path, dst: Path, target_dpi: int, pdfa: bool) -> bool:
@@ -253,7 +276,7 @@ def pdfa_is_valid(plain: Path, pdfa: Path) -> str | None:
         return "unreadable"
     if _page_count(pdfa) != pages:
         return "page_mismatch"
-    if _has_text(plain) and not _has_text(pdfa):
+    if not _kept_text(_has_text(plain), _has_text(pdfa)):
         return "lost_text"
     if not is_pdfa(pdfa):
         return "not_pdfa"
@@ -264,9 +287,9 @@ def pdfa_is_better(plain: Path, pdfa: Path) -> str | None:
     """None when the PDF/A copy should be kept instead of the plain one.
 
     Same three guards the DPI rebuild uses: it has to be smaller, keep every
-    page, and keep the text. Ghostscript's conversion drops about 1% of the
-    recognised text, so "smaller" alone is not enough to justify the swap —
-    a smaller archive that lost part of its text layer is a worse archive.
+    page, and keep the text — at least TEXT_KEEP_RATIO of it, measured, so
+    "smaller" alone is not enough to justify the swap. A smaller archive that
+    lost part of its text layer is a worse archive.
     """
     pages = _page_count(plain)
     if pages is None:
@@ -274,16 +297,17 @@ def pdfa_is_better(plain: Path, pdfa: Path) -> str | None:
     return _acceptable(plain, pdfa, pages, _has_text(plain))
 
 
-def _acceptable(src: Path, dst: Path, src_pages: int, src_had_text: bool) -> str | None:
+def _acceptable(src: Path, dst: Path, src_pages: int, src_text_len: int) -> str | None:
     """None when the rebuild is usable, otherwise why it is not.
 
-    The reason is worth keeping: "already as small as it gets" and "the rebuild
-    dropped the text layer" are different problems, and the sweep should not be
-    guessing between them.
+    `src_text_len` is the source's extracted text size (see _has_text); the
+    rebuild must keep TEXT_KEEP_RATIO of it. The reason is worth keeping:
+    "already as small as it gets" and "the rebuild dropped the text layer"
+    are different problems, and the sweep should not be guessing between them.
     """
     if _page_count(dst) != src_pages:
         return "page_mismatch"
-    if src_had_text and not _has_text(dst):
+    if not _kept_text(src_text_len, _has_text(dst)):
         return "lost_text"
     if dst.stat().st_size >= src.stat().st_size:
         return "not_smaller"
@@ -308,7 +332,7 @@ def downsample_archive(
     src_pages = _page_count(src)
     if src_pages is None:
         return None, "unreadable"
-    src_had_text = _has_text(src)
+    src_text_len = _has_text(src)
 
     attempts = []
     if keep_pdfa and Path(ICC_PATH).exists():
@@ -318,7 +342,7 @@ def downsample_archive(
     reason = "unreadable"
     for pdfa in attempts:
         if _gs_downsample(src, dst, target_dpi, pdfa):
-            reason = _acceptable(src, dst, src_pages, src_had_text)
+            reason = _acceptable(src, dst, src_pages, src_text_len)
             if reason is None:
                 # A PDF/A pass that didn't actually stamp conformance still
                 # counts as a valid smaller plain PDF — report it honestly.
@@ -419,6 +443,12 @@ async def process_downsample_job(
                 job.finished_at = datetime.now(timezone.utc)
                 await session.commit()
                 return
+            # What came out, not what was asked for: Ghostscript holds
+            # bitonal images at 300 whatever the target (see _gs_downsample),
+            # so a 150 DPI request on a mono scan yields a 300 DPI archive,
+            # and recording 150 would misreport it everywhere the value is
+            # shown. Same probe ingest uses, so the two agree.
+            measured = await asyncio.to_thread(max_image_dpi, out)
             blob_id, sha256, size = await asyncio.to_thread(storage.store_file, out)
     except Exception as exc:
         logger.warning("downsample failed for document %s: %s", document.id, exc)
@@ -451,7 +481,7 @@ async def process_downsample_job(
     )
     document.archive_blob_id = blob_id
     document.archive_pdfa = result == "pdfa"
-    document.archive_dpi = target_dpi  # capped to the target
+    document.archive_dpi = measured if measured is not None else target_dpi
     job.status = JobStatus.DONE
     job.finished_at = datetime.now(timezone.utc)
     await session.commit()

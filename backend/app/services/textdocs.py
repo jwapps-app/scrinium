@@ -18,7 +18,7 @@ try:
     from defusedxml.ElementTree import iterparse as _safe_iterparse
 except Exception:  # pragma: no cover — fallback if the dep is missing
     from xml.etree.ElementTree import iterparse as _safe_iterparse
-from xml.etree import ElementTree
+
 
 class _BombError(Exception):
     """A zip member decompresses beyond the allowed budget."""
@@ -33,6 +33,18 @@ logger = logging.getLogger(__name__)
 _MAX_TEXT = 20_000_000  # 20 MB of extracted text is plenty
 _MAX_MEMBER = 200 * 1024 * 1024  # refuse to decompress a >200 MB member
 _MAX_UNCOMPRESSED = 1024 * 1024 * 1024  # 1 GB total across a document
+
+# Search indexes text a "page" at a time — the form-feed-separated segments
+# pdftotext emits — and caps each at page_index.MAX_PAGE_CHARS. A text-native
+# file has no pages, so without this a 400,000-character epub was one segment
+# and everything past the cap was invisible to search while still readable in
+# the app. The text is cut into segments of about CHUNK_CHARS at paragraph
+# boundaries; a paragraph that runs past CHUNK_HARD_CHARS is cut at a line
+# end instead, and a single line longer than that at a space. The hard limit
+# sits well under the index cap so no segment is ever truncated.
+CHUNK_CHARS = 60_000
+CHUNK_HARD_CHARS = 85_000
+PAGE_BREAK = "\f"
 
 
 class _HTMLText(HTMLParser):
@@ -92,7 +104,50 @@ def _xml_text(payload: bytes, block_tags: tuple[str, ...]) -> str:
 def _clean(text: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()[:_MAX_TEXT]
+    return _paginate(text.strip()[:_MAX_TEXT])
+
+
+def _split_long_line(line: str) -> list[str]:
+    """Cut one over-long line at spaces so every piece fits the hard limit."""
+    pieces = []
+    while len(line) > CHUNK_HARD_CHARS:
+        cut = line.rfind(" ", CHUNK_CHARS, CHUNK_HARD_CHARS)
+        if cut <= 0:
+            cut = CHUNK_HARD_CHARS  # no space anywhere near: a hard cut
+        pieces.append(line[:cut])
+        line = line[cut:].lstrip(" ")
+    pieces.append(line)
+    return pieces
+
+
+def _paginate(text: str) -> str:
+    """Insert form feeds so no segment exceeds the search index's cap.
+
+    The reader shows the text as one flow — a form feed is whitespace to the
+    browser — so the breaks are invisible there and only matter to search,
+    which then covers the whole document rather than its first 90,000 chars.
+    """
+    if len(text) <= CHUNK_CHARS:
+        return text
+    segments: list[str] = []
+    current: list[str] = []
+    size = 0
+    for raw in text.splitlines(keepends=True):
+        for line in (_split_long_line(raw) if len(raw) > CHUNK_HARD_CHARS else [raw]):
+            if size + len(line) > CHUNK_HARD_CHARS and current:
+                # This line would push the segment over the ceiling: close
+                # the segment at the previous line end.
+                segments.append("".join(current))
+                current, size = [], 0
+            current.append(line)
+            size += len(line)
+            # Preferred break: a blank line once the segment is big enough.
+            if size >= CHUNK_CHARS and line.strip() == "":
+                segments.append("".join(current))
+                current, size = [], 0
+    if current:
+        segments.append("".join(current))
+    return PAGE_BREAK.join(segments)
 
 
 def extract_text(path: Path) -> str | None:

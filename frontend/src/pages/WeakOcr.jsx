@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { apiFetch, apiJson } from '../api'
+import { apiDelete, apiJson } from '../api'
 import ComparePane from '../components/ComparePane'
 
 /**
@@ -63,8 +63,7 @@ export default function WeakOcr() {
         body: JSON.stringify({ mode: 'force' }),
       }),
     )
-  const remove = () =>
-    act((d) => apiFetch(`/api/documents/${d.id}`, { method: 'DELETE' }))
+  const remove = () => act((d) => apiDelete(`/api/documents/${d.id}`))
   const dismiss = () =>
     act((d) =>
       apiJson('/api/insights/weak-ocr/dismiss', {

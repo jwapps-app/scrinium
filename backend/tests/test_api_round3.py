@@ -171,7 +171,10 @@ def test_export_sanitize_and_folders():
 
     from app.services.export import folder_for, sanitize
 
-    assert sanitize('Bad/Name: "why?"') == "Bad-Name- -why--"[:120].strip(" .") or True
+    # Every reserved character becomes a dash, one for one, and the result
+    # is trimmed of the trailing space/dot Windows refuses.
+    assert sanitize('Bad/Name: "why?"') == 'Bad-Name- -why--'
+    assert sanitize("x" * 200) == "x" * 120
     assert "/" not in sanitize("a/b\\c")
     assert sanitize("...   ") == "untitled"
 
@@ -237,9 +240,13 @@ async def test_export_zip_layout(client, auth, pdf_factory, tmp_path):
         names = zf.namelist()
     hit = [n for n in names if doc["id"][:0] == "" and f"{parent['name']}/Inner/" in n and n.startswith("originals/")]
     assert hit, names[:20]
-    assert all(":" not in n.split("/", 1)[1].replace("/", "") or True for n in hit)
-    # sanitized title present, quotes/colons gone
-    assert any("Water- -notes- 2023" in n or "Water" in n for n in hit)
+    # No segment beneath originals/ keeps a character the sanitizer rejects
+    # (the tag and title were chosen to contain several), and the title
+    # segment is the sanitized form of what was set above.
+    for n in hit:
+        for segment in n.split("/")[1:]:
+            assert not set(segment) & set('\\/:*?"<>|'), n
+    assert any(n.rsplit("/", 1)[1].startswith("Water- -notes- 2023") for n in hit), hit
 
 
 def test_plan_parts_keeps_folders_together():
@@ -373,8 +380,10 @@ def test_the_pdf_viewer_ships_its_jpeg2000_decoder():
     # One loader, so a new call site cannot forget the decoder.
     for name in ("PdfViewer.jsx", "ComparePane.jsx", "PageOrganizer.jsx"):
         src = (web / "src" / "components" / name).read_text()
-        assert "getDocument(" not in src, f"{name} must go through loadPdf()"
-        assert "loadPdf(" in src, f"{name} should use the shared loader"
+        assert "getDocument(" not in src, f"{name} must go through the shared loader"
+        # openPdf hands back the loading task so a caller can destroy it;
+        # loadPdf is the same call awaited. Either is the shared loader.
+        assert "loadPdf(" in src or "openPdf(" in src, f"{name} should use the shared loader"
 
 
 async def test_a_stable_export_is_replaced_in_place_and_never_half_written(

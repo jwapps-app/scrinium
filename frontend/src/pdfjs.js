@@ -20,9 +20,16 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 // asset; a bare path keeps it working under the nginx root the app ships with.
 export const WASM_URL = '/pdfjs/'
 
+/** Start loading a PDF with the decoders wired up, returning the loading
+ * task so the caller can destroy() it — that tears down the worker and the
+ * document together, including a load still in progress. */
+export function openPdf(url) {
+  return pdfjsLib.getDocument({ url, wasmUrl: WASM_URL })
+}
+
 /** Load a PDF with the decoders wired up. Always use this, never getDocument. */
 export function loadPdf(url) {
-  return pdfjsLib.getDocument({ url, wasmUrl: WASM_URL }).promise
+  return openPdf(url).promise
 }
 
 export { pdfjsLib }

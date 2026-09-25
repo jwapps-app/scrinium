@@ -5,7 +5,7 @@ import { invalidateThumb } from '../components/Thumb'
 import StatusChip from '../components/StatusChip'
 import ProgressBar from '../components/ProgressBar'
 import PageOrganizer from '../components/PageOrganizer'
-import { isOffline, keepOffline, offlineFile, offlineMeta, removeOffline } from '../offline'
+import { isOffline, keepOffline, offlineFile, offlineMeta, offlineText, removeOffline } from '../offline'
 import PdfViewer from '../components/PdfViewer'
 import { fmtBytes } from '../format'
 import Menu from '../components/Menu'
@@ -226,14 +226,29 @@ export default function DocumentView() {
     return () => clearInterval(t)
   }, [doc, load])
 
-  // Fetch the file with auth and hand PDF.js a blob URL.
+  // Fetch the file with auth and hand PDF.js a blob URL. Runs once the
+  // metadata for THIS document is in (a cached offline record arrives later
+  // than a server answer would, and used to arrive after this effect had
+  // already given up), and again if an archive appears mid-OCR.
+  const docReady = doc?.id === id
   useEffect(() => {
-    if (!doc) return
+    if (!docReady) return
     if (isTextNative(doc)) {
+      let stale = false
       apiJson(`/api/documents/${id}/text`)
-        .then((d) => setReaderText(d.text))
-        .catch(() => setReaderText(''))
-      return
+        .then((d) => d.text)
+        .catch(async (err) => {
+          // Reached the server and it said no: do NOT fall back to the cache.
+          if (err?.fromServer) throw err
+          const saved = await offlineText(id).catch(() => null)
+          if (saved !== null) return saved
+          throw err
+        })
+        .then((text) => !stale && setReaderText(text))
+        .catch(() => !stale && setReaderText(''))
+      return () => {
+        stale = true
+      }
     }
     let cancelled = false
     apiFetch(`/api/documents/${id}/file`)
@@ -256,11 +271,11 @@ export default function DocumentView() {
         urlRef.current = URL.createObjectURL(blob)
         setFileUrl(urlRef.current)
       })
-      .catch((err) => setError(err.message))
+      .catch((err) => !cancelled && setError(err.message))
     return () => {
       cancelled = true
     }
-  }, [doc?.has_archive, id]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [docReady, doc?.has_archive, id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(
     () => () => {
@@ -691,7 +706,7 @@ export default function DocumentView() {
         </div>
       )}
 
-      {!doc.deleted_at && <DocumentDetails doc={doc} onChange={setDoc} />}
+      {!doc.deleted_at && <DocumentDetails key={doc.id} doc={doc} onChange={setDoc} />}
 
       {doc.status === 'flagged' && (
         <p className="error">

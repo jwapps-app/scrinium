@@ -9,7 +9,6 @@ falls back to Tesseract. A stopped sidecar never wedges ingestion.
 """
 
 import logging
-import subprocess
 from pathlib import Path
 
 import httpx
@@ -20,9 +19,7 @@ from app.services.ocr.tesseract import (
     IMAGE_SUFFIXES,
     MODE_FLAGS,
     PROGRESS_PLUGIN,
-    OCRError,
     cancel_requested,
-    extract_text,
     process_with_fallbacks,
     rotate_flags,
 )
@@ -63,7 +60,10 @@ class AppleVisionProvider:
             logger.warning(
                 "Apple sidecar OCR failed (%s); falling back to Tesseract", exc
             )
-            return self.fallback.process(original, workdir, mode)
+            # Same arguments as the unavailable-at-start path above. Dropping
+            # `pdfa` here handed a document that asked for plain PDF to the
+            # fallback's PDF/A default whenever the sidecar died mid-job.
+            return self.fallback.process(original, workdir, mode, pdfa)
 
     def _ocr_via_sidecar(
         self, original: Path, workdir: Path, mode: str, pdfa: bool = True

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { apiFetch, apiJson } from '../api'
+import { apiDelete, apiJson } from '../api'
 import DocumentDetails from '../components/DocumentDetails'
 import Shell from '../components/Shell'
 import Thumb from '../components/Thumb'
@@ -34,10 +34,34 @@ export default function Review() {
 
   const doc = docs?.[index]
 
+  // Settle whatever is being typed before the card changes documents. The
+  // details strip saves on blur, so blurring here makes a half-typed note
+  // land on the document it was written for; the tick lets that handler run
+  // before the index moves and the strip remounts for the next document.
+  const settleEdits = useCallback(async () => {
+    const el = document.activeElement
+    if (el && el !== document.body && typeof el.blur === 'function') el.blur()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }, [])
+
+  const move = useCallback(
+    async (delta) => {
+      await settleEdits()
+      setIndex((i) => Math.min(Math.max(i + delta, 0), Math.max((docs?.length || 1) - 1, 0)))
+    },
+    [docs, settleEdits],
+  )
+
   const trash = useCallback(async () => {
     const current = docs?.[indexRef.current]
     if (!current) return
-    await apiFetch(`/api/documents/${current.id}`, { method: 'DELETE' })
+    setError('')
+    try {
+      await apiDelete(`/api/documents/${current.id}`)
+    } catch (err) {
+      setError(`Could not trash "${current.title}": ${err.message}`)
+      return
+    }
     window.dispatchEvent(new Event('library-changed'))
     load()
   }, [docs, load])
@@ -45,8 +69,8 @@ export default function Review() {
   useEffect(() => {
     function onKey(e) {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return
-      if (e.key === 'ArrowRight') setIndex((i) => Math.min(i + 1, (docs?.length || 1) - 1))
-      else if (e.key === 'ArrowLeft') setIndex((i) => Math.max(i - 1, 0))
+      if (e.key === 'ArrowRight') move(1)
+      else if (e.key === 'ArrowLeft') move(-1)
       else if (e.key === 'x' || e.key === 'X') trash()
       else if (e.key === 'o' || e.key === 'O') {
         const current = docs?.[indexRef.current]
@@ -55,7 +79,7 @@ export default function Review() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [docs, trash, navigate])
+  }, [docs, trash, move, navigate])
 
   return (
     <Shell>
@@ -71,7 +95,7 @@ export default function Review() {
         {doc && (
           <div className="review-card">
             <div className="review-nav">
-              <button className="ghost" disabled={index === 0} onClick={() => setIndex(index - 1)}>
+              <button className="ghost" disabled={index === 0} onClick={() => move(-1)}>
                 ← Prev
               </button>
               <span className="settings-hint">
@@ -80,7 +104,7 @@ export default function Review() {
               <button
                 className="ghost"
                 disabled={index >= docs.length - 1}
-                onClick={() => setIndex(index + 1)}
+                onClick={() => move(1)}
               >
                 Next →
               </button>
@@ -94,7 +118,7 @@ export default function Review() {
             </div>
             <h2 className="review-title">{doc.title}</h2>
             <ReviewReasons reasons={doc.review_reasons} />
-            <DocumentDetails doc={doc} onChange={load} />
+            <DocumentDetails key={doc.id} doc={doc} onChange={load} />
             <div className="review-preview">
               <Thumb id={doc.id} className="review-thumb" />
             </div>

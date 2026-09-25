@@ -6,8 +6,11 @@ services:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
       POSTGRES_DB: app
+    # Loopback only: this is app/app with a fixed dev secret, and a plain
+    # "5434:5432" publishes it on every interface the machine has. To reach
+    # the dev stack from another device, override the binding deliberately.
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -38,7 +41,7 @@ services:
       MAIL_PASSWORD: ${MAIL_PASSWORD:-}
       MAIL_FOLDER: ${MAIL_FOLDER:-INBOX}
     ports:
-      - "8010:8000"
+      - "127.0.0.1:8010:8000"
     volumes:
       - ./data:/data
     # Root stays (see the Dockerfile note) but with nothing it does not use:

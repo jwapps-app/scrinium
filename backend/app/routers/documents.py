@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import logging
+import os
 import re
 import tempfile
 import uuid
@@ -31,6 +34,7 @@ from app.schemas import (
     ReprocessRequest,
     ReviewReasonOut,
     SelectionRequest,
+    UploadCompleteRequest,
 )
 from datetime import datetime, timezone
 from app.config import settings as app_settings
@@ -51,6 +55,7 @@ from app.services.export import sanitize
 from app.services.tag_tree import with_ancestors
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+logger = logging.getLogger(__name__)
 
 # Only these render inline; everything else is forced to download so a
 # mistyped/evil content-type can never execute in the browser origin.
@@ -289,17 +294,23 @@ async def upload_chunk(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Upload session too large"
         )
     part = session_dir / f"part-{index:05d}"
+    # Written under a .tmp name and renamed once whole, so completion can
+    # only ever see a part that is either finished or absent — never one that
+    # is half-way through arriving.
+    staging = part.with_name(part.name + ".tmp")
     written = 0
-    async with aiofiles.open(part, "wb") as out:
-        async for chunk in request.stream():
-            written += len(chunk)
-            if written > 128 * 1024 * 1024:
-                await out.close()
-                part.unlink(missing_ok=True)
-                raise HTTPException(
-                    status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Chunk too large"
-                )
-            await out.write(chunk)
+    try:
+        async with aiofiles.open(staging, "wb") as out:
+            async for chunk in request.stream():
+                written += len(chunk)
+                if written > 128 * 1024 * 1024:
+                    raise HTTPException(
+                        status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Chunk too large"
+                    )
+                await out.write(chunk)
+        os.replace(staging, part)
+    finally:
+        staging.unlink(missing_ok=True)
     return {"received": part.stat().st_size}
 
 
@@ -309,34 +320,87 @@ async def upload_chunk(
     status_code=status.HTTP_201_CREATED,
 )
 async def complete_upload(
-    upload_id: uuid.UUID, body: dict, user: CurrentUser, db: DB
+    upload_id: uuid.UUID, body: UploadCompleteRequest, user: CurrentUser, db: DB
+) -> DocumentOut:
+    # One completion per session at a time. Two concurrent completes used to
+    # both read the parts, both ingest, and then race each other deleting
+    # them. The entry is dropped afterwards: whoever ran first consumed the
+    # session, so anyone still queued behind it finds nothing and gets a 404.
+    lock = _completion_locks.setdefault(upload_id, asyncio.Lock())
+    try:
+        async with lock:
+            return await _complete_upload(upload_id, body, user, db)
+    finally:
+        _completion_locks.pop(upload_id, None)
+
+
+_completion_locks: dict[uuid.UUID, asyncio.Lock] = {}
+_PART_NAME = re.compile(r"^part-(\d{5})$")
+
+
+async def _complete_upload(
+    upload_id: uuid.UUID, body: UploadCompleteRequest, user: CurrentUser, db: DB
 ) -> DocumentOut:
     session_dir = _owned_session_dir(upload_id, user)
-    filename = (body.get("filename") or "upload.pdf").strip() or "upload.pdf"
+    filename = (body.filename or "upload.pdf").strip() or "upload.pdf"
     suffix = Path(filename).suffix.lower()
     if suffix not in ACCEPTED_SUFFIXES:
         raise HTTPException(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             f"Unsupported file type {suffix or '(none)'}",
         )
-    parts = sorted(session_dir.glob("part-*"))
+    if any(session_dir.glob("part-*.tmp")):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "A chunk is still being written — wait for it, or send it again",
+        )
+    parts = sorted(p for p in session_dir.glob("part-*") if _PART_NAME.match(p.name))
     if not parts:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No chunks uploaded")
+    # The parts must be exactly 0..N-1. Sorted-glob concatenation used to
+    # accept a gap and store the truncated file as a finished document.
+    indexes = [int(_PART_NAME.match(p.name).group(1)) for p in parts]
+    expected = list(range(len(parts)))
+    if indexes != expected:
+        missing = next(i for i, got in enumerate(indexes) if got != i)
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Chunk {missing} was never received"
+        )
+    if body.parts is not None and body.parts != len(parts):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Expected {body.parts} chunks but {len(parts)} arrived",
+        )
+    assembled = sum(p.stat().st_size for p in parts)
+    if body.size is not None and body.size != assembled:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Expected {body.size} bytes but {assembled} arrived",
+        )
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = Path(tmp.name)
+    # A verification refusal keeps the session so the client can re-send a
+    # part and complete again; everything else ends it.
+    discard_session = True
     try:
         limit = app_settings.max_upload_mb * 1024 * 1024
-        assembled = sum(p.stat().st_size for p in parts)
         if limit and assembled > limit:
             raise HTTPException(
                 status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 f"Upload exceeds the {app_settings.max_upload_mb} MB limit",
             )
+        digest = hashlib.sha256()
         async with aiofiles.open(tmp_path, "wb") as out:
             for part in parts:
                 async with aiofiles.open(part, "rb") as src:
                     while chunk := await src.read(1024 * 1024):
+                        digest.update(chunk)
                         await out.write(chunk)
+        if body.sha256 is not None and digest.hexdigest() != body.sha256.lower():
+            discard_session = False
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "Assembled file does not match the declared sha256"
+            )
         try:
             doc = await intake.ingest_file(
                 db, user.tenant_id, tmp_path, filename
@@ -349,13 +413,14 @@ async def complete_upload(
         return doc_out(doc)
     finally:
         tmp_path.unlink(missing_ok=True)
-        for part in parts:
-            part.unlink(missing_ok=True)
-        (session_dir / "owner").unlink(missing_ok=True)
-        try:
-            session_dir.rmdir()
-        except OSError:
-            pass
+        if discard_session:
+            for part in parts:
+                part.unlink(missing_ok=True)
+            (session_dir / "owner").unlink(missing_ok=True)
+            try:
+                session_dir.rmdir()
+            except OSError:
+                pass
 
 
 @router.post("", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
@@ -1440,42 +1505,76 @@ async def document_text(doc_id: uuid.UUID, user: CurrentUser, db: DB) -> dict:
     return {"text": doc.text_content or "", "title": doc.title}
 
 
+# Selection ceilings for the two bundle downloads. These used to be silent
+# slices — a 400-document binder came back as 300 with nothing said — so
+# now the request is refused with the number in the message.
+BINDER_MAX_DOCUMENTS = 300
+ZIP_MAX_IDS = 200
+ZIP_MAX_FILTERED = 1000
+
+
+def _selection_filter(body: SelectionRequest) -> DocumentFilter | None:
+    """The filter a bundle request means, with the tag-only spelling mapped
+    onto the general one so both paths select documents the same way."""
+    if body.filter is not None:
+        return body.filter
+    if body.filter_tag_id is not None:
+        return DocumentFilter(tag_id=body.filter_tag_id)
+    return None
+
+
+async def _select_by_filter(selection, user, db, *, limit: int, what: str, order=None):
+    conditions = _filter_conditions(user.tenant_id, **selection.model_dump())
+    stmt = _light_document().where(*conditions)
+    if order is not None:
+        stmt = stmt.order_by(order)
+    # One row past the ceiling is enough to know the filter is too wide.
+    docs = (await db.execute(stmt.limit(limit + 1))).scalars().all()
+    if len(docs) > limit:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"The filter matches more than {limit} documents — {what} holds at most "
+            f"{limit}. Narrow the filter or use the library export.",
+        )
+    return docs
+
+
 @router.post("/binder")
 async def build_binder_pdf(body: SelectionRequest, user: CurrentUser, db: DB):
     """One print-ready PDF: cover + contents + the selected documents (or
-    everything under a tag). Searchable copies preferred."""
+    everything a filter matches). Searchable copies preferred."""
     from app.services import binder as binder_service
 
     ids = body.ids
-    tag_id = body.filter_tag_id
+    selection = _selection_filter(body)
     title = (body.title or "").strip() or f"{app_settings.app_name} Binder"
     if ids:
-        docs = [await _get_owned(i, user, db) for i in ids[:300]]
-    elif tag_id:
-        docs = (
-            await db.execute(
-                _light_document()
-                .where(
-                    Document.tenant_id == user.tenant_id,
-                    Document.deleted_at.is_(None),
-                    Document.tags.any(Tag.id == tag_id),
-                )
-                .order_by(func.lower(Document.title))
-                .limit(300)
+        if len(ids) > BINDER_MAX_DOCUMENTS:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Select at most {BINDER_MAX_DOCUMENTS} documents for a binder",
             )
-        ).scalars().all()
+        docs = [await _get_owned(i, user, db) for i in ids]
+    elif selection is not None:
+        docs = await _select_by_filter(
+            selection, user, db,
+            limit=BINDER_MAX_DOCUMENTS, what="a binder",
+            order=func.lower(Document.title),
+        )
     else:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "ids or filter_tag_id")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "ids, filter or filter_tag_id")
 
     sources = []
     total_bytes = 0
     for doc in docs:
         blob_id = doc.archive_blob_id or doc.original_blob_id
         path = storage.blob_file(blob_id)
-        if not path.exists() or not (
-            doc.archive_blob_id or doc.original_filename.lower().endswith(".pdf")
-        ):
-            continue  # binder is PDFs only; skip text-native/missing
+        if not path.exists():
+            logger.warning("binder: document %s skipped, file missing from store", doc.id)
+            continue
+        if not (doc.archive_blob_id or doc.original_filename.lower().endswith(".pdf")):
+            logger.warning("binder: document %s skipped, not a PDF", doc.id)
+            continue
         total_bytes += path.stat().st_size
         if total_bytes > 2 * 1024**3:
             raise HTTPException(
@@ -1511,34 +1610,31 @@ async def build_binder_pdf(body: SelectionRequest, user: CurrentUser, db: DB):
 
 @router.post("/download-zip")
 async def download_zip(body: SelectionRequest, user: CurrentUser, db: DB):
-    """Zip of selected documents (ids) or everything under a tag
-    (filter_tag_id) — searchable copies when available, pretty names,
-    tag-path folders for tag downloads."""
+    """Zip of selected documents (ids) or everything a filter matches
+    (filter / filter_tag_id) — searchable copies when available, pretty
+    names, tag-path folders for filter downloads."""
     from app.services.export import folder_for
 
     ids = body.ids
-    tag_id = body.filter_tag_id
+    selection = _selection_filter(body)
     if ids:
-        docs = [await _get_owned(i, user, db) for i in ids[:200]]
-    elif tag_id:
-        docs = (
-            await db.execute(
-                _light_document()
-                .where(
-                    Document.tenant_id == user.tenant_id,
-                    Document.deleted_at.is_(None),
-                    Document.tags.any(Tag.id == tag_id),
-                )
-                .limit(1000)
+        if len(ids) > ZIP_MAX_IDS:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Select at most {ZIP_MAX_IDS} documents for a zip",
             )
-        ).scalars().all()
+        docs = [await _get_owned(i, user, db) for i in ids]
+    elif selection is not None:
+        docs = await _select_by_filter(
+            selection, user, db, limit=ZIP_MAX_FILTERED, what="a zip"
+        )
     else:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "ids or filter_tag_id")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "ids, filter or filter_tag_id")
     if not docs:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Nothing to download")
 
     parents = {}
-    if tag_id:
+    if selection is not None:
         all_tags = (
             await db.execute(select(Tag).where(Tag.tenant_id == user.tenant_id))
         ).scalars().all()
@@ -1546,11 +1642,15 @@ async def download_zip(body: SelectionRequest, user: CurrentUser, db: DB):
 
     total_bytes = 0
     entries = []
-    used: dict[str, int] = {}
+    # Every final member name, as the zip will spell it. Reserving only the
+    # base title let "x", "x" and "x (2)" produce two members called
+    # "x (2).pdf", and whichever extracted last won.
+    used: set[str] = set()
     for doc in docs:
         blob_id = doc.archive_blob_id or doc.original_blob_id
         path = storage.blob_file(blob_id)
         if not path.exists():
+            logger.warning("zip: document %s skipped, file missing from store", doc.id)
             continue
         total_bytes += path.stat().st_size
         if total_bytes > 4 * 1024**3:
@@ -1560,12 +1660,14 @@ async def download_zip(body: SelectionRequest, user: CurrentUser, db: DB):
             )
         ext = ".pdf" if doc.archive_blob_id else (Path(doc.original_filename).suffix.lower() or ".bin")
         base = sanitize(doc.title)
-        folder = folder_for(doc, parents) if tag_id else ""
-        key = f"{folder}/{base}".lower()
-        used[key] = used.get(key, 0) + 1
-        if used[key] > 1:
-            base = f"{base} ({used[key]})"
-        arc = f"{folder}/{base}{ext}" if folder else f"{base}{ext}"
+        folder = folder_for(doc, parents) if selection is not None else ""
+        prefix = f"{folder}/" if folder else ""
+        arc = f"{prefix}{base}{ext}"
+        n = 1
+        while arc.lower() in used:
+            n += 1
+            arc = f"{prefix}{base} ({n}){ext}"
+        used.add(arc.lower())
         entries.append((arc, path))
     if not entries:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Files missing from store")
@@ -1707,7 +1809,10 @@ async def restore_document(
 @router.delete("/{doc_id}/purge", status_code=status.HTTP_204_NO_CONTENT)
 async def purge_document(doc_id: uuid.UUID, user: AdminUser, db: DB) -> None:
     doc = await _get_owned(doc_id, user, db)
-    await deletion.purge_document(db, doc)
+    released = await deletion.purge_document(db, doc)
+    # Rows first, files only once the commit is durable (see PurgedFiles).
+    await db.commit()
+    released.remove()
 
 
 @router.post("/bulk", response_model=BulkActionResult)
@@ -1784,9 +1889,26 @@ async def bulk_action(
         ).scalars().all()
 
     processed = 0
+    released = deletion.PurgedFiles()
+    # One job per document at a time, as the single-document reprocess
+    # already enforces: a second job on a document that is queued or running
+    # repeats the OCR and the loser's work is discarded at the swap.
+    busy: set = set()
+    if body.action == "reprocess" and docs:
+        busy = {
+            row
+            for row in (
+                await db.execute(
+                    select(Job.document_id).where(
+                        Job.document_id.in_([d.id for d in docs]),
+                        Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                    )
+                )
+            ).scalars()
+        }
     for doc in docs:
         if body.action == "reprocess":
-            if doc.deleted_at is not None:
+            if doc.deleted_at is not None or doc.id in busy:
                 continue
             doc.status = DocumentStatus.PENDING
             doc.error = None
@@ -1796,7 +1918,7 @@ async def bulk_action(
         elif body.action == "restore":
             doc.deleted_at = None
         elif body.action == "purge":
-            await deletion.purge_document(db, doc)
+            released.extend(await deletion.purge_document(db, doc))
         elif body.action == "add_tags":
             expanded = await with_ancestors(db, tags)
             existing = {t.id for t in doc.tags}
@@ -1812,6 +1934,10 @@ async def bulk_action(
             doc.doc_type_id = body.doc_type_id  # None clears
         processed += 1
     await db.flush()
+    if body.action == "purge":
+        # Rows first, files only once the commit is durable (see PurgedFiles).
+        await db.commit()
+        released.remove()
     skipped = len(body.ids) - processed if body.ids else 0
     return BulkActionResult(
         processed=processed, skipped=max(skipped, 0), remaining=remaining

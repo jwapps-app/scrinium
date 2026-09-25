@@ -27,6 +27,15 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-app}
       SECRET_KEY: ${SECRET_KEY:?set in Portainer}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://scrinium.example.com}
+      # The address(es) cloudflared connects to nginx from — the container's
+      # IP on this stack's network, or the host it runs on, comma-separated
+      # (CIDR allowed). CF-Connecting-IP is only an honest client address
+      # when the request came through the tunnel; with this set, the api
+      # believes the header from those peers alone and limits everyone else
+      # (LAN callers) on their real address. Left empty, the header still
+      # counts, but only alongside CF-Ray and never in place of the real
+      # address's own bucket — see backend/app/services/ratelimit.py.
+      TUNNEL_PEERS: ${TUNNEL_PEERS:-}
       DATA_DIR: /data
       # A migration that cannot get its lock retries instead of parking
       # every other query behind it (nightly pg_dump, long export).
@@ -62,7 +71,12 @@ services:
     image: ghcr.io/jwapps-app/scrinium-api:latest
     command: ["worker"]
     # Scale for bulk ingests (WORKER_REPLICAS=2 or 3): replicas share the job
-    # queue safely; only one runs the watch-folder sweep at a time.
+    # queue; only one runs the watch-folder sweep at a time. The two settings
+    # go together: whenever WORKER_REPLICAS is above 1, also set
+    # WORKER_SINGLE=0 (below). WORKER_SINGLE=1 tells a starting worker it is
+    # the only one and may reclaim every running job as abandoned — with a
+    # second replica running, that steals its jobs mid-flight and runs them
+    # twice.
     deploy:
       replicas: ${WORKER_REPLICAS:-1}
     environment:
@@ -76,6 +90,7 @@ services:
       WATCH_DIR: /data/watch
       WATCH_BATCH_SIZE: ${WATCH_BATCH_SIZE:-25}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+      # Must be 0 whenever WORKER_REPLICAS (above) is more than 1.
       WORKER_SINGLE: ${WORKER_SINGLE:-1}
       OCR_JOBS: ${OCR_JOBS:-3}
       OCR_FALLBACK_MINUTES: ${OCR_FALLBACK_MINUTES:-180}

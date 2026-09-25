@@ -28,6 +28,15 @@ _HITS: dict[str, list[float]] = defaultdict(list)
 
 _TOO_MANY = "Too many attempts — wait a minute and try again."
 
+# With TUNNEL_PEERS unset there is no way to check that a CF-Connecting-IP
+# really came through the tunnel, so it is never believed *instead of* the
+# address nginx saw: the request also counts against that real address, at
+# this multiple of the limit. A LAN caller forging a fresh header per request
+# still runs into its own bucket, while everyone arriving through an
+# unlabelled tunnel shares one pool wide enough that a single person's ten
+# bad passwords do not lock the rest out.
+UNVERIFIED_SHARE = 5
+
 
 def _trusted_peer(request: Request) -> bool:
     """Is the immediate peer a proxy whose forwarded-IP header we believe?"""
@@ -57,8 +66,9 @@ def _in_any(address: str, networks: list[str]) -> bool:
     return False
 
 
-def client_ip(request: Request) -> str:
-    """The caller's address, as honestly as it can be known.
+def _resolve(request: Request) -> tuple[str, str]:
+    """(real, forwarded): the address nginx saw, and the Cloudflare-claimed
+    client if there is one that may be believed at all — "" otherwise.
 
     The socket peer cannot be forged, but behind nginx it is always nginx. So
     from a trusted proxy, X-Real-IP (nginx's own view of its peer) stands in
@@ -66,21 +76,49 @@ def client_ip(request: Request) -> str:
     nginx's container address, and one person's ten bad passwords locked
     everyone on the network out for a minute.
 
-    CF-Connecting-IP is believed on top of that only when the request came
-    through the tunnel: with TUNNEL_PEERS set, that means X-Real-IP is
-    cloudflared; unset, it means any trusted proxy, as before.
+    CF-Connecting-IP is kept on top of that only when the request could have
+    come through the tunnel: with TUNNEL_PEERS set, that means X-Real-IP is
+    cloudflared; unset, any trusted proxy — and what the caller then does
+    with it is up to the caller (see bucket_keys).
     """
     peer = request.client.host if request.client else "unknown"
     if not _trusted_peer(request):
-        return peer
+        return peer, ""
     real = (request.headers.get("x-real-ip") or "").split(",")[0].strip() or peer
     forwarded = (request.headers.get("cf-connecting-ip") or "").split(",")[0].strip()
     if not forwarded:
-        return real
+        return real, ""
     tunnel = settings.tunnel_peer_list
-    if not tunnel or _in_any(real, tunnel):
-        return forwarded
-    return real
+    if tunnel and not _in_any(real, tunnel):
+        return real, ""
+    return real, forwarded
+
+
+def client_ip(request: Request) -> str:
+    """The caller's address, as honestly as it can be known."""
+    real, forwarded = _resolve(request)
+    return forwarded or real
+
+
+def bucket_keys(request: Request) -> list[tuple[str, int]]:
+    """The (key, limit multiplier) pairs a request is counted against.
+
+    One pair in the ordinary cases. Two when a forwarded address is present
+    but cannot be verified (TUNNEL_PEERS unset): the pair of real and
+    forwarded address at the normal limit, and the real address alone at
+    UNVERIFIED_SHARE times it. The header also has to arrive with CF-Ray,
+    which cloudflared always adds and a LAN caller has to go out of its way
+    to forge — a speed bump, not a proof, which is why the real address's
+    bucket is still charged.
+    """
+    real, forwarded = _resolve(request)
+    if not forwarded:
+        return [(real, 1)]
+    if settings.tunnel_peer_list:
+        return [(forwarded, 1)]
+    if not request.headers.get("cf-ray"):
+        return [(real, 1)]
+    return [(f"{real}|{forwarded}", 1), (real, UNVERIFIED_SHARE)]
 
 
 def _consume(key: str, limit: int, window_seconds: int) -> None:
@@ -100,7 +138,8 @@ def rate_limit(bucket: str, limit: int, window_seconds: int):
     """FastAPI dependency: at most `limit` requests per window per client."""
 
     async def _dep(request: Request) -> None:
-        _consume(f"{bucket}:{client_ip(request)}", limit, window_seconds)
+        for key, share in bucket_keys(request):
+            _consume(f"{bucket}:{key}", limit * share, window_seconds)
 
     return _dep
 

@@ -157,30 +157,42 @@ async def _backfill_original_dpi() -> None:
         logger.info("original-dpi backfill: measured %d", len(docs))
 
 
-async def _sweep_orphan_blobs() -> None:
-    """Delete blob-store files that have no Blob row. Failure paths can leave
-    them behind (bytes are written before the DB commit; a rollback drops the
-    row but not the file), and nothing else ever looks at row-less files.
-    Only files older than a day are touched, so in-flight stores are safe."""
-    import os
+# Files looked at per sweep, so an hourly pass over a large store stays
+# short. Coverage comes from the cursor, not from the bound.
+ORPHAN_SCAN_LIMIT = 5000
+ORPHAN_SWEEP_CURSOR = "orphan_sweep_cursor"
+
+
+def _scan_blob_shards(
+    blob_root, cutoff: float, start_after: str | None, limit: int
+) -> tuple[dict, str | None]:
+    """Old files in the store, shard by shard, starting after `start_after`.
+
+    Shards are the aa/bb directories the store hashes blobs into, visited in
+    order as four-hex-character keys and wrapping round to the top. A shard
+    is always finished once begun, and the walk stops after the shard that
+    takes the count to `limit`. Returns the files found (by blob id) and the
+    key of the last shard visited — None when the whole tree was covered, so
+    the next sweep starts over.
+    """
     import uuid as _uuid
-    from pathlib import Path
 
-    from app.models import Blob
-    from app.services import storage
-
-    blob_root = Path(settings.data_dir) / "blobs"
-    if not blob_root.exists():
-        return
-    cutoff = time.time() - 86400
-
-    def scan() -> dict:
-        """Walk the store in a thread. It is ~30,000 stat() calls over NFS,
-        and on the event loop it stalled every lane's heartbeat and progress
-        commit for the duration — the one sweep here that was not threaded
-        while all its siblings were."""
-        found: dict = {}
-        for path in blob_root.glob("*/*/*"):
+    shards = sorted(
+        f"{top.name}{sub.name}"
+        for top in blob_root.iterdir() if top.is_dir()
+        for sub in top.iterdir() if sub.is_dir()
+    )
+    if not shards:
+        return {}, None
+    if start_after and start_after < shards[-1]:
+        first = next(i for i, key in enumerate(shards) if key > start_after)
+        order = shards[first:] + shards[:first]
+    else:
+        order = shards
+    found: dict = {}
+    reached = None
+    for key in order:
+        for path in (blob_root / key[:2] / key[2:]).iterdir():
             try:
                 if not (path.is_file() and path.stat().st_mtime < cutoff):
                     continue
@@ -190,14 +202,42 @@ async def _sweep_orphan_blobs() -> None:
                 found[_uuid.UUID(path.name)] = path
             except ValueError:
                 continue
-            if len(found) >= 5000:
-                break  # bound one sweep; the next hour catches the rest
-        return found
+        reached = key
+        if len(found) >= limit:
+            return found, reached
+    return found, None
 
-    by_id = await asyncio.to_thread(scan)
-    if not by_id:
+
+async def _sweep_orphan_blobs() -> None:
+    """Delete blob-store files that have no Blob row. Failure paths can leave
+    them behind (bytes are written before the DB commit; a rollback drops the
+    row but not the file), and nothing else ever looks at row-less files.
+    Only files older than a day are touched, so in-flight stores are safe."""
+    import os
+    from pathlib import Path
+
+    from app.models import Blob
+
+    blob_root = Path(settings.data_dir) / "blobs"
+    if not blob_root.exists():
         return
+    cutoff = time.time() - 86400
+
+    # Resume where the last sweep stopped. Each sweep looks at a bounded
+    # number of files, and one that always began at the top of the tree
+    # looked at the same first few thousand — all legitimate — every hour,
+    # while an orphan further down was never reached.
     async with SessionLocal() as session:
+        cursor = (await get_value(session, ORPHAN_SWEEP_CURSOR)).strip() or None
+
+    # The walk is ~30,000 stat() calls over NFS; in a thread, because on the
+    # event loop it stalled every lane's heartbeat and progress commit for
+    # the duration.
+    by_id, reached = await asyncio.to_thread(
+        _scan_blob_shards, blob_root, cutoff, cursor, ORPHAN_SCAN_LIMIT
+    )
+    async with SessionLocal() as session:
+        await set_value(session, ORPHAN_SWEEP_CURSOR, reached or "")
         known = {
             row
             for row in (
@@ -205,7 +245,10 @@ async def _sweep_orphan_blobs() -> None:
                     select(Blob.id).where(Blob.id.in_(list(by_id)))
                 )
             ).scalars()
-        }
+        } if by_id else set()
+        await session.commit()
+    if not by_id:
+        return
     orphans = [path for bid, path in by_id.items() if bid not in known]
 
     def remove(paths: list) -> int:
@@ -317,7 +360,7 @@ async def _fail_orphaned_job(job_id, document_id, exc: Exception) -> None:
     try:
         async with SessionLocal() as session:
             job = await session.get(Job, job_id)
-            if job is None or job.status is not JobStatus.RUNNING:
+            if job is None or job.status != JobStatus.RUNNING:
                 return
             job.status = JobStatus.FAILED
             job.error = f"{type(exc).__name__}: {exc}"[:4000]
@@ -811,7 +854,7 @@ async def maintenance_loop() -> None:
 
 async def _verify_blobs(batch: int = 300) -> None:
     """Bit-rot watchdog: re-hash a batch of blobs against their stored
-    sha256 each hour, oldest verification first — the whole store cycles
+    sha256 each hour, least recently checked first — the whole store cycles
     every few days. Mismatches are surfaced in Settings health and logged
     loudly; they mean the bytes on disk are no longer the bytes ingested."""
     import hashlib
@@ -861,10 +904,20 @@ async def _verify_blobs(batch: int = 300) -> None:
         now_ts = datetime.now(timezone.utc)
         bad_set = set(corrupt)
         unreadable_ids = {bid for bid, _ in unreadable}
+        unreadable_why = dict(unreadable)
         for blob in blobs:
+            # Every blob checked moves to the back of the queue, bad ones
+            # included: the batch is chosen oldest-first, and a bad blob that
+            # kept its place was re-checked every hour while everything
+            # behind it waited for ever. The verdict rides along on the row.
             key = str(blob.id)
-            if key not in bad_set and key not in unreadable_ids:
-                blob.verified_at = now_ts
+            blob.verified_at = now_ts
+            if key in bad_set:
+                blob.verify_error = "corrupt: sha256 does not match"
+            elif key in unreadable_ids:
+                blob.verify_error = f"unreadable: {unreadable_why[key]}"[:1000]
+            else:
+                blob.verify_error = None
 
         raw = await get_value(session, "integrity_status")
         try:
@@ -988,6 +1041,84 @@ async def _scheduled_export() -> None:
             logger.info("scheduled export pruned %s", stale.name)
 
 
+async def _requeue(session, jobs) -> None:
+    """Put RUNNING jobs back on the queue and their documents back to pending."""
+    for job in jobs:
+        job.status = JobStatus.QUEUED
+        job.pages_done = None
+        job.pages_total = None
+        job.phase = None
+        job.heartbeat_at = None
+        doc = await session.get(Document, job.document_id)
+        if doc is not None and doc.status == DocumentStatus.PROCESSING:
+            doc.status = DocumentStatus.PENDING
+
+
+# Startup reclaim in single-worker mode. A job's heartbeat lands every ~15s
+# while OCR runs, so one older than two beats belonged to the process that
+# just died and is taken back at once. A job still beating is watched for
+# a little over two beats: if the heartbeat moves, some other process is
+# running it — WORKER_SINGLE says there is none, but WORKER_REPLICAS is set
+# independently and a second replica was reclaiming live work on every
+# restart — and if it does not, the job is dead however fresh it looked.
+# Either way a restarted worker has its own jobs back within a minute.
+STARTUP_STALE_SECONDS = 30
+STARTUP_WATCH_SECONDS = 35
+
+
+def _unadvanced(before: dict, after: dict) -> list:
+    """Ids whose heartbeat did not move between two readings.
+
+    A job missing from `after` finished or was requeued by someone else in
+    the meantime and is not ours to touch."""
+    return [jid for jid, beat in before.items() if jid in after and after[jid] == beat]
+
+
+async def _running_heartbeats() -> dict:
+    async with SessionLocal() as session:
+        rows = await session.execute(
+            select(Job.id, Job.heartbeat_at).where(Job.status == JobStatus.RUNNING)
+        )
+        return {jid: beat for jid, beat in rows.all()}
+
+
+async def reclaim_interrupted_jobs_at_startup() -> None:
+    if not settings.worker_single:
+        # Replicas: only the heartbeat says whose job is whose.
+        await reclaim_interrupted_jobs(None)
+        return
+    await reclaim_interrupted_jobs(STARTUP_STALE_SECONDS)
+    before = await _running_heartbeats()
+    if not before:
+        return
+    logger.info(
+        "%d job(s) still beating at startup; watching for %ds before reclaiming",
+        len(before), STARTUP_WATCH_SECONDS,
+    )
+    await asyncio.sleep(STARTUP_WATCH_SECONDS)
+    after = await _running_heartbeats()
+    dead = set(_unadvanced(before, after))
+    live = [jid for jid in after if jid in before and jid not in dead]
+    if live:
+        logger.warning(
+            "%d job(s) are being run by another worker process; left alone. "
+            "If replicas are intended, set WORKER_SINGLE=0.", len(live),
+        )
+    if not dead:
+        return
+    async with SessionLocal() as session:
+        jobs = (
+            await session.execute(
+                select(Job).where(
+                    Job.id.in_(list(dead)), Job.status == JobStatus.RUNNING
+                )
+            )
+        ).scalars().all()
+        await _requeue(session, jobs)
+        await session.commit()
+    logger.info("requeued %d job(s) whose heartbeat had stopped", len(jobs))
+
+
 async def reclaim_interrupted_jobs(stale_after_seconds: int | None = None) -> None:
     """Requeue jobs left RUNNING by a dead worker — redeploy, crash, or
     NAS reboot. Reprocessing is idempotent, so an interrupted doc simply
@@ -1034,15 +1165,7 @@ async def reclaim_interrupted_jobs(stale_after_seconds: int | None = None) -> No
                 )
             )
         ).scalars().all()
-        for job in jobs:
-            job.status = JobStatus.QUEUED
-            job.pages_done = None
-            job.pages_total = None
-            job.phase = None
-            job.heartbeat_at = None
-            doc = await session.get(Document, job.document_id)
-            if doc is not None and doc.status == DocumentStatus.PROCESSING:
-                doc.status = DocumentStatus.PENDING
+        await _requeue(session, jobs)
         if jobs:
             await session.commit()
             logger.info("requeued %d interrupted job(s) from a prior run", len(jobs))
@@ -1109,11 +1232,9 @@ async def main() -> None:
     asyncio.get_running_loop().set_default_executor(pool)
     logger.info("thread pool: %d workers", settings.thread_pool_size())
     try:
-        # Single container → reclaim every RUNNING job at startup (all are
-        # orphans; this worker owns none yet). Replicas → heartbeat-only.
         # Before anything claims a job: a full disk fails every one of them.
         _sweep_stale_tempdirs()
-        await reclaim_interrupted_jobs(0 if settings.worker_single else None)
+        await reclaim_interrupted_jobs_at_startup()
         await asyncio.gather(
             pulse_loop(),
             maintenance_loop(),

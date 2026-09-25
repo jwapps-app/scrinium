@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { loadPdf } from '../pdfjs'
+import { openPdf } from '../pdfjs'
 import { apiFetch } from '../api'
 
 const RENDER_MARGIN = 700
@@ -12,7 +12,7 @@ const RENDER_MARGIN = 700
  */
 const ComparePane = forwardRef(function ComparePane({ docId, onScroll }, ref) {
   const scrollerRef = useRef(null)
-  const stateRef = useRef({ pdf: null, offsets: [], heights: [], slots: [], rendered: new Set() })
+  const stateRef = useRef({ task: null, pdf: null, offsets: [], heights: [], slots: [], rendered: new Set() })
   const urlRef = useRef(null)
   // True while WE are setting scrollTop, so the resulting scroll event is
   // recognized as our own echo and not fed back to the parent as a user scroll.
@@ -65,8 +65,14 @@ const ComparePane = forwardRef(function ComparePane({ docId, onScroll }, ref) {
         const blob = await resp.blob()
         if (cancelled) return
         urlRef.current = URL.createObjectURL(blob)
-        const pdf = await loadPdf(urlRef.current)
-        if (cancelled) return
+        // Held on the state so cleanup can destroy a load still in progress.
+        const task = openPdf(urlRef.current)
+        st.task = task
+        const pdf = await task.promise
+        if (cancelled) {
+          task.destroy()
+          return
+        }
         st.pdf = pdf
 
         const width = scroller.clientWidth || 400
@@ -145,7 +151,10 @@ const ComparePane = forwardRef(function ComparePane({ docId, onScroll }, ref) {
       cancelled = true
       scroller.removeEventListener('scroll', handleScroll)
       if (urlRef.current) URL.revokeObjectURL(urlRef.current)
-      stateRef.current = { pdf: null, offsets: [], heights: [], slots: [], rendered: new Set() }
+      // Without this the worker and parsed document outlived every
+      // comparison, and cycling through pairs kept them all.
+      st.task?.destroy().catch(() => {})
+      stateRef.current = { task: null, pdf: null, offsets: [], heights: [], slots: [], rendered: new Set() }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docId])

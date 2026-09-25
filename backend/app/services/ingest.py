@@ -48,6 +48,31 @@ def _page_count(pdf: Path) -> int | None:
         return None
 
 
+# What an image without resolution metadata is taken to be. It is the value
+# ocrmypdf is told to assume for images (--image-dpi 300), so the archive is
+# built at exactly this density whatever the file claims.
+IMAGE_DPI_ASSUMED = 300
+
+
+def _image_dpi(image: Path) -> int:
+    """Resolution of a raster original: the file's own DPI tag when it has
+    one, else the density the OCR pass renders it at. Always positive — an
+    image is a scan for the purposes of the archive-format policy."""
+    try:
+        from PIL import Image
+
+        with Image.open(image) as im:
+            dpi = im.info.get("dpi")
+    except Exception:
+        return IMAGE_DPI_ASSUMED
+    try:
+        value = int(round(max(float(dpi[0]), float(dpi[1]))))
+    except (TypeError, ValueError, IndexError):
+        return IMAGE_DPI_ASSUMED
+    # 1 or 72 is what libraries write when they know nothing; treat as untagged.
+    return value if value > 72 else IMAGE_DPI_ASSUMED
+
+
 @dataclass
 class IngestOutcome:
     # blob fields are None when the provider produced text only (no archive)
@@ -120,10 +145,14 @@ def _run_ocr(
         )
 
     provider = get_provider(engine)
-    # Cheap (samples a couple of pages) and only meaningful for PDFs; an
-    # image original has no embedded images to probe.
+    # Cheap (samples a couple of pages) for a PDF. An image original is a
+    # raster by definition, so it gets a DPI too: left at None it took the
+    # born-digital branch of the archive-format policy and was archived as
+    # PDF/A "to preserve its fonts".
     original_dpi = (
-        compress.max_image_dpi(source) if suffix.lower() == ".pdf" else None
+        compress.max_image_dpi(source)
+        if suffix.lower() == ".pdf"
+        else _image_dpi(source)
     )
     # Decided here because it depends on the measurement just taken: PDF/A is
     # worth its ~4x cost on a born-digital document, whose embedded fonts are
@@ -304,12 +333,50 @@ async def _run_with_progress(
         # The job is lost — a heartbeat commit failed because the database
         # went away, or the lane was cancelled. The thread cannot be stopped,
         # but the subprocess it is waiting on can: leave a cancel marker the
-        # watchdog checks, so the run stops within ten seconds rather than
+        # watchdog checks, so the run stops within seconds rather than
         # finishing a 700-page book for a result nobody will keep.
+        #
+        # Then stay here until the thread has actually seen it. Raising
+        # straight away hands control back to the caller's TemporaryDirectory,
+        # which deletes the marker with everything else — before the watchdog's
+        # next poll, more often than not — and the ocrmypdf run carried on
+        # ownerless. The wait is bounded so a wedged thread cannot hold the
+        # lane hostage; the watchdog kills the process group on its own clock.
         if not task.done():
             ocr_tesseract.request_cancel(workdir)
+            await _wait_for_cancelled_ocr(task)
         raise
     return task.result()
+
+
+# Comfortably more than the watchdog's poll interval plus the time the kill
+# takes to reap ocrmypdf's children; the thread returns right after that.
+CANCEL_WAIT_SECONDS = 20
+
+
+async def _wait_for_cancelled_ocr(task: asyncio.Task) -> None:
+    try:
+        await asyncio.wait({task}, timeout=CANCEL_WAIT_SECONDS)
+    except BaseException:
+        # A second cancellation while waiting: still leave the marker where
+        # the watchdog can see it for as long as the directory lasts.
+        pass
+    if not task.done():
+        logger.warning(
+            "OCR thread did not stop within %ds of cancellation; the "
+            "watchdog will kill the run when it next polls", CANCEL_WAIT_SECONDS,
+        )
+    elif not task.cancelled():
+        task.exception()  # retrieved, so the loop does not log it as unhandled
+
+
+def _still_current(document: Document, original_at_start, archive_at_start) -> bool:
+    """True when the blobs a job started from are the ones the row still
+    points at, so its result describes the document as it is now."""
+    return (
+        document.original_blob_id == original_at_start
+        and document.archive_blob_id == archive_at_start
+    )
 
 
 async def process_job(session: AsyncSession, job: Job) -> None:
@@ -327,10 +394,14 @@ async def process_job(session: AsyncSession, job: Job) -> None:
     job.attempts += 1
     await session.commit()
 
-    # Remembered for the compare-and-swap after OCR: if another job replaced the
-    # archive while this one ran, this result is stale and must be discarded
-    # rather than overwriting the newer one.
+    # Remembered for the compare-and-swap after OCR: if another job replaced
+    # the archive while this one ran, this result is stale and must be
+    # discarded rather than overwriting the newer one. The original is
+    # remembered too: a page edit swaps it for a new blob and clears the
+    # archive, so a first-time OCR that compared archives alone saw
+    # None == None and installed text recognised from the pre-edit pages.
     archive_at_start = document.archive_blob_id
+    original_at_start = document.original_blob_id
 
     original = storage.blob_file(document.original_blob_id)
     suffix = Path(document.original_filename).suffix
@@ -369,12 +440,13 @@ async def process_job(session: AsyncSession, job: Job) -> None:
     await session.commit()
 
     # Lock the row for the swap itself (the OCR above ran unlocked, so nothing
-    # was held for hours) and confirm nobody replaced the archive meanwhile.
-    # Without this, two jobs on one document silently discard each other's work.
+    # was held for hours) and confirm nobody replaced the archive or the
+    # original meanwhile. Without this, two jobs on one document silently
+    # discard each other's work.
     await session.refresh(document, with_for_update=True)
-    if document.archive_blob_id != archive_at_start:
+    if not _still_current(document, original_at_start, archive_at_start):
         logger.warning(
-            "document %s archive changed under job %s; discarding this result",
+            "document %s changed under job %s; discarding this result",
             document.id,
             job.id,
         )
@@ -445,10 +517,10 @@ async def process_job(session: AsyncSession, job: Job) -> None:
     # them on every fresh OCR is safe; before the push so the notification
     # carries any rule-set title.
     try:
-        outcome = await classify_document(session, document)
-        if outcome.matched_rules:
+        classified = await classify_document(session, document)
+        if classified.matched_rules:
             logger.info(
-                "auto-classified %s: %s", document.id, ", ".join(outcome.matched_rules)
+                "auto-classified %s: %s", document.id, ", ".join(classified.matched_rules)
             )
         await session.commit()
     except Exception:
@@ -465,7 +537,7 @@ async def process_job(session: AsyncSession, job: Job) -> None:
         for old_id in superseded:
             storage.delete_blob(old_id)
 
-    await _notice_sidecar_fallback(session, document, outcome, engine_override)
+    await _notice_sidecar_fallback(session, document, document.ocr_engine, engine_override)
 
     await push.notify_tenant(
         session,
@@ -484,20 +556,23 @@ SIDECAR_FALLBACK_NOTICE = "sidecar_fallback_noticed_at"
 SIDECAR_NOTICE_EVERY_HOURS = 12
 
 
-async def _notice_sidecar_fallback(session, document, outcome, engine_override) -> None:
+async def _notice_sidecar_fallback(session, document, engine, engine_override) -> None:
+    """`engine` is the engine that produced the committed result, as a
+    string: by the time this runs the OCR outcome has been consumed and
+    the name `outcome` has been reused for the classifier's report."""
     wanted = (engine_override or settings.ocr_engine) == "apple" and bool(
         settings.apple_ocr_url
     )
     if not wanted:
         return
-    if outcome.engine == "apple":
+    if engine == "apple":
         # Back to normal: clear the notice so the next outage is announced
         # afresh rather than swallowed by a stale timestamp.
         if await get_value(session, SIDECAR_FALLBACK_NOTICE):
             await set_value(session, SIDECAR_FALLBACK_NOTICE, "")
             await session.commit()
         return
-    if outcome.engine != "tesseract":
+    if engine != "tesseract":
         return  # text-only is a different failure, reported on the document
     last = await get_value(session, SIDECAR_FALLBACK_NOTICE)
     now = datetime.now(timezone.utc)

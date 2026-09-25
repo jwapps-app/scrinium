@@ -1,4 +1,4 @@
-fastapi==0.115.*
+fastapi==0.141.*
 uvicorn[standard]==0.34.*
 sqlalchemy[asyncio]==2.0.*
 asyncpg==0.30.*
@@ -10,8 +10,8 @@ bcrypt==4.*
 PyJWT==2.*
 python-multipart==0.0.*
 ocrmypdf==16.*
-pypdf==5.*
-Pillow==11.*
+pypdf==6.*
+Pillow==12.*
 aiofiles==24.*
 httpx==0.28.*
 pyzbar==0.1.*
@@ -19,3 +19,7 @@ defusedxml==0.7.*
 # Backtracking-safe matching: unlike stdlib re, it supports a wall-clock
 # timeout, so a user-authored rule pattern cannot run forever.
 regex==2024.*
+
+# Pinned to the release the tests run against: FastAPI accepts a wide range
+# and a fresh image would otherwise float to whatever is newest that day.
+starlette==1.7.*

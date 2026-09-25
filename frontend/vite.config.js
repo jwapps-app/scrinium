@@ -18,4 +18,8 @@ export default defineConfig({
       '/api': 'http://localhost:8010',
     },
   },
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/*.test.{js,jsx}'],
+  },
 })

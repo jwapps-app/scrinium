@@ -19,6 +19,7 @@ Scrinium's first user/tenant exists.
 import asyncio
 import logging
 import os
+import stat as stat_module
 import time
 from pathlib import Path
 
@@ -45,25 +46,42 @@ def _skip_part(part: str) -> bool:
 
 
 def _candidates(watch: Path) -> list[Path]:
-    found = []
-    for path in sorted(watch.rglob("*")):
-        # Never follow a symlink. The watch share is writable by other (less
-        # privileged) accounts on the NAS, and is_file() stats *through* a link
-        # while the suffix check only sees the link's own name — so a
-        # `notes.pdf -> /etc/shadow` would have been read into the blob store
-        # and served as a document. The container runs as root, which makes any
-        # root-readable file reachable this way.
-        if path.is_symlink():
-            logger.warning("watch: ignoring symlink %s", path)
-            continue
-        if not path.is_file():
-            continue
-        rel = path.relative_to(watch)
-        if any(_skip_part(part) for part in rel.parts):
-            continue
-        if path.suffix.lower() not in intake.ACCEPTED_SUFFIXES:
-            continue
-        found.append(path)
+    """Every ingestible file under the watch dir, in path order.
+
+    Excluded directories (our filing dirs, hidden and NAS-system folders) are
+    pruned before descent rather than filtered afterwards: rglob walked the
+    whole tree, including years of .consumed/ history, on every five-second
+    poll, and the batch cap only bounded ingestion, never the scan itself.
+    """
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(watch):
+        # Prune in place so os.walk never enters them. A symlinked directory
+        # is dropped too; os.walk would not descend into it, but it should
+        # not be reported either (see the symlink note below).
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not _skip_part(name) and not os.path.islink(os.path.join(dirpath, name))
+        ]
+        for name in filenames:
+            if _skip_part(name):
+                continue
+            path = Path(dirpath) / name
+            # Never follow a symlink. The watch share is writable by other
+            # (less privileged) accounts on the NAS, and is_file() stats
+            # *through* a link while the suffix check only sees the link's own
+            # name — so a `notes.pdf -> /etc/shadow` would have been read into
+            # the blob store and served as a document. The container runs as
+            # root, which makes any root-readable file reachable this way.
+            if path.is_symlink():
+                logger.warning("watch: ignoring symlink %s", path)
+                continue
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in intake.ACCEPTED_SUFFIXES:
+                continue
+            found.append(path)
+    found.sort()
     return found
 
 
@@ -114,21 +132,37 @@ def sweep_retention() -> int:
     removed = 0
     for folder_name in (".consumed", ".duplicates"):
         folder = watch / folder_name
+        # Same guard as _file_into: a filing root that is a symlink would send
+        # the walk — and the unlinks — outside the watch tree, as root.
+        # is_dir() follows links, so check the link itself first.
+        if folder.is_symlink():
+            logger.warning("retention: ignoring symlinked filing dir %s", folder)
+            continue
         if not folder.is_dir():
             continue
-        for dirpath, _dirnames, filenames in os.walk(folder):
+        for dirpath, dirnames, filenames in os.walk(folder):
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if not os.path.islink(os.path.join(dirpath, name))
+            ]
             for name in filenames:
                 path = Path(dirpath) / name
                 try:
-                    if path.stat().st_mtime < cutoff:
+                    # lstat: a symlink's own age, never the target's, and a
+                    # link is left alone regardless — only filed copies go.
+                    info = path.lstat()
+                    if not stat_module.S_ISREG(info.st_mode):
+                        continue
+                    if info.st_mtime < cutoff:
                         path.unlink()
                         removed += 1
                 except OSError:
                     continue
         # Prune emptied subfolders (never the filing root itself).
-        for dirpath, _dirnames, _filenames in os.walk(folder, topdown=False):
+        for dirpath, dirnames, _filenames in os.walk(folder, topdown=False):
             directory = Path(dirpath)
-            if directory == folder:
+            if directory == folder or directory.is_symlink():
                 continue
             try:
                 directory.rmdir()

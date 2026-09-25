@@ -9,6 +9,8 @@ removes blobs, disk files, and the consumed watch-folder copy.
 import logging
 import shutil
 import time
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -42,24 +44,56 @@ def _remove_consumed_copy(source_path: str) -> None:
         parent = parent.parent
 
 
-async def purge_document(db: AsyncSession, doc: Document) -> None:
-    """Permanently remove a document: row, blobs, files, consumed copy."""
+@dataclass
+class PurgedFiles:
+    """Files a purge has released but not yet removed from disk.
+
+    The rows go first and the bytes only after the caller has committed:
+    unlinking inside the transaction meant a failed commit rolled the rows
+    back to point at files that were already gone. If the process dies
+    between commit and removal the bytes are merely orphaned, and the hourly
+    orphan-blob sweep collects those.
+    """
+
+    blob_ids: list[uuid.UUID] = field(default_factory=list)
+    source_paths: list[str] = field(default_factory=list)
+
+    def extend(self, other: "PurgedFiles") -> None:
+        self.blob_ids.extend(other.blob_ids)
+        self.source_paths.extend(other.source_paths)
+
+    def remove(self) -> None:
+        """Delete the released files. Only call after the commit succeeded."""
+        for blob_id in self.blob_ids:
+            storage.delete_blob(blob_id)
+        for source_path in self.source_paths:
+            _remove_consumed_copy(source_path)
+        self.blob_ids.clear()
+        self.source_paths.clear()
+
+
+async def purge_document(db: AsyncSession, doc: Document) -> PurgedFiles:
+    """Permanently remove a document's rows: document and blob records.
+
+    Returns the files that belong to those rows; the caller commits and
+    then calls `.remove()` on the result (see PurgedFiles for why)."""
     blob_ids = [doc.original_blob_id]
     if doc.archive_blob_id is not None:
         blob_ids.append(doc.archive_blob_id)
     if doc.thumbnail_blob_id is not None:
         blob_ids.append(doc.thumbnail_blob_id)
-    source_path = doc.source_path
+    released = PurgedFiles(
+        blob_ids=list(blob_ids),
+        source_paths=[doc.source_path] if doc.source_path else [],
+    )
     await db.delete(doc)
     await db.flush()
     for blob_id in blob_ids:
         blob = await db.get(Blob, blob_id)
         if blob is not None:
             await db.delete(blob)
-        storage.delete_blob(blob_id)
     await db.flush()
-    if source_path:
-        _remove_consumed_copy(source_path)
+    return released
 
 
 async def purge_expired(db: AsyncSession, limit: int = 100) -> int:
@@ -76,10 +110,12 @@ async def purge_expired(db: AsyncSession, limit: int = 100) -> int:
             .limit(limit)
         )
     ).scalars().all()
+    released = PurgedFiles()
     for doc in expired:
-        await purge_document(db, doc)
+        released.extend(await purge_document(db, doc))
     if expired:
         await db.commit()
+        released.remove()
         logger.info("purged %d expired document(s) from trash", len(expired))
     return len(expired)
 

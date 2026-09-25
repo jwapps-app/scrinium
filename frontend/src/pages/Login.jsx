@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { setTokens } from '../api'
+import { loadSession } from '../session'
 import { APP_NAME, APP_TAGLINE } from '../constants/branding'
 
 export default function Login() {
@@ -41,6 +42,10 @@ export default function Login() {
         throw new Error(detail)
       }
       setTokens(await resp.json())
+      // Load the identity now rather than on the next render: if this is a
+      // different account from the last one, the offline copies are cleared
+      // before any page can list them.
+      await loadSession(true)
       navigate('/', { replace: true })
     } catch (err) {
       setError(err.message)

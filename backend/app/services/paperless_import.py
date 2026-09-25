@@ -24,14 +24,24 @@ import asyncio
 import json
 import logging
 import zipfile
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from sqlalchemy import select
 
 from app.config import settings
 from app.database import SessionLocal
-from app.models import Correspondent, DocType, Document, Tag
+from app.models import (
+    Annotation,
+    Correspondent,
+    CustomField,
+    DocType,
+    Document,
+    ReadingPosition,
+    Tag,
+    User,
+    document_custom_values,
+)
 from app.services import intake
 from app.services.app_state import set_value
 from app.services.tag_tree import with_ancestors
@@ -200,7 +210,12 @@ async def _run_import(tenant_id) -> None:
                 await session.flush()
             return row
 
-        tags_by_pk = {}
+        # Paperless pk → our row id. Ids only: a duplicate further down
+        # rolls the session back, which expires every cached ORM object,
+        # and the next touch of `corr.id` or a tag's parent would then need
+        # a synchronous load the async session cannot do (MissingGreenlet).
+        # Every document that shared that correspondent or tag then failed.
+        tags_by_pk: dict = {}
         for pk, fields in tag_rows.items():
             name = (fields.get("name") or "").strip()
             if not name:
@@ -209,17 +224,17 @@ async def _run_import(tenant_id) -> None:
             color = _color_of(fields)
             if color and not tag.color:
                 tag.color = color
-            tags_by_pk[pk] = tag
-        corr_by_pk = {}
+            tags_by_pk[pk] = tag.id
+        corr_by_pk: dict = {}
         for pk, fields in corr_rows.items():
             name = (fields.get("name") or "").strip()
             if name:
-                corr_by_pk[pk] = await get_or_create(Correspondent, name)
-        type_by_pk = {}
+                corr_by_pk[pk] = (await get_or_create(Correspondent, name)).id
+        type_by_pk: dict = {}
         for pk, fields in type_rows.items():
             name = (fields.get("name") or "").strip()
             if name:
-                type_by_pk[pk] = await get_or_create(DocType, name)
+                type_by_pk[pk] = (await get_or_create(DocType, name)).id
         await session.commit()
 
         for i, entry in enumerate(doc_rows):
@@ -233,10 +248,19 @@ async def _run_import(tenant_id) -> None:
                 logger.warning("import: missing file for document pk %s", entry.get("pk"))
                 continue
             title = (fields.get("title") or "").strip() or path.stem
-            doc_tags = [
+            tag_ids = [
                 tags_by_pk[pk] for pk in fields.get("tags", []) if pk in tags_by_pk
             ]
             try:
+                # Re-queried per document so the objects are always live,
+                # whatever a rollback did to the identity map in between.
+                doc_tags = (
+                    (
+                        await session.execute(select(Tag).where(Tag.id.in_(tag_ids)))
+                    ).scalars().all()
+                    if tag_ids
+                    else []
+                )
                 doc = await intake.ingest_file(
                     session,
                     tenant_id,
@@ -248,12 +272,12 @@ async def _run_import(tenant_id) -> None:
                 created = _parse_date(fields.get("created"))
                 if created:
                     doc.doc_date = created.date()
-                corr = corr_by_pk.get(fields.get("correspondent"))
-                if corr:
-                    doc.correspondent_id = corr.id
-                dtype = type_by_pk.get(fields.get("document_type"))
-                if dtype:
-                    doc.doc_type_id = dtype.id
+                corr_id = corr_by_pk.get(fields.get("correspondent"))
+                if corr_id:
+                    doc.correspondent_id = corr_id
+                type_id = type_by_pk.get(fields.get("document_type"))
+                if type_id:
+                    doc.doc_type_id = type_id
                 doc_notes = notes.get(entry.get("pk"))
                 if doc_notes:
                     doc.notes = "\n\n".join(doc_notes)
@@ -281,12 +305,169 @@ async def _run_import(tenant_id) -> None:
     )
 
 
+def _parse_day(value) -> date | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+async def _restore_definitions(session, tenant_id, manifest: dict) -> dict:
+    """Tags (colour, parent) and custom field definitions from a version-2
+    manifest. Returns field name → id. Existing rows keep what they have;
+    only gaps are filled, so a restore into a live library never rewires
+    someone's tag tree or recolours it."""
+    field_ids: dict = {}
+    for spec in manifest.get("custom_fields") or []:
+        name = (spec.get("name") or "").strip() if isinstance(spec, dict) else ""
+        if not name:
+            continue
+        row = (
+            await session.execute(
+                select(CustomField).where(
+                    CustomField.tenant_id == tenant_id, CustomField.name == name
+                )
+            )
+        ).scalars().first()
+        if row is None:
+            row = CustomField(
+                tenant_id=tenant_id, name=name, kind=str(spec.get("kind") or "text")[:16]
+            )
+            session.add(row)
+            await session.flush()
+        field_ids[name] = row.id
+
+    specs = [t for t in manifest.get("tags") or [] if isinstance(t, dict) and t.get("name")]
+    tag_ids: dict = {}
+    for spec in specs:
+        row = (
+            await session.execute(
+                select(Tag).where(Tag.tenant_id == tenant_id, Tag.name == spec["name"])
+            )
+        ).scalars().first()
+        if row is None:
+            row = Tag(tenant_id=tenant_id, name=spec["name"])
+            session.add(row)
+            await session.flush()
+        if spec.get("color") and not row.color:
+            row.color = str(spec["color"])[:16]
+        tag_ids[spec["name"]] = row.id
+    # Parents in a second pass, once every name has an id.
+    for spec in specs:
+        parent = spec.get("parent")
+        if not parent or parent not in tag_ids or parent == spec["name"]:
+            continue
+        row = await session.get(Tag, tag_ids[spec["name"]])
+        if row is not None and row.parent_id is None:
+            row.parent_id = tag_ids[parent]
+    await session.flush()
+    return field_ids
+
+
+async def _restore_extras(session, tenant_id, doc, entry: dict, field_ids: dict) -> None:
+    """The per-document metadata a version-2 manifest adds: expiry, the
+    original creation time, custom values by field name, annotations and
+    reading positions."""
+    expires = _parse_day(entry.get("expires_on"))
+    if expires:
+        doc.expires_on = expires
+    created_at = _parse_date(entry.get("created_at"))
+    if created_at:
+        # The server default stamped "now" at ingest; the original is the
+        # date that is meaningful in a restored library.
+        doc.created_at = created_at
+
+    values = entry.get("custom_values") or {}
+    if isinstance(values, dict):
+        for name, value in values.items():
+            if value is None:
+                continue
+            field_id = field_ids.get(name)
+            if field_id is None:
+                # A value whose definition the manifest lacks: a text field
+                # keeps the value visible rather than dropping it. Looked up
+                # rather than cached — this document's transaction may still
+                # roll back, taking a freshly created definition with it.
+                row = (
+                    await session.execute(
+                        select(CustomField).where(
+                            CustomField.tenant_id == tenant_id,
+                            CustomField.name == str(name)[:255],
+                        )
+                    )
+                ).scalars().first()
+                if row is None:
+                    row = CustomField(tenant_id=tenant_id, name=str(name)[:255], kind="text")
+                    session.add(row)
+                    await session.flush()
+                field_id = row.id
+            await session.execute(
+                document_custom_values.insert().values(
+                    document_id=doc.id, field_id=field_id, value=str(value)
+                )
+            )
+
+    for item in entry.get("annotations") or []:
+        if not isinstance(item, dict) or item.get("quote") is None:
+            continue
+        rects = item.get("rects")
+        session.add(
+            Annotation(
+                tenant_id=tenant_id,
+                document_id=doc.id,
+                page=int(item.get("page") or 1),
+                quote=str(item["quote"]),
+                note=item.get("note"),
+                rects=rects if isinstance(rects, str) else json.dumps(rects or []),
+                color=item.get("color"),
+            )
+        )
+
+    positions = entry.get("reading_positions") or []
+    if positions:
+        users = {
+            u.email: u.id
+            for u in (
+                await session.execute(select(User).where(User.tenant_id == tenant_id))
+            ).scalars()
+        }
+        # The importing account is the fallback when the exported user does
+        # not exist here: only the owner can run a restore.
+        owner_id = (
+            await session.execute(
+                select(User.id)
+                .where(User.tenant_id == tenant_id, User.is_admin.is_(True))
+                .order_by(User.created_at)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        seen: set = set()
+        for item in positions:
+            if not isinstance(item, dict) or item.get("page") is None:
+                continue
+            user_id = users.get(item.get("user")) or owner_id
+            if user_id is None or user_id in seen:
+                continue
+            seen.add(user_id)
+            session.add(
+                ReadingPosition(user_id=user_id, document_id=doc.id, page=int(item["page"]))
+            )
+
+
 async def _restore_scrinium(tenant_id, source: Path, manifest: dict) -> None:
     """Restore from our own export: originals re-ingested with their
     titles, dates, tags, correspondents, types, and notes. Text is pulled
     from the exported searchable copy when present, so restored documents
     are searchable immediately without re-OCR (archives themselves can be
-    rebuilt later with Re-OCR). Duplicates skip — re-running is safe."""
+    rebuilt later with Re-OCR). Duplicates skip — re-running is safe.
+
+    A version-2 manifest (see export.MANIFEST_VERSION) also carries tag
+    colours and parents, custom field definitions and values, expiry
+    dates, original creation times, annotations and reading positions;
+    all of it is restored. A manifest without a version key is the older
+    shape and restores exactly as it always did."""
     import subprocess
 
     from app.models import Correspondent, DocType, Document
@@ -295,6 +476,7 @@ async def _restore_scrinium(tenant_id, source: Path, manifest: dict) -> None:
     docs = manifest.get("documents", [])
     total = len(docs)
     imported = skipped = failed = 0
+    version = manifest.get("version") or 1
     await _status("running", done=0, total=total, note="restoring Scrinium export")
 
     async with SessionLocal() as session:
@@ -311,6 +493,11 @@ async def _restore_scrinium(tenant_id, source: Path, manifest: dict) -> None:
                 session.add(row)
                 await session.flush()
             return row
+
+        field_ids: dict = {}
+        if version >= 2:
+            field_ids = await _restore_definitions(session, tenant_id, manifest)
+            await session.commit()
 
         for i, entry in enumerate(docs):
             rel = entry.get("original")
@@ -364,6 +551,8 @@ async def _restore_scrinium(tenant_id, source: Path, manifest: dict) -> None:
                     doc.doc_type_id = (
                         await get_or_create(DocType, entry["doc_type"])
                     ).id
+                if version >= 2:
+                    await _restore_extras(session, tenant_id, doc, entry, field_ids)
                 await session.commit()
                 imported += 1
             except intake.DuplicateDocument:

@@ -157,8 +157,10 @@ async def test_upgrade_advisor(client, auth, pdf_factory):
             )
         ).scalars().first()
         assert job is not None and job.priority == 10
-    again = (await client.post("/api/documents/upgrade-ocr", headers=auth)).json()
-    assert again["queued"] == 0 or True  # other docs may qualify; this doc must not double
+    # The queued count is not asserted: documents from other tests in this
+    # database may qualify on this call. What must hold is that this
+    # document, already queued, is not queued a second time.
+    await client.post("/api/documents/upgrade-ocr", headers=auth)
     async with SessionLocal() as session:
         jobs = (
             await session.execute(

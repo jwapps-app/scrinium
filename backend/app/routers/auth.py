@@ -2,7 +2,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy.orm.attributes import set_committed_value
 from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
@@ -46,6 +47,46 @@ _DUMMY_HASH = hash_password("scrinium-timing-equalizer")
 # presentation is treated as what it most likely is: a copy in other hands.
 REFRESH_REUSE_GRACE = timedelta(seconds=60)
 
+# Advisory lock key for first-run setup. Any constant works; it only has to be
+# the same in every process that can run the setup route.
+SETUP_LOCK_KEY = 0x5C71_0001
+
+
+async def _lock_setup_and_count_users(db) -> int:
+    """Serialise first-run setup and report how many users exist under the lock.
+
+    The transaction-scoped advisory lock is released when the request's
+    transaction commits or rolls back. A second setup request arriving while
+    the first is still hashing its password waits here, and then counts the
+    user the first one just committed rather than the empty table it would
+    otherwise have seen.
+    """
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SETUP_LOCK_KEY})
+    return (await db.execute(select(func.count(User.id)))).scalar_one()
+
+
+async def _consume_totp_step(db, user: User, step: int) -> bool:
+    """Record `step` as used, but only if it is newer than the last one taken.
+
+    One conditional UPDATE, so two logins presenting the same code at the same
+    moment cannot both pass a read-then-write check: exactly one of them moves
+    the row forward and the other sees no row changed.
+    """
+    result = await db.execute(
+        update(User)
+        .where(
+            User.id == user.id,
+            or_(User.totp_last_step.is_(None), User.totp_last_step < step),
+        )
+        .values(totp_last_step=step)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        return False
+    # Mirror what the UPDATE just wrote without queueing a second write.
+    set_committed_value(user, "totp_last_step", step)
+    return True
+
 
 async def _issue_pair(db, user: User) -> TokenPair:
     """A fresh access/refresh pair, the refresh half backed by a row it can
@@ -84,7 +125,7 @@ async def auth_status(db: DB) -> AuthStatus:
 
 @router.post("/setup", response_model=TokenPair, dependencies=[Depends(rate_limit("setup", 5, 60))])
 async def setup(body: SetupRequest, db: DB) -> TokenPair:
-    count = (await db.execute(select(func.count(User.id)))).scalar_one()
+    count = await _lock_setup_and_count_users(db)
     if count > 0:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Already set up")
     tenant = Tenant(name=settings.app_name)
@@ -125,12 +166,10 @@ async def login(body: LoginRequest, db: DB) -> TokenPair:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Bad one-time code")
         # Single use: a code observed once must not authenticate a second time
         # while it is still inside its validity window.
-        if user.totp_last_step is not None and step <= user.totp_last_step:
+        if not await _consume_totp_step(db, user, step):
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED, "That code has already been used"
             )
-        user.totp_last_step = step
-        await db.flush()
     await _prune_tokens(db, user)
     return await _issue_pair(db, user)
 
@@ -164,7 +203,11 @@ async def refresh(body: RefreshRequest, db: DB) -> TokenPair:
         # device migrates on its next refresh without being signed out.
         return await _issue_pair(db, user)
 
-    row = await db.get(RefreshToken, jti)
+    # Locked: a second presentation of the same token queues here until the
+    # first has committed, then reads the row as rotated and takes the grace
+    # path below, so both callers leave with the same successor instead of
+    # each minting one of their own.
+    row = await db.get(RefreshToken, jti, with_for_update=True)
     if row is None or row.user_id != user.id:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
     now = datetime.now(timezone.utc)

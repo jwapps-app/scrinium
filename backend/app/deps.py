@@ -51,7 +51,7 @@ async def get_current_user(
     credentials: Annotated[
         HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
     ],
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: Annotated[AsyncSession, Depends(get_db, scope="function")],
 ) -> User:
     if credentials is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
@@ -107,4 +107,9 @@ async def get_admin_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 SessionUser = Annotated[User, Depends(get_session_user)]
 AdminUser = Annotated[User, Depends(get_admin_user)]
-DB = Annotated[AsyncSession, Depends(get_db)]
+# scope="function": the session's commit must happen before the response
+# goes out. FastAPI's default since 0.118 runs a yield dependency's exit
+# code after the response is sent, and a client that acts on the reply at
+# once (refresh straight after login, a new API token used immediately)
+# then reads the database before the row it was just told about exists.
+DB = Annotated[AsyncSession, Depends(get_db, scope="function")]

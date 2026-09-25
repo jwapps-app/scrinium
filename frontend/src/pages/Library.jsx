@@ -7,7 +7,16 @@ import ProgressBar from '../components/ProgressBar'
 import Shell from '../components/Shell'
 import StatusChip from '../components/StatusChip'
 import Thumb from '../components/Thumb'
+import { UPLOAD_ACCEPT } from '../constants/uploads'
+import {
+  bulkFilter,
+  hasAnyFilter,
+  listQuery,
+  readFilters,
+  serializeView,
+} from '../libraryFilters'
 import { useIsAdmin } from '../session'
+import { takeSharedFiles } from '../share'
 
 // Search snippets arrive with [[match]] markers (see backend ts_headline
 // config); render the matches as <mark> without trusting any HTML.
@@ -73,14 +82,10 @@ export default function Library() {
   const [pageBusy, setPageBusy] = useState(false)
   const fileInput = useRef(null)
 
-  const status = params.get('status')
-  const tag = params.get('tag')
-  const correspondent = params.get('correspondent')
-  const doctype = params.get('doctype')
-  const engine = params.get('engine')
+  const filters = readFilters(params)
+  const { status, tag, correspondent, doctype, engine, from, to, expiring, nonPdfa, untagged } =
+    filters
   const sort = params.get('sort') || 'newest'
-  const from = params.get('from')
-  const to = params.get('to')
   // Density is a preference, not a filter: remembered across visits, but a
   // saved view's explicit ?view= still wins.
   const view =
@@ -92,9 +97,6 @@ export default function Library() {
     setParam('view', v)
   }
   const q = params.get('q')
-  const expiring = params.get('expiring') === '1'
-  const nonPdfa = params.get('non_pdfa') === '1'
-  const untagged = params.get('untagged') === '1'
 
   function setParam(key, value) {
     const next = new URLSearchParams(params)
@@ -107,28 +109,11 @@ export default function Library() {
   // subtly different things is how a "Show more" page ends up not belonging
   // to the list above it.
   const listSearch = useCallback(
-    (offset) => {
-      const search = new URLSearchParams()
-      if (status === 'processing') {
-        // The sidebar's "Processing" bucket covers the whole in-flight queue.
-        search.set('status_filter', 'pending,processing')
-      } else if (status) {
-        search.set('status_filter', status)
-      }
-      if (tag) search.set('tag_id', tag)
-      if (correspondent) search.set('correspondent_id', correspondent)
-      if (doctype) search.set('doc_type_id', doctype)
-      if (engine) search.set('engine', engine)
-      if (expiring) search.set('expiring', 'true')
-      if (nonPdfa) search.set('non_pdfa', 'true')
-      if (untagged) search.set('untagged', 'true')
-      if (from) search.set('date_from', from)
-      if (to) search.set('date_to', to)
-      search.set('sort', sort)
-      search.set('offset', String(offset))
-      search.set('limit', String(PAGE_SIZE))
-      return search.toString()
-    },
+    (offset) =>
+      listQuery(
+        { status, tag, correspondent, doctype, engine, from, to, expiring, nonPdfa, untagged },
+        { sort, offset, limit: PAGE_SIZE },
+      ),
     [status, tag, correspondent, doctype, engine, sort, from, to, expiring, nonPdfa, untagged],
   )
 
@@ -165,6 +150,14 @@ export default function Library() {
   useEffect(() => {
     setDocs([])
   }, [status, tag, correspondent, doctype, engine, sort, from, to, expiring, nonPdfa, untagged])
+
+  // A selection describes the list it was made on. Once the filter or the
+  // query changes, the rows it pointed at may no longer be on screen, and
+  // acting on a set nobody can see is how the wrong documents get trashed.
+  useEffect(() => {
+    setSelected(new Set())
+    setWholeFilter(false)
+  }, [status, tag, correspondent, doctype, engine, from, to, expiring, nonPdfa, untagged, q])
 
   async function loadMorePage() {
     setPageBusy(true)
@@ -266,7 +259,7 @@ export default function Library() {
     }
   }
 
-  async function uploadFiles(files) {
+  const uploadFiles = useCallback(async (files) => {
     setUploading(true)
     setError('')
     for (const file of files) {
@@ -290,25 +283,38 @@ export default function Library() {
     setUploadNote('')
     load()
     window.dispatchEvent(new Event('library-changed'))
-  }
+  }, [load]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Files arriving from the system share sheet (see src/share.js). Checked
+  // on every mount, not only when ?shared=1 is present: a share that landed
+  // on the login page loses the query string on the way here, and the files
+  // are meant to wait until someone is signed in.
+  useEffect(() => {
+    if (params.get('shared')) setParam('shared', null)
+    takeSharedFiles()
+      .then((files) => {
+        if (files.length) uploadFiles(files)
+      })
+      .catch(() => {})
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const tagName = tag ? tags.find((t) => t.id === tag)?.name : null
   const inTrash = status === 'trash'
-  const hasFilters =
-    status || tag || correspondent || doctype || engine || from || to || expiring || nonPdfa || untagged
+  const hasFilters = hasAnyFilter(filters)
+  // What is on screen: search results when a query is active, else the list.
+  // Every selection decision reads from this one set.
+  const shown = results ?? docs
+  // Bulk endpoints cannot express a search query, so with one active the
+  // only honest scope is the rows the user can see and tick.
+  const canUseWholeFilter = !q
 
   async function saveCurrentView() {
     const name = window.prompt('Name this view:')
     if (!name?.trim()) return
-    const keep = new URLSearchParams()
-    for (const key of ['status', 'tag', 'correspondent', 'doctype', 'engine', 'from', 'to', 'sort', 'q', 'view']) {
-      const value = params.get(key)
-      if (value) keep.set(key, value)
-    }
     try {
       await apiJson('/api/views', {
         method: 'POST',
-        body: JSON.stringify({ name: name.trim(), params: keep.toString() }),
+        body: JSON.stringify({ name: name.trim(), params: serializeView(params) }),
       })
       window.dispatchEvent(new Event('library-changed'))
     } catch (err) {
@@ -332,29 +338,15 @@ export default function Library() {
   }
 
   // The filter the list is showing right now, in the shape the bulk endpoint
-  // takes. It has to mirror load() exactly: if the two drift, "all N in
-  // filter" acts on a different set than the one on screen.
+  // takes. Built from the same definition as the list query, so "all N in
+  // filter" acts on the set that is on screen.
   function currentFilter() {
-    return {
-      status_filter: inTrash
-        ? 'trash'
-        : status === 'processing'
-          ? 'pending,processing'
-          : status || null,
-      tag_id: tag || null,
-      correspondent_id: correspondent || null,
-      doc_type_id: doctype || null,
-      engine: engine || null,
-      date_from: from || null,
-      date_to: to || null,
-      expiring,
-      non_pdfa: nonPdfa,
-      untagged,
-    }
+    return bulkFilter(filters)
   }
 
   async function bulk(action, extra = {}) {
-    const count = wholeFilter ? total : selected.size
+    const whole = wholeFilter && canUseWholeFilter
+    const count = whole ? total : selected.size
     if (count === 0) return
     if (action === 'delete' && !window.confirm(`Move ${count} document(s) to the trash?`))
       return
@@ -366,17 +358,15 @@ export default function Library() {
     setError('')
     setBulkBusy(true)
     try {
-      if (wholeFilter) {
+      if (whole) {
         // Server-side: acts on everything the filter matches, not just the
         // pages that happen to be loaded. Deletes are chunked, so repeat
         // until the server says nothing remains.
-        let done = 0
         for (;;) {
           const result = await apiJson('/api/documents/bulk', {
             method: 'POST',
             body: JSON.stringify({ filter: currentFilter(), action, ...extra }),
           })
-          done += result.processed
           load()
           window.dispatchEvent(new Event('library-changed'))
           if (!result.remaining || result.processed === 0) break
@@ -528,7 +518,7 @@ export default function Library() {
           <input
             ref={fileInput}
             type="file"
-            accept=".pdf,image/*"
+            accept={UPLOAD_ACCEPT}
             multiple
             hidden
             onChange={(e) => {
@@ -550,12 +540,12 @@ export default function Library() {
               className="ghost"
               onClick={() => {
                 setWholeFilter(false)
-                setSelected(new Set(docs.map((d) => d.id)))
+                setSelected(new Set(shown.map((d) => d.id)))
               }}
             >
-              Select shown ({docs.length})
+              Select shown ({shown.length})
             </button>
-            {!inTrash && hasFilters && total > docs.length && (
+            {!inTrash && hasFilters && canUseWholeFilter && total > docs.length && (
               <button
                 className={wholeFilter ? '' : 'ghost'}
                 onClick={() => setWholeFilter(!wholeFilter)}
@@ -564,7 +554,7 @@ export default function Library() {
                 Entire filter ({total})
               </button>
             )}
-            {inTrash && total > 0 && (
+            {inTrash && canUseWholeFilter && total > 0 && (
               <button
                 className={wholeFilter ? '' : 'ghost'}
                 onClick={() => setWholeFilter(!wholeFilter)}
@@ -646,8 +636,8 @@ export default function Library() {
                 />
                 <button
                   className="ghost"
-                  disabled={bulkBusy || (!wholeFilter && selected.size === 0) || (wholeFilter && !tag)}
-                  title={wholeFilter ? 'Download everything with this tag as a zip' : 'Download the selected documents as a zip'}
+                  disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
+                  title={wholeFilter ? 'Download everything in this filter as a zip' : 'Download the selected documents as a zip'}
                   onClick={async () => {
                     setBulkBusy(true)
                     setError('')
@@ -657,7 +647,7 @@ export default function Library() {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(
                           wholeFilter && tag
-                            ? { filter_tag_id: tag }
+                            ? { filter_tag_id: tag || undefined, filter: currentFilter() }
                             : { ids: [...selected] },
                         ),
                       })
@@ -682,7 +672,7 @@ export default function Library() {
                 </button>
                 <button
                   className="ghost"
-                  disabled={bulkBusy || (!wholeFilter && selected.size === 0) || (wholeFilter && !tag)}
+                  disabled={bulkBusy || (!wholeFilter && selected.size === 0)}
                   title="One print-ready PDF: cover, contents, and every selected document"
                   onClick={async () => {
                     const title = window.prompt(
@@ -698,7 +688,7 @@ export default function Library() {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(
                           wholeFilter && tag
-                            ? { filter_tag_id: tag, title }
+                            ? { filter_tag_id: tag || undefined, filter: currentFilter(), title }
                             : { ids: [...selected], title },
                         ),
                       })
@@ -796,8 +786,14 @@ export default function Library() {
                 <li key={r.id}>
                   <Link
                     to={`/doc/${r.id}?q=${encodeURIComponent(q)}`}
-                    className="doc-row"
+                    className={`doc-row ${selected.has(r.id) ? 'selected' : ''}`}
+                    onClick={(e) => selectionClick(e, r.id)}
                   >
+                    {selecting && (
+                      <span className={`pick ${selected.has(r.id) ? 'picked' : ''}`}>
+                        {selected.has(r.id) ? '✓' : ''}
+                      </span>
+                    )}
                     <Thumb id={r.id} className="thumb-row" />
                     <span className="doc-title">{r.title}</span>
                     <span className="doc-meta">

@@ -39,6 +39,15 @@ class DuplicateDocument(Exception):
         super().__init__(f"Duplicate of existing document {existing_id}")
 
 
+class SourceChanged(RuntimeError):
+    """The file's bytes differed between the dedup hash and the copy into
+    the store. Treated like any other failed ingest: the watch sweep files
+    it under .failed/, the upload returns an error, nothing is kept."""
+
+    def __init__(self, filename: str):
+        super().__init__(f"{filename}: file changed while it was being read")
+
+
 async def ingest_file(
     session: AsyncSession,
     tenant_id: uuid.UUID,
@@ -67,7 +76,14 @@ async def ingest_file(
     if existing is not None:
         raise DuplicateDocument(existing.id)
 
-    blob_id, _, size = await asyncio.to_thread(storage.store_file, source)
+    blob_id, stored_sha256, size = await asyncio.to_thread(storage.store_file, source)
+    # The dedup hash and the stored copy come from two separate reads of the
+    # pathname. If they disagree the file was still being written, or was
+    # replaced under us, and the row would describe bytes the store does not
+    # hold: drop the copy and let the caller retry or file it as failed.
+    if stored_sha256 != sha256:
+        await asyncio.to_thread(storage.delete_blob, blob_id)
+        raise SourceChanged(filename)
 
     # Page count up front for PDFs (a header read, even on huge files): the
     # queue ETA estimates in pages, so pending work must be measurable.

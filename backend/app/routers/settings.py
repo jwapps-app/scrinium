@@ -293,7 +293,12 @@ async def system_health(user: CurrentUser, db: DB) -> dict:
     verified, total_blobs = (
         await db.execute(
             select(
-                func.count(Blob.id).filter(Blob.verified_at.is_not(None)),
+                # "Verified" means checked and found good: a blob that
+                # failed its check has a verified_at too, since the checker
+                # stamps every attempt so bad files cannot starve the rest.
+                func.count(Blob.id).filter(
+                    Blob.verified_at.is_not(None), Blob.verify_error.is_(None)
+                ),
                 func.count(Blob.id),
             )
         )

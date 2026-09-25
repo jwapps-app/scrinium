@@ -129,6 +129,12 @@ def pdfa_fallback_commands(cmd: list[str]) -> list[tuple[str, list[str]]]:
 # into /tmp with no job attached, while the recovered lanes started four more.
 CANCEL_FILE = "cancel"
 
+# How often the watchdog looks for the marker (and at progress). The async
+# side keeps the workdir alive only for a bounded wait after it writes the
+# marker (see ingest._run_with_progress), so this has to be well inside that
+# window — at ten seconds the marker was routinely gone before the next poll.
+WATCHDOG_POLL_SECONDS = 2
+
 
 def cancel_requested(workdir: Path) -> bool:
     return (workdir / CANCEL_FILE).exists()
@@ -170,7 +176,7 @@ def _run_watched(attempt: list[str], workdir: Path):
             code = proc.poll()
             if code is not None:
                 break
-            time.sleep(10)
+            time.sleep(WATCHDOG_POLL_SECONDS)
             if cancel_requested(workdir):
                 _kill_group(proc)
                 return 137, "killed: job cancelled"

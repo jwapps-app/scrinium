@@ -1985,12 +1985,27 @@ button.linklike {
   color: var(--muted);
   padding: 0 0.4rem;
   cursor: pointer;
-  opacity: 0;
   font-size: 0.9rem;
 }
 
-.side-view-row:hover .side-x {
+/* Only the sidebar's view rows hide the × until hovered — the same class
+   is reused on offline copies, highlights and tag colours, where nothing
+   reveals it, so those stay visible. Keyboard focus and touch screens
+   (no hover to reveal with) get it shown as well. */
+.side-view-row .side-x {
+  opacity: 0;
+}
+
+.side-view-row:hover .side-x,
+.side-view-row:focus-within .side-x,
+.side-view-row .side-x:focus-visible {
   opacity: 1;
+}
+
+@media (hover: none) {
+  .side-view-row .side-x {
+    opacity: 1;
+  }
 }
 
 .side-x:hover {

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, String, func
+from sqlalchemy import BigInteger, DateTime, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,7 +22,13 @@ class Blob(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    # Last successful integrity verification (sha256 re-check).
+    # When the integrity sweep last re-hashed this blob, whatever it found.
+    # Stamped on failures too: the sweep works oldest-first, and a blob that
+    # never advanced kept its place at the front, so a few hundred bad files
+    # were re-checked every hour while the rest of the store never was.
     verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Why the last check failed ("corrupt: …" or "unreadable: …"); None when
+    # the bytes matched. The verdict lives here, next to the timestamp.
+    verify_error: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -151,6 +151,20 @@ class ReprocessRequest(BaseModel):
     mode: str = Field(default="redo", pattern="^(skip|redo|force)$")
 
 
+class UploadCompleteRequest(BaseModel):
+    """Finish a chunked upload session.
+
+    The web client sends only the filename. The three checks are optional
+    because the protocol predates them; when a client does declare what it
+    sent, completion refuses to assemble anything that disagrees.
+    """
+
+    filename: str | None = None
+    parts: int | None = Field(default=None, ge=1, le=10001)
+    size: int | None = Field(default=None, ge=0)
+    sha256: str | None = Field(default=None, pattern="^[0-9a-fA-F]{64}$")
+
+
 class CopyTagsRequest(BaseModel):
     source_id: uuid.UUID  # document whose tags are mirrored onto this one
 
@@ -426,9 +440,13 @@ class DismissPairRequest(BaseModel):
 
 
 class SelectionRequest(BaseModel):
-    """ids, or everything under a tag — binder, zip download, merge."""
+    """ids, or everything a filter matches — binder, zip download, merge."""
 
     ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
+    # The library list's full filter, so "entire filter" means the view the
+    # user is looking at and not just its tag.
+    filter: DocumentFilter | None = None
+    # Tag-only spelling, still sent by the iOS app.
     filter_tag_id: uuid.UUID | None = None
     title: str | None = None
 

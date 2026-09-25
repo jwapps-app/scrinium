@@ -90,6 +90,11 @@ async def classify_document(
     title_candidate: str | None = None
 
     for rule in rules:
+        if not rule.enabled:
+            # The library-wide run shares one rule list across every document.
+            # A rule disabled part-way through (below) must not be tried again
+            # on each remaining document, paying its timeout every time.
+            continue
         try:
             # In a thread: matching is CPU-bound, and on a book-length text even
             # a well-behaved pattern would stall the event loop (API) or the

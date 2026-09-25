@@ -6,6 +6,7 @@ to head with the real alembic migrations — so tests exercise the same schema
 (including the FTS generated column) that production containers get.
 """
 
+import atexit
 import os
 import subprocess
 import sys
@@ -14,10 +15,20 @@ from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
-TEST_DB_URL = os.environ.get(
+_CONFIGURED_DB_URL = os.environ.get(
     "TEST_DATABASE_URL",
     "postgresql+asyncpg://app:app@localhost:5434/scrinium_test",
 )
+
+# The configured name is a prefix, never the database itself: each run gets
+# its own "<name>_<pid>" that is created here and dropped at exit. Two
+# pytest processes can then run side by side, and a stray TEST_DATABASE_URL
+# can never point the harness at a real library — the name must say "test".
+if "test" not in _CONFIGURED_DB_URL.rpartition("/")[2].lower():
+    raise SystemExit(
+        "refusing to run: the TEST_DATABASE_URL database name must contain 'test'"
+    )
+TEST_DB_URL = f"{_CONFIGURED_DB_URL}_{os.getpid()}"
 
 os.environ["DATABASE_URL"] = TEST_DB_URL
 # Counts must be fresh per request in tests — no stats micro-cache.
@@ -45,15 +56,28 @@ def _test_dbname() -> str:
     return TEST_DB_URL.rpartition("/")[2]
 
 
+def _quoted_dbname() -> str:
+    return '"' + _test_dbname().replace('"', '""') + '"'
+
+
 def _recreate_database() -> None:
     conn = psycopg2.connect(_admin_dsn())
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute(
-            f'DROP DATABASE IF EXISTS "{_test_dbname()}" WITH (FORCE)'
-        )
-        cur.execute(f'CREATE DATABASE "{_test_dbname()}"')
+        cur.execute(f"DROP DATABASE IF EXISTS {_quoted_dbname()} WITH (FORCE)")
+        cur.execute(f"CREATE DATABASE {_quoted_dbname()}")
     conn.close()
+
+
+def _drop_database() -> None:
+    try:
+        conn = psycopg2.connect(_admin_dsn())
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(f"DROP DATABASE IF EXISTS {_quoted_dbname()} WITH (FORCE)")
+        conn.close()
+    except Exception:
+        pass  # a leftover test database is untidy, not harmful
 
 
 def _migrate() -> None:
@@ -75,6 +99,7 @@ def _migrate() -> None:
 
 
 _recreate_database()
+atexit.register(_drop_database)
 _migrate()
 
 
