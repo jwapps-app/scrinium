@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { pdfjsLib, loadPdf } from '../pdfjs'
+import { pdfjsLib, loadPdf, closePdf } from '../pdfjs'
 import { TextLayer } from 'pdfjs-dist'
 
 const RENDER_MARGIN = 900 // px beyond the viewport to render ahead
@@ -262,7 +262,7 @@ export default function PdfViewer({
         if (!pdf) {
           pdf = await loadPdf(url)
           if (cancelled) {
-            pdf.destroy()
+            closePdf(pdf)
             return
           }
           pdfRef.current = { url, pdf }
@@ -399,7 +399,7 @@ export default function PdfViewer({
   // unmount) — zoom/fit rebuilds above reuse it.
   useEffect(
     () => () => {
-      pdfRef.current.pdf?.destroy()
+      closePdf(pdfRef.current.pdf)
       pdfRef.current = { url: null, pdf: null }
     },
     [url],

@@ -32,5 +32,21 @@ export function loadPdf(url) {
   return openPdf(url).promise
 }
 
+/** Release a document from loadPdf. pdf.js 6 removed destroy() from the
+ * document object; the loading task behind it still has one, and that is
+ * what tears down the worker. Calling the old method threw on every exit
+ * from the viewer, inside React's unmount, which took the whole page down
+ * with it. Safe on null and on a document already gone. */
+export function closePdf(pdf) {
+  const task = pdf?.loadingTask
+  if (!task) return
+  try {
+    const r = task.destroy()
+    if (r && typeof r.catch === 'function') r.catch(() => {})
+  } catch {
+    /* already destroyed */
+  }
+}
+
 export { pdfjsLib }
 export default pdfjsLib

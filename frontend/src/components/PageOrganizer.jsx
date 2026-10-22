@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { loadPdf } from '../pdfjs'
+import { loadPdf, closePdf } from '../pdfjs'
 
 const THUMB_WIDTH = 132
 const RENDER_MARGIN = 600
@@ -97,7 +97,7 @@ export default function PageOrganizer({ url, busy, onAction, onClose }) {
     return () => {
       cancelled = true
       scroller.removeEventListener('scroll', onScroll)
-      if (st.pdf) st.pdf.destroy()
+      closePdf(st.pdf)
     }
   }, [url])
 
